@@ -575,16 +575,108 @@ async fn a_workspace_command_inherits_no_credential() {
     }
     assert_eq!(
         names(&without.stdout),
-        ["HOME", "LANG", "PATH"],
-        "with no toolchain locator to pass through, the allowlist is its three \
-         unconditional names: {}",
+        [
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_DATE",
+            "HOME",
+            "LANG",
+            "PATH"
+        ],
+        "with no toolchain locator to pass through, the allowlist is its five \
+         unconditional names, and the two dates are values this workspace computed \
+         rather than values it inherited: {}",
         without.stdout
     );
     assert_eq!(
         names(&with.stdout),
-        ["HOME", "LANG", "PATH", "RUSTUP_HOME"],
+        [
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_DATE",
+            "HOME",
+            "LANG",
+            "PATH",
+            "RUSTUP_HOME"
+        ],
         "and exactly one more when the parent names one: {}",
         with.stdout
+    );
+}
+
+#[tokio::test]
+async fn a_workspace_command_reads_the_dates_of_the_revision_the_workspace_was_cut_at() {
+    let _env = ENV.read().await;
+    let (ws, dir) = workspace();
+    let repo = dir.path().join("fixture");
+    let base = git_out(&repo, &["log", "-1", "--format=%cI", "HEAD"])
+        .expect("the fixture repository has a commit");
+
+    assert_eq!(ws.stamp(), base);
+    let read = ws
+        .run(&cmd(
+            "/bin/sh",
+            &["-c", "printf %s \"$GIT_AUTHOR_DATE|$GIT_COMMITTER_DATE\""],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        read.stdout,
+        format!("{base}|{base}"),
+        "both dates a command sees are the base revision's, so a commit it makes is \
+         a function of the tree and not of the second it ran in"
+    );
+}
+
+#[tokio::test]
+async fn two_workspaces_at_one_revision_commit_one_tree_as_one_sha() {
+    let _env = ENV.read().await;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+
+    let mut shas = Vec::new();
+    for name in ["01JQZX0000000000000000001", "01JQZX0000000000000000002"] {
+        let ws = Workspace::create(
+            &repo,
+            &dir.path().join(format!("ws-{name}")),
+            &AttemptId(name.to_string()),
+            token(),
+        )
+        .unwrap();
+        ws.write(&p("src/lib.rs"), "pub fn g() {}\n").unwrap();
+        for args in [
+            vec!["add", "-f", "--", "src/lib.rs"],
+            vec![
+                "-c",
+                "user.name=fiddle",
+                "-c",
+                "user.email=fiddle@invalid",
+                "commit",
+                "-q",
+                "-m",
+                "one message over one tree",
+            ],
+        ] {
+            let ran = ws.run(&cmd("git", &args)).await.unwrap();
+            assert_eq!(ran.exit_code, 0, "git {args:?} failed: {}", ran.stderr);
+        }
+        shas.push(
+            ws.run(&cmd("git", &["rev-parse", "HEAD"]))
+                .await
+                .unwrap()
+                .stdout
+                .trim()
+                .to_string(),
+        );
+    }
+
+    assert_ne!(
+        shas[0],
+        git_out(&repo, &["rev-parse", "HEAD"]).expect("the fixture has a head"),
+        "the row's own premise: each workspace wrote a commit"
+    );
+    assert_eq!(
+        shas[0], shas[1],
+        "one tree over one base is one sha, whichever attempt built it, so a branch \
+         guard can recognise the work a previous run published: {shas:?}"
     );
 }
 

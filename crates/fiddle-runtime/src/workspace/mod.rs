@@ -45,6 +45,7 @@ pub struct Workspace {
     home: PathBuf,
     fixture: PathBuf,
     baseline_ignore: PathBuf,
+    stamp: String,
     cancel: CancellationToken,
     removed: bool,
 }
@@ -88,11 +89,13 @@ impl Workspace {
             ],
         )?;
         let baseline_ignore = root.join(format!("{}.ignore", attempt.0));
+        let stamp = base_date(&path)?;
         let workspace = Workspace {
             root: path,
             home,
             fixture: fixture.to_path_buf(),
             baseline_ignore,
+            stamp,
             cancel,
             removed: false,
         };
@@ -126,6 +129,10 @@ impl Workspace {
 
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    pub fn stamp(&self) -> &str {
+        &self.stamp
     }
 
     pub fn cancel(&self) -> &CancellationToken {
@@ -267,6 +274,26 @@ where
         }),
         _ => Ok(()),
     }
+}
+
+fn base_date(worktree: &Path) -> Result<String, WorkspaceError> {
+    let read = git_stdout(worktree, &["log", "-1", "--format=%cI", "HEAD"])?;
+    let stamp = String::from_utf8_lossy(&read).trim().to_string();
+    match is_iso_instant(&stamp) {
+        true => Ok(stamp),
+        false => Err(WorkspaceError::Git {
+            command: "log -1 --format=%cI HEAD".to_string(),
+            stderr: format!("the base revision reported {stamp:?}, which is no instant"),
+        }),
+    }
+}
+
+fn is_iso_instant(stamp: &str) -> bool {
+    stamp.len() >= 20
+        && stamp.len() <= 32
+        && stamp
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | ':' | 'T' | 'Z' | '+' | '.'))
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<(), WorkspaceError> {

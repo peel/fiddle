@@ -490,6 +490,14 @@ impl ToilForge {
         support::git_says(&self.remote, &["rev-parse", branch])
     }
 
+    fn file_at(&self, commit: &str, path: &str) -> String {
+        support::git_says(&self.remote, &["show", &format!("{commit}:{path}")])
+    }
+
+    fn date_of(&self, commit: &str) -> String {
+        support::git_says(&self.remote, &["log", "-1", "--format=%cI%n%aI", commit])
+    }
+
     fn delete_branch(&self, branch: &str) {
         support::git(
             &self.remote,
@@ -507,6 +515,9 @@ pub struct ToilWorld {
 
 const REPAIRED: &str = support::REPAIRED_FIXTURE;
 
+const REPAIRED_ANOTHER_WAY: &str =
+    "pub fn last_index(len: usize) -> usize {\n    len.saturating_sub(1)\n}\n";
+
 fn a_review_that_reads_a_change() -> support::Reply {
     support::accepted(support::reports(serde_json::json!({
         "verdict": "asks_for_a_change",
@@ -516,11 +527,15 @@ fn a_review_that_reads_a_change() -> support::Reply {
 }
 
 fn an_accepted_change() -> Vec<support::Reply> {
+    an_accepted_change_writing(REPAIRED)
+}
+
+fn an_accepted_change_writing(contents: &str) -> Vec<support::Reply> {
     vec![
         a_review_that_reads_a_change(),
         support::accepted(support::calls(
             "write_file",
-            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+            serde_json::json!({ "path": "src/lib.rs", "contents": contents }),
         )),
         support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
@@ -539,6 +554,15 @@ impl ToilWorld {
             an_accepted_change()
                 .into_iter()
                 .chain(an_accepted_change())
+                .collect(),
+        )
+    }
+
+    pub fn start_writing_something_else_the_second_time(second: &str) -> Self {
+        ToilWorld::serving(
+            an_accepted_change()
+                .into_iter()
+                .chain(an_accepted_change_writing(second))
                 .collect(),
         )
     }
@@ -1040,7 +1064,7 @@ fn a_run_reported_retryable_reaches_a_terminal_state_when_it_is_retried() {
 }
 
 #[test]
-fn a_retry_over_a_branch_this_invocation_already_published_does_not_converge() {
+fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail() {
     let world = ToilWorld::start();
     world.jira().holds_eligible_ticket(TICKET);
 
@@ -1080,8 +1104,129 @@ fn a_retry_over_a_branch_this_invocation_already_published_does_not_converge() {
 
     assert_eq!(
         retried.status.code(),
+        Some(0),
+        "the retry reached a terminal state over the branch the first run left \
+         standing: {second}"
+    );
+    assert_eq!(
+        second["outcome"], "completed",
+        "and the terminal state it reached is completion: {second}"
+    );
+    assert_eq!(
+        effects_of(&second)
+            .iter()
+            .map(|line| line.split(':').nth(1).unwrap_or_default().to_string())
+            .collect::<Vec<String>>(),
+        vec![BRANCH_EFFECT, PULL_REQUEST_EFFECT, LINK_EFFECT],
+        "so it reached the pull request and the link rather than stopping at the \
+         branch step: {second}"
+    );
+    assert_eq!(
+        external_ref_of(&effect_named(&second, BRANCH_EFFECT)),
+        published,
+        "the retry rebuilt the same tree and named the same commit, because the commit \
+         dates are stamped from the base revision rather than from the wall clock: \
+         {second}"
+    );
+    assert_eq!(
+        world.github().head_of(&branch),
+        published,
+        "and the branch still points there, so nothing was forced over it: {second}"
+    );
+    let dated = world.github().date_of(&published);
+    let parent = world.github().date_of(&format!("{published}^"));
+    assert_eq!(
+        dated, parent,
+        "the commit carries the dates of the revision it was built on rather than \
+         the second the run fell in, which is why the two runs agree on a sha at all"
+    );
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "no second pull request was created: {second}"
+    );
+    assert_eq!(
+        world.jira().links_for(TICKET).len(),
+        1,
+        "and no second link comment reached the ticket: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        Some(world.expected_marker()),
+        "and the retry recorded the completion the next run would read, so a third \
+         run stops on the marker rather than on the branch: {second}"
+    );
+}
+
+#[test]
+fn a_rerun_whose_tree_changed_publishes_the_commit_that_tree_makes() {
+    let world = ToilWorld::start_writing_something_else_the_second_time(REPAIRED_ANOTHER_WAY);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        external_ref_of(&effect_named(&first, BRANCH_EFFECT)),
+        published,
+        "the row's own premise: the first run published the commit it built: {first}"
+    );
+
+    world.github().delete_branch(&branch);
+    world.forgets_that_the_work_was_completed();
+
+    let rerun = world.run_toil(REFERENCE);
+    let second = payload_of(&rerun);
+
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "the second run reached a terminal state: {second}"
+    );
+    let republished = world.github().head_of(&branch);
+    assert_ne!(
+        republished, published,
+        "and it published a different commit, because its tree is a different tree; a \
+         stamp that froze the sha for every tree would fail here: {second}"
+    );
+    assert_eq!(
+        external_ref_of(&effect_named(&second, BRANCH_EFFECT)),
+        republished,
+        "the branch step names the commit the forge now holds: {second}"
+    );
+    assert_eq!(
+        world.github().file_at(&republished, "src/lib.rs"),
+        REPAIRED_ANOTHER_WAY.trim_end(),
+        "and that commit carries the second write rather than the first: {second}"
+    );
+}
+
+#[test]
+fn a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_published() {
+    let world = ToilWorld::start_writing_something_else_the_second_time(REPAIRED_ANOTHER_WAY);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run published a branch and opened one pull \
+         request on it: {first}"
+    );
+
+    world.forgets_that_the_work_was_completed();
+
+    let rerun = world.run_toil(REFERENCE);
+    let second = payload_of(&rerun);
+
+    assert_eq!(
+        rerun.status.code(),
         Some(11),
-        "the retry reports a retry again, so this pair does not converge: {second}"
+        "the second run built a tree the branch does not carry, so the guard refused \
+         it rather than overwriting work it does not recognise: {second}"
     );
     let stopped = second["outcome"]["retryable"]["reason"]
         .as_str()
@@ -1089,7 +1234,7 @@ fn a_retry_over_a_branch_this_invocation_already_published_does_not_converge() {
     assert!(
         stopped.contains(BRANCH_EFFECT) && stopped.contains(&branch),
         "it stopped at the branch step, and the step names the branch the first run \
-         published, which is the prior work it found: {stopped}"
+         published: {stopped}"
     );
     assert!(
         stopped.contains("not an ancestor") && stopped.contains("not forced"),
@@ -1106,17 +1251,22 @@ fn a_retry_over_a_branch_this_invocation_already_published_does_not_converge() {
         published,
         "and the branch still points where the first run left it: {second}"
     );
-    assert_ne!(
-        second["capability_executions"][0]["status"], "completed",
-        "the retry produced the same tree and a different commit, because nothing \
-         fixes the commit dates, so the branch guard refuses it on every attempt; \
-         `fiddle-buu6` carries that, and this row reds when it lands: {second}"
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "no second pull request was created: {second}"
+    );
+    assert_eq!(
+        world.jira().links_for(TICKET).len(),
+        1,
+        "and no second link comment reached the ticket: {:?}",
+        world.jira().request_lines()
     );
     assert_eq!(
         world.recorded_marker(),
         None,
-        "so the retry recorded no completion either, and a third run would stop in \
-         the same place: {second}"
+        "so this run recorded no completion, which is what a run that reached no \
+         terminal state must leave behind: {second}"
     );
 }
 

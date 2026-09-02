@@ -27,6 +27,10 @@ const MINIMUM_PATH: &str = "/usr/bin:/bin";
 
 const RUSTUP_HOME: &str = "RUSTUP_HOME";
 
+const GIT_AUTHOR_DATE: &str = "GIT_AUTHOR_DATE";
+
+const GIT_COMMITTER_DATE: &str = "GIT_COMMITTER_DATE";
+
 impl Workspace {
     pub async fn run(&self, cmd: &WorkspaceCommand) -> Result<CommandResult, WorkspaceError> {
         if self.cancel.is_cancelled() {
@@ -40,7 +44,9 @@ impl Workspace {
             .env_clear()
             .env("HOME", self.home())
             .env("PATH", &*TOOL_PATH)
-            .env("LANG", "C");
+            .env("LANG", "C")
+            .env(GIT_AUTHOR_DATE, self.stamp())
+            .env(GIT_COMMITTER_DATE, self.stamp());
         if let Ok(rustup_home) = std::env::var(RUSTUP_HOME) {
             command.env(RUSTUP_HOME, rustup_home);
         }
