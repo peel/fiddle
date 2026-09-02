@@ -724,11 +724,25 @@ Deployment policy and a site error both reach this line. Read the `cause`.
 
 ### Working one ticket again
 
-A ticket the route completed carries the run's correlation marker, and the next
-run over the same reference reads that marker, judges the work done and executes
-nothing — whatever the ticket now says. Removing the trigger label and adding it
-again does not start a second round. Nothing on an operator surface clears a
-completion.
+A ticket the route completed carries nothing. The completion is a file:
+`WorkflowCapability::record_change_set` writes the run's correlation marker to
+`<[stub] root>/changes/<KEY>.json`, where `<[stub] root>` is the `root` this
+deployment set under `[stub]`. The next run over the same reference reads that
+marker, judges the work done and executes nothing — whatever the ticket now
+says. Removing the trigger label and adding it again does not start a second
+round.
+
+Removing that file makes the next run work the ticket again. No fiddle command
+does it, so it is a file an operator deletes and not an operator surface, and it
+is what the tests do to force a second round:
+`a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail`
+removes the record and reruns, and the rerun pays for its own agent turns and
+reaches the effect tail (ADR 083).
+
+Two consequences follow for a deployment. A `[stub] root` on a path that does
+not survive the run — a container layer, a temporary directory — forgets every
+completion, so the next run works the ticket again. And an operator who moves to
+a fresh checkout has no completions at all, whatever the tickets say.
 
 ## Record what the model was sent and what it returned
 
