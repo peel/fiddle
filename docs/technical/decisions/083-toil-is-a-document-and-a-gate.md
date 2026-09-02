@@ -23,7 +23,7 @@ ARGUED, read off ADR 074 and off the source at `77b82f6`: the context above. No 
 
 ARGUED, read off the source at `77b82f6`: `toil::qualify` runs in `crates/fiddle-cli/src/main.rs`, in `qualified`, before the document is loaded. `RULES` holds the thirteen rule names it applies. It answers `Qualification::Eligible` or `Qualification::Refused`, and a `Refusal` carries the rule that failed, what was found and the remedy that would change the answer.
 
-Three reasons hold the gate outside the document. All three are ARGUED, read off the source at `77b82f6` and off ADR 074, and so are the three paragraphs that state them, except where a sentence names its own measurement. ADR 074 gives the first. Eligibility is nothing but conditions, and a condition in a file means the capability belongs in Rust.
+Three reasons hold the gate outside the document. That placement, all three reasons, and the three paragraphs that state them are ARGUED, read off the source at `77b82f6` and off ADR 074, except where a sentence names its own measurement. ADR 074 gives the first. Eligibility is nothing but conditions, and a condition in a file means the capability belongs in Rust.
 
 The second is cost. An ineligible ticket must pay for no worktree, no forge client and no model call. Placing the judgement inside the document would spend all three to reach the step that declines the work. MEASURED: `a_refused_ticket_is_told_why_on_its_own_issue` in `crates/fiddle-acceptance/tests/toil.rs` counts zero model calls, zero pull requests and zero branches for a ticket without the trigger label, and the run exits 2.
 
