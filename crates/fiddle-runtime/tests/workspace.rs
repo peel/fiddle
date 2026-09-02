@@ -44,6 +44,29 @@ fn workspace_with(cancel: CancellationToken) -> (Workspace, tempfile::TempDir) {
     (ws, dir)
 }
 
+const A_BASE_DATE: &str = "2021-02-03T04:05:06+02:00";
+
+fn dated_base_commit(repo: &Path, date: &str) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture@invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "the base, at a date no clock will read again",
+        ])
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .current_dir(repo)
+        .status()
+        .expect("git runs");
+    assert!(status.success(), "the fixture takes a dated base commit");
+}
+
 fn git_out(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = std::process::Command::new("git")
         .args(args)
@@ -631,6 +654,7 @@ async fn two_workspaces_at_one_revision_commit_one_tree_as_one_sha() {
     let _env = ENV.read().await;
     let dir = tempfile::tempdir().unwrap();
     let repo = fixture::trivial_repo(dir.path());
+    dated_base_commit(&repo, A_BASE_DATE);
 
     let mut shas = Vec::new();
     for name in ["01JQZX0000000000000000001", "01JQZX0000000000000000002"] {
@@ -677,6 +701,13 @@ async fn two_workspaces_at_one_revision_commit_one_tree_as_one_sha() {
         shas[0], shas[1],
         "one tree over one base is one sha, whichever attempt built it, so a branch \
          guard can recognise the work a previous run published: {shas:?}"
+    );
+    assert_eq!(
+        git_out(&repo, &["log", "-1", "--format=%cI%n%aI", &shas[0]]),
+        Ok(format!("{A_BASE_DATE}\n{A_BASE_DATE}")),
+        "and the sha is one sha because both commits carry the base revision's 2021 \
+         dates rather than the second they were made in; two clock-dated commits \
+         inside one second would agree here for no reason worth relying on"
     );
 }
 

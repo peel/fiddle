@@ -508,6 +508,7 @@ impl ToilForge {
 
 pub struct ToilWorld {
     scenario: Scenario,
+    fixture: PathBuf,
     forge: ToilForge,
     jira: ToilJira,
     gateway: StubGateway,
@@ -603,6 +604,7 @@ impl ToilWorld {
             jira,
             gateway,
             scenario,
+            fixture: fixture.clone(),
         };
         let tables = world.tables(&fixture, &stub);
         world.scenario.append_config(&tables);
@@ -687,6 +689,27 @@ impl ToilWorld {
 
     pub fn github(&self) -> &ToilForge {
         &self.forge
+    }
+
+    pub fn stamps_its_base_revision(&self, date: &str) {
+        let status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@invalid",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "the base, at a date no clock will read again",
+            ])
+            .env("GIT_AUTHOR_DATE", date)
+            .env("GIT_COMMITTER_DATE", date)
+            .current_dir(&self.fixture)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "the fixture takes a dated base commit");
     }
 
     pub fn run_toil(&self, invocation_ref: &str) -> std::process::Output {
@@ -1063,10 +1086,13 @@ fn a_run_reported_retryable_reaches_a_terminal_state_when_it_is_retried() {
     );
 }
 
+const A_BASE_DATE: &str = "2021-02-03T04:05:06+02:00";
+
 #[test]
 fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail() {
     let world = ToilWorld::start();
     world.jira().holds_eligible_ticket(TICKET);
+    world.stamps_its_base_revision(A_BASE_DATE);
 
     let first = payload_of(&world.run_toil(REFERENCE));
     let branch = world.github().only_branch();
@@ -1133,12 +1159,18 @@ fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_ta
         published,
         "and the branch still points there, so nothing was forced over it: {second}"
     );
-    let dated = world.github().date_of(&published);
-    let parent = world.github().date_of(&format!("{published}^"));
     assert_eq!(
-        dated, parent,
-        "the commit carries the dates of the revision it was built on rather than \
-         the second the run fell in, which is why the two runs agree on a sha at all"
+        world.github().date_of(&format!("{published}^")),
+        format!("{A_BASE_DATE}\n{A_BASE_DATE}"),
+        "the row's own premise: the revision the workspace was cut at carries a date \
+         in 2021, which no wall clock in this run will read"
+    );
+    assert_eq!(
+        world.github().date_of(&published),
+        format!("{A_BASE_DATE}\n{A_BASE_DATE}"),
+        "and the commit the run published carries that same 2021 committer and author \
+         date rather than the second the run fell in, which is why the two runs agree \
+         on a sha at all; a clock-dated commit cannot match this by coincidence"
     );
     assert_eq!(
         world.github().pull_requests().len(),
