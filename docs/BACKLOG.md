@@ -2166,3 +2166,27 @@ numbers before one of them was free.
 
 Origin: implementation (bean `fiddle-88n9`, measured 2026-09-02)
 Tags: #debt #process #docs
+
+### 2026-09-02 — a forge read that fails is still folded into an empty answer
+
+`CveMitigate::reviews` and `CveMitigate::conversation` in
+`crates/fiddle-runtime/src/capability/mitigate.rs` now refuse an absent forge, which
+`fiddle-lakx` fixed and ADR 084 records. They still map a failed read to an empty
+answer. `read_reviews` returning `Err` becomes `Ok((Vec::new(), Vec::new()))`, and
+`read_conversation` returning `Err` becomes `Ok(Vec::new())`.
+
+A forge that timed out, rate-limited the request or answered 5xx is therefore read as
+a pull request nobody reviewed and nobody commented on. The sweep proceeds on that
+reading: `answering` is false, so a review asking for changes is not answered, and
+`Followed::quoted` finds no sentence, so a comment that would have waived a check
+waives nothing. This is the same absent-versus-empty confusion one level out from the
+one that was fixed.
+
+`fiddle-lakx` did not change it, deliberately. Propagating the read error ends a whole
+sweep on a transient forge failure, where today the sweep runs and reads no direction.
+Which of the two is right is a decision about the sweep and not about the accessor, and
+it wants its own bean: the third option is a typed "read, and it failed" that the sweep
+can act on without ending, the way `Feedback::Unreadable` already does for checks.
+
+Origin: implementation (bean `fiddle-lakx`, read off the source 2026-09-02)
+Tags: #debt #runtime #cve

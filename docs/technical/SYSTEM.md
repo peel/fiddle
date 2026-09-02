@@ -58,7 +58,29 @@ id as far as the derivation and builds nothing from it.
 | `Retryable` | 11 | an obstacle in front of the request |
 | `Rejected` | 12 | a workflow whose evaluation step answered `Rejected`, which stops the run before its later steps |
 | `Failed` | 20 | a conclusion about the request (ADR 016) |
+| — | 11 | the toil gate could not read the ticket, before a run begins |
 | — | 2 | usage or invalid input, before a run begins |
+
+Two rows carry exit 11 and one of them belongs to no `RunOutcome`. The toil
+eligibility gate reads the ticket before a bundle exists, so a tracker that timed
+out, refused the credential or answered 5xx produces `CliError::TicketUnread` and
+never a `RunOutcome`. The reference parsed and the obstacle is in front of the
+request, which is row 11 and not row 2. Only a reference this build cannot parse or
+act on is row 2.
+
+MEASURED: `a_tracker_that_cannot_be_read_exits_on_the_obstacle_row_and_a_malformed_reference_does_not`
+in `crates/fiddle-acceptance/tests/toil.rs` drives both. A loopback tracker answering
+503 exits 11 after the run has read it, and `jira:` exits 2 without reaching the
+tracker at all, so a build that gives the two one code reds.
+`the_same_tracker_read_that_refuses_succeeds_when_the_site_answers` runs the same
+world with a tracker that answers, and it exits 0.
+
+ARGUED, read off the source: a 404 for an issue the site does not hold also reaches
+`TicketUnread` and also exits 11, although no retry corrects it. `WorkItemPort`
+answers `Observation::Unavailable { source, reason }`, whose reason is text, so the
+command line cannot read the typed `JiraError` behind it and cannot subdivide the
+row. Retrying a permanent 404 costs a caller bounded work; abandoning a transient
+503 loses the run.
 
 `CapabilityError::recurrence` picks the row per failure, delegating to
 `EffectError::recurrence`. Both match exhaustively with no wildcard. Ten failures
