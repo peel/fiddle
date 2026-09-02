@@ -417,10 +417,12 @@ where
         Ok(())
     }
 
-    fn record_change_set(&self, work_id: &str) -> Result<String, CapabilityError> {
-        let marker = correlation_key(self.executor.project(), self.executor.invocation_ref());
+    fn record_change_set(&self, work_id: &str) -> Result<(), CapabilityError> {
         let state = ChangeSetState {
-            marker: Some(marker.clone()),
+            marker: Some(correlation_key(
+                self.executor.project(),
+                self.executor.invocation_ref(),
+            )),
         };
         let destination = self.ports.stub_root.join(format!("changes/{work_id}.json"));
         super::stub::write_atomically(&destination, &state).map_err(|source| {
@@ -428,8 +430,7 @@ where
                 path: destination.clone(),
                 source,
             }
-        })?;
-        Ok(marker)
+        })
     }
 
     async fn effect(
