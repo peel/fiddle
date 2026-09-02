@@ -152,7 +152,7 @@ fn marking(after: &WorkStateView, expected_marker: &str) -> Published {
             ..
         } => format!(
             "the change set carries correlation marker {marker}, and this invocation \
-             expects {expected_marker}, so this run did not write it"
+             expects {expected_marker}, so the correlation post-condition is unsatisfied"
         ),
 
         Observation::Available {
@@ -512,7 +512,7 @@ mod tests {
         async fn execute(&self, _input: ExecutionInput<'_>) -> Result<Executed, CapabilityError> {
             std::fs::write(
                 self.root.join(format!("changes/{WORK_ID}.json")),
-                r#"{"marker":"a-marker-another-invocation-wrote"}"#,
+                r#"{"marker":"a-marker-from-another-invocation"}"#,
             )
             .unwrap();
             Ok(Executed::Earned(EvidenceRef("interloping".to_string())))
@@ -896,18 +896,29 @@ mod tests {
             summaries[1]
         );
         assert!(
-            summaries[2].contains("a-marker-another-invocation-wrote")
+            summaries[2].contains("a-marker-from-another-invocation")
                 && summaries[2].contains(&expected)
-                && summaries[2].contains("did not write it"),
-            "and a run that found another invocation's marker names both and claims \
-             neither: {}",
+                && summaries[2].contains("the correlation post-condition is unsatisfied"),
+            "and a run that found another invocation's marker names both and reports \
+             the mismatch: {}",
             summaries[2]
         );
+        let authorship = ["wrote", "write", "written", "authored"];
+        for claim in authorship {
+            assert!(
+                !summaries[2].contains(claim),
+                "the observation reads the change set after the run, so it can say which \
+                 marker is present and never who put it there; the fixture capability wrote \
+                 that marker during this very run, so both '{claim}' in the positive and in \
+                 the negative are unsupported: {}",
+                summaries[2]
+            );
+        }
         assert!(
             summaries[0].contains("wrote correlation marker")
-                && !summaries[1].contains("wrote correlation marker")
-                && !summaries[2].contains("wrote correlation marker"),
-            "so only the first of the three says a marker was written: {summaries:?}"
+                && !summaries[1].contains("wrote correlation marker"),
+            "so only the run that carries its own expected marker says a marker was \
+             written: {summaries:?}"
         );
     }
 
