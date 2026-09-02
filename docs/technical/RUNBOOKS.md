@@ -741,8 +741,10 @@ reaches the effect tail (ADR 083).
 
 Two consequences follow for a deployment. A `[stub] root` on a path that does
 not survive the run — a container layer, a temporary directory — forgets every
-completion, so the next run works the ticket again. And an operator who moves to
-a fresh checkout has no completions at all, whatever the tickets say.
+completion, so the next run works the ticket again. And where `[stub] root`
+points decides what a fresh checkout inherits: a root inside the working copy
+leaves its completions behind, and a root on an absolute path outside the
+checkout carries every one of them across.
 
 ## Record what the model was sent and what it returned
 
