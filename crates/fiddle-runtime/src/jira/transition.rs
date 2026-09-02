@@ -47,13 +47,44 @@ pub struct TransitionIssue {
     to: String,
 }
 
+fn from_a_step_alone(kind: &EffectName) -> EffectError {
+    EffectError::Unbuildable {
+        kind: kind.clone(),
+        reason: "a step names no issue key and no `fields.updated`, and this operation's \
+                 identity is built from both, so it is constructed from a read of the issue \
+                 and never from a step alone"
+            .to_string(),
+    }
+}
+
+fn reaching_nothing(kind: &EffectName) -> EffectError {
+    EffectError::Unbuildable {
+        kind: kind.clone(),
+        reason: "a step names no `reaching`, and this operation asks an issue for a state \
+                 rather than commanding a move, so the status this site calls the state is \
+                 named by the step and never guessed from a category"
+            .to_string(),
+    }
+}
+
 impl FromStepParams for TransitionIssue {
-    fn from_params(_executor: &Executor<'_>, _params: &StepParams) -> Result<Self, EffectError> {
-        Err(EffectError::Unbuildable {
-            kind: EffectName::shipped(JIRA_ISSUE_TRANSITIONED),
-            reason: "a step names no issue key, no observed revision and no state to reach, so \
-                     this operation is built from an observation and not resolved from a name"
-                .to_string(),
+    fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
+        let kind = EffectName::shipped(JIRA_ISSUE_TRANSITIONED);
+        let issue_key = params
+            .issue_key
+            .clone()
+            .ok_or_else(|| from_a_step_alone(&kind))?;
+        let issue_updated = params
+            .issue_updated
+            .clone()
+            .ok_or_else(|| from_a_step_alone(&kind))?;
+        let reaching = params
+            .reaching
+            .clone()
+            .ok_or_else(|| reaching_nothing(&kind))?;
+        Self::new(&issue_key, &issue_updated, &reaching).map_err(|source| EffectError::Adapter {
+            kind,
+            source: Box::new(source),
         })
     }
 }

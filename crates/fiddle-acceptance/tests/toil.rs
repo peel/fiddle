@@ -45,6 +45,14 @@ const MARKER: &str = "fiddle-effect:";
 
 const LINK_EFFECT: &str = "jira.pull_request_linked";
 
+const TRANSITION_EFFECT: &str = "jira.issue_transitioned";
+
+const READY: &str = "Ready";
+
+const IN_REVIEW: &str = "In Review";
+
+const A_ROUTE_TO_REVIEW: &str = "31";
+
 const PULL_REQUEST_EFFECT: &str = "ensure_pull_request";
 
 const BRANCH_EFFECT: &str = "ensure_branch_published";
@@ -66,6 +74,8 @@ struct Held {
     description: String,
     labels: Vec<String>,
     revisions: Vec<String>,
+    status: String,
+    offered: Vec<(String, String)>,
 }
 
 struct Recorded {
@@ -74,6 +84,7 @@ struct Recorded {
     comments: Vec<Posted>,
     issue_reads: usize,
     comments_refused: bool,
+    transitions: Vec<String>,
 }
 
 pub struct ToilJira {
@@ -91,6 +102,7 @@ impl ToilJira {
             comments: Vec::new(),
             issue_reads: 0,
             comments_refused: false,
+            transitions: Vec::new(),
         }));
         let serving = Arc::clone(&state);
         std::thread::spawn(move || {
@@ -122,7 +134,29 @@ impl ToilJira {
             description: DESCRIPTION.to_string(),
             labels: vec![TRIGGER_LABEL.to_string()],
             revisions: vec![REVISION_SENT.to_string()],
+            status: READY.to_string(),
+            offered: vec![(A_ROUTE_TO_REVIEW.to_string(), IN_REVIEW.to_string())],
         });
+    }
+
+    pub fn offers_no_route_to_in_review(&self) {
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("a ticket this site holds is what offers the routes")
+            .offered = vec![("41".to_string(), "Done".to_string())];
+    }
+
+    pub fn transition_requests(&self) -> usize {
+        self.held().transitions.len()
+    }
+
+    pub fn status_now(&self) -> String {
+        self.held()
+            .ticket
+            .as_ref()
+            .map(|ticket| ticket.status.clone())
+            .unwrap_or_default()
     }
 
     pub fn moves_after_it_is_qualified(&self) {
@@ -270,7 +304,39 @@ fn routed(line: &str, sent: &str, held: &mut Recorded) -> (u16, String) {
     let path = target.split('?').next().unwrap_or(target);
     let read = format!("/rest/api/3/issue/{TICKET}");
     let write = format!("/rest/api/3/issue/{TICKET}/comment");
+    let moves = format!("/rest/api/3/issue/{TICKET}/transitions");
     match (method, path) {
+        ("GET", path) if path == moves => match &held.ticket {
+            None => (404, unrouted()),
+            Some(ticket) => (200, offered_by(ticket)),
+        },
+        ("POST", path) if path == moves => {
+            held.transitions.push(sent.to_string());
+            let asked = serde_json::from_str::<serde_json::Value>(sent)
+                .ok()
+                .and_then(|body| body["transition"]["id"].as_str().map(str::to_string));
+            let leads_to = held
+                .ticket
+                .as_ref()
+                .zip(asked.as_ref())
+                .and_then(|(ticket, id)| {
+                    ticket
+                        .offered
+                        .iter()
+                        .find(|(offered, _)| offered == id)
+                        .map(|(_, leads_to)| leads_to.clone())
+                });
+            match leads_to {
+                None => (404, unrouted()),
+                Some(leads_to) => {
+                    held.ticket
+                        .as_mut()
+                        .expect("the route was found on a ticket this site holds")
+                        .status = leads_to;
+                    (204, String::new())
+                }
+            }
+        }
         ("GET", path) if path == read => {
             let asked = asked_for(target);
             let comments = std::mem::take(&mut held.comments);
@@ -303,6 +369,34 @@ fn routed(line: &str, sent: &str, held: &mut Recorded) -> (u16, String) {
         }
         _ => (404, unrouted()),
     }
+}
+
+fn offered_by(ticket: &Held) -> String {
+    let transitions: Vec<serde_json::Value> = ticket
+        .offered
+        .iter()
+        .map(|(id, leads_to)| {
+            serde_json::json!({
+                "id": id,
+                "name": format!("Move to {leads_to}"),
+                "to": named_status(leads_to),
+            })
+        })
+        .collect();
+    serde_json::json!({ "expand": "transitions", "transitions": transitions }).to_string()
+}
+
+fn named_status(name: &str) -> serde_json::Value {
+    let (id, category) = match name {
+        READY => ("10002", ("2", "new", "To Do")),
+        IN_REVIEW => ("10004", ("4", "indeterminate", "In Progress")),
+        _ => ("10005", ("3", "done", "Done")),
+    };
+    serde_json::json!({
+        "id": id,
+        "name": name,
+        "statusCategory": { "id": category.0, "key": category.1, "name": category.2 },
+    })
 }
 
 fn comment_refused() -> String {
@@ -364,14 +458,7 @@ fn issue_of(ticket: &Held, revision: &str, comments: &[Posted], asked: &[String]
             "issuetype",
             serde_json::json!({ "id": "10001", "name": ticket.issue_type }),
         ),
-        (
-            "status",
-            serde_json::json!({
-                "id": "10002",
-                "name": "Ready",
-                "statusCategory": { "id": 2, "key": "new", "name": "To Do" },
-            }),
-        ),
+        ("status", named_status(&ticket.status)),
         ("labels", serde_json::json!(ticket.labels)),
         (
             "description",
@@ -899,8 +986,13 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
             .iter()
             .map(|line| line.split(':').nth(1).unwrap_or_default().to_string())
             .collect::<Vec<String>>(),
-        vec![BRANCH_EFFECT, PULL_REQUEST_EFFECT, LINK_EFFECT],
-        "the three effect steps of the shipped document ran, in the order it names \
+        vec![
+            BRANCH_EFFECT,
+            PULL_REQUEST_EFFECT,
+            LINK_EFFECT,
+            TRANSITION_EFFECT
+        ],
+        "the four effect steps of the shipped document ran, in the order it names \
          them: {payload}"
     );
     assert_eq!(
@@ -1143,9 +1235,14 @@ fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_ta
             .iter()
             .map(|line| line.split(':').nth(1).unwrap_or_default().to_string())
             .collect::<Vec<String>>(),
-        vec![BRANCH_EFFECT, PULL_REQUEST_EFFECT, LINK_EFFECT],
-        "so it reached the pull request and the link rather than stopping at the \
-         branch step: {second}"
+        vec![
+            BRANCH_EFFECT,
+            PULL_REQUEST_EFFECT,
+            LINK_EFFECT,
+            TRANSITION_EFFECT
+        ],
+        "so it reached the pull request, the link and the transition rather than \
+         stopping at the branch step: {second}"
     );
     assert_eq!(
         external_ref_of(&effect_named(&second, BRANCH_EFFECT)),
@@ -1341,6 +1438,139 @@ fn a_ticket_without_the_trigger_label_opens_no_pull_request_and_writes_no_link()
 }
 
 #[test]
+fn an_eligible_ticket_reaches_in_review_and_a_ticket_the_gate_refuses_reaches_no_status() {
+    let opened = ToilWorld::start();
+    opened.jira().holds_eligible_ticket(TICKET);
+    assert_eq!(
+        opened.jira().status_now(),
+        READY,
+        "the row's own premise: the site holds the ticket in the status the run finds \
+         it in"
+    );
+
+    let payload = payload_of(&opened.run_toil(REFERENCE));
+
+    assert_eq!(
+        opened.github().pull_requests().len(),
+        1,
+        "the row's own premise: this run opened one pull request, which is what \
+         requirement 21 puts the transition after: {payload}"
+    );
+    assert_eq!(
+        opened.jira().transition_requests(),
+        1,
+        "exactly one transition reached the ticket, counted from the requests the \
+         tracker stub received: {:?}",
+        opened.jira().request_lines()
+    );
+    assert_eq!(
+        opened.jira().status_now(),
+        IN_REVIEW,
+        "and the ticket the site holds is In Review, so the count above is a write \
+         that landed: {payload}"
+    );
+    assert_eq!(
+        payload
+            .pointer("/observations/work_item/available/value/status")
+            .and_then(|status| status.as_str()),
+        Some(IN_REVIEW),
+        "and the run's own post-execution read of the ticket sees the status it set, \
+         rather than the one it was qualified at: {payload}"
+    );
+
+    let refused = ToilWorld::start();
+    refused
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+
+    let stderr = String::from_utf8_lossy(&refused.run_toil(REFERENCE).stderr).to_string();
+
+    assert!(
+        refused.github().pull_requests().is_empty(),
+        "the row's own premise: a ticket the gate refuses opens no pull request: \
+         {stderr}"
+    );
+    assert_eq!(
+        refused.jira().transition_requests(),
+        0,
+        "a run that opened no pull request sent no transition, so the one counted \
+         above is not a step that fires whatever the run did: {:?}",
+        refused.jira().request_lines()
+    );
+    assert_eq!(
+        refused.jira().status_now(),
+        READY,
+        "and the ticket is in the status the run found it in: {stderr}"
+    );
+}
+
+#[test]
+fn a_site_that_offers_no_route_to_in_review_fails_the_run_and_records_no_completion() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+    world.jira().offers_no_route_to_in_review();
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the pull request was opened before the transition was \
+         tried: {payload}"
+    );
+    assert_eq!(
+        world.jira().links_for(TICKET).len(),
+        1,
+        "and the row's own premise: it was linked onto the ticket: {:?}",
+        world.jira().request_lines()
+    );
+
+    let stopped = payload["outcome"]["retryable"]["reason"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "a document runs to an end or it fails, and a run that left the ticket \
+                 behind reports where it stopped rather than a completion: {payload}"
+            )
+        });
+    assert!(
+        stopped.contains(TRANSITION_EFFECT) && stopped.contains(IN_REVIEW),
+        "the reason names the step that could not be taken and the state it asked \
+         for: {stopped}"
+    );
+    assert!(
+        stopped.contains("41 to `Done`"),
+        "and it names what this site's workflow does offer, so an operator is told \
+         what to change rather than that something went wrong: {stopped}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(11),
+        "so the run reports a state to return to and not success; 0 would be a \
+         completion that left the ticket in the status it started in: {payload}"
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "and it recorded no correlation marker, so a rerun works the ticket again \
+         rather than reading this run as done: {payload}"
+    );
+    assert_eq!(
+        world.jira().transition_requests(),
+        0,
+        "the route was resolved before the write, so the refusal sent nothing to the \
+         site: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.jira().status_now(),
+        READY,
+        "and the ticket is in the status the run found it in: {payload}"
+    );
+}
+
+#[test]
 fn a_ticket_that_moves_after_it_is_qualified_opens_no_pull_request() {
     let world = ToilWorld::start();
     world.jira().holds_eligible_ticket(TICKET);
@@ -1419,8 +1649,13 @@ fn a_rerun_whose_branch_is_gone_finds_its_own_pull_request_and_its_own_link() {
             .iter()
             .map(|line| line.split(':').nth(1).unwrap_or_default().to_string())
             .collect::<Vec<String>>(),
-        vec![BRANCH_EFFECT, PULL_REQUEST_EFFECT, LINK_EFFECT],
-        "and it ran all three effect steps a second time, so what follows is what \
+        vec![
+            BRANCH_EFFECT,
+            PULL_REQUEST_EFFECT,
+            LINK_EFFECT,
+            TRANSITION_EFFECT
+        ],
+        "and it ran all four effect steps a second time, so what follows is what \
          those steps did and not a run that stopped short: {second}"
     );
 
