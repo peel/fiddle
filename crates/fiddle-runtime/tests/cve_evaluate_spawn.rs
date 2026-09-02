@@ -226,7 +226,14 @@ async fn a_check_runs_inside_the_tree_under_judgement() {
         })
         .collect();
     names.sort();
-    let allowed = ["HOME", "LANG", "PATH", "RUSTUP_HOME"];
+    let allowed = [
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_DATE",
+        "HOME",
+        "LANG",
+        "PATH",
+        "RUSTUP_HOME",
+    ];
     assert!(
         names.iter().all(|name| allowed.contains(&name.as_str())),
         "a check child saw a name outside the workspace allowlist: {names:?}"
