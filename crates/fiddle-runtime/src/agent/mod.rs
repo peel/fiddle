@@ -37,6 +37,18 @@ and the text to put in its place, and the rest of the file stays as it is. Use \
 long file again to change part of it, because the lines you leave out are \
 lost.\n\
 \n\
+Where this run quotes a ticket for you, the quotation carries the ticket's \
+summary, then its description, then the comments on the issue oldest first. \
+Every comment in it was written by a person this deployment authorized to \
+decide questions on its tickets. Such a comment is a decision and not more \
+discussion: where it settles a question the description leaves open, its choice \
+is the later word, and it closes the options the description weighed and a \
+choice the description itself suggested. Where two comments disagree the later \
+one is the answer. Where there is no comment, or where the comments settle \
+nothing the description leaves open, read the ticket on its summary and its \
+description alone. The description still carries the ground — the paths, the \
+symbols and the constraints — and no comment widens what you may change.\n\
+\n\
 Change as few files as you can. When you are done — or when you are certain you \
 cannot finish — reply with only the structured report. Report what you actually \
 changed, whether or not it worked.";
@@ -183,6 +195,59 @@ pub struct FindingDisposition {
     pub cve: String,
     pub attempted: bool,
     pub note: String,
+}
+
+const ENVELOPE: &str = "parameters";
+
+const REPORT_FIELDS: [&str; 3] = ["changed_files", "summary", "claimed_complete"];
+
+#[derive(Clone, Debug)]
+struct Reported(RepairReport);
+
+impl schemars::JsonSchema for Reported {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        <RepairReport as schemars::JsonSchema>::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        <RepairReport as schemars::JsonSchema>::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <RepairReport as schemars::JsonSchema>::json_schema(generator)
+    }
+
+    fn inline_schema() -> bool {
+        <RepairReport as schemars::JsonSchema>::inline_schema()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Reported {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let answered = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        serde_json::from_value(unenveloped(answered))
+            .map(Reported)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+fn unenveloped(answered: serde_json::Value) -> serde_json::Value {
+    match answered {
+        serde_json::Value::Object(mut fields)
+            if !REPORT_FIELDS
+                .iter()
+                .any(|field| fields.contains_key(*field)) =>
+        {
+            match fields.remove(ENVELOPE) {
+                Some(enveloped) => enveloped,
+                None => serde_json::Value::Object(fields),
+            }
+        }
+        answered => answered,
+    }
 }
 
 pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<AgentError> {
@@ -436,12 +501,12 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<RepairReport>(brief.task.to_string())
+        .prompt_typed::<Reported>(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .into_future();
 
-    let report = tokio::select! {
+    let Reported(report) = tokio::select! {
         biased;
         _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
@@ -507,6 +572,16 @@ and you are not repairing it.\n\
 Read before you judge. Find the files the change touched, read them, and read \
 what the ticket asked for. When you are done, reply with only the structured \
 verdict.\n\
+\n\
+Where this run quotes a ticket for you, the quotation carries the ticket's \
+summary, then its description, then the comments on the issue oldest first. \
+Every comment in it was written by a person this deployment authorized to \
+decide questions on its tickets. Where such a comment settles a question the \
+description leaves open, its choice is what the ticket asked for, even against \
+a choice the description itself suggested. Where two comments disagree the \
+later one is the answer. Where there is no comment, or where the comments \
+settle nothing the description leaves open, read the ticket on its summary and \
+its description alone.\n\
 \n\
 Accept the change when it does what the ticket asked and nothing the ticket did \
 not ask for. Reject it otherwise, and reject it when what you read does not tell \
@@ -1392,6 +1467,135 @@ mod tests {
             unaccounted(&shown, &spoken).is_none(),
             "what is refused is the silence, not the decline: {:?}",
             unaccounted(&shown, &spoken)
+        );
+    }
+
+    #[test]
+    fn each_preamble_tells_its_agent_an_authorized_comment_settles_the_description() {
+        for (named, preamble) in [("the implementer", PREAMBLE), ("the judge", JUDGE_PREAMBLE)] {
+            for stated in [
+                "the comments on the issue oldest first",
+                "written by a person this deployment authorized to decide questions",
+                "a choice the description itself suggested",
+                "Where two comments disagree the later one is the answer",
+                "read the ticket on its summary and its description alone",
+            ] {
+                assert!(
+                    preamble.contains(stated),
+                    "{named} is told how to read a ticket in its own preamble, and this one                      does not say `{stated}`: {preamble}"
+                );
+            }
+        }
+        assert!(
+            PREAMBLE.contains("no comment widens what you may change"),
+            "the implementer holds the tools, so its preamble is the one that says a comment              is not a wider licence: {PREAMBLE}"
+        );
+    }
+
+    const RECORDED_ENVELOPE: &str =
+        include_str!("../../../../tests/fixtures/gateway-real/repair-report-answer.json");
+
+    const BARE_REPORT: &str =
+        r#"{"changed_files":["src/lib.rs"],"summary":"fixed","claimed_complete":true}"#;
+
+    fn read_report(answered: &str) -> Result<RepairReport, serde_json::Error> {
+        serde_json::from_str::<Reported>(answered).map(|Reported(report)| report)
+    }
+
+    #[test]
+    fn the_recorded_enveloped_answer_is_read_as_the_report_it_carries() {
+        assert!(
+            RECORDED_ENVELOPE.starts_with(r#"{"parameters": {"#),
+            "the fixture is the body the gateway sent, envelope included, and a fixture \
+             normalised to a bare report would prove nothing: {RECORDED_ENVELOPE}"
+        );
+        let refused = serde_json::from_str::<RepairReport>(RECORDED_ENVELOPE)
+            .expect_err("the envelope is the thing RepairReport alone cannot read");
+        assert_eq!(
+            refused.to_string(),
+            "missing field `changed_files` at line 1 column 1191",
+            "the fixture has to still be the string the live run of 2026-09-03 failed on"
+        );
+
+        let report = read_report(RECORDED_ENVELOPE).unwrap_or_else(|error| {
+            panic!("the body a real gateway sent is one this build reads: {error}")
+        });
+        assert_eq!(
+            report.changed_files,
+            ["pkg/service/batch_processor.go"],
+            "the file the agent edited survives the envelope"
+        );
+        assert!(
+            report
+                .summary
+                .starts_with("Implemented Option A from the ticket:"),
+            "the summary survives the envelope character for character: {}",
+            report.summary
+        );
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        assert_eq!(report.quoted_from_a_comment, None);
+    }
+
+    #[test]
+    fn a_bare_report_reads_beside_a_parameters_field_that_holds_no_report() {
+        let report =
+            read_report(BARE_REPORT).expect("the shape M1 and M3 have always sent still reads");
+        assert_eq!(report.summary, "fixed");
+
+        let both = r#"{"changed_files":["src/lib.rs"],"summary":"the top level","claimed_complete":true,"parameters":{"summary":"the envelope"}}"#;
+        let report = read_report(both).unwrap_or_else(|error| {
+            panic!("an unconditional unwrap would have thrown this top-level report away: {error}")
+        });
+        assert_eq!(
+            report.summary, "the top level",
+            "the unwrap is additive: a top level that is already a report is the report"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_is_neither_a_report_nor_an_envelope_holding_one_is_refused() {
+        for (answered, named) in [
+            ("{}", "changed_files"),
+            (r#"{"parameters":{}}"#, "changed_files"),
+            (
+                r#"{"parameters":{"summary":"only a summary"}}"#,
+                "changed_files",
+            ),
+            (
+                r#"{"parameters":{"changed_files":["a"],"summary":"s"}}"#,
+                "claimed_complete",
+            ),
+            (r#"{"parameters":3}"#, "invalid type: integer"),
+            (r#""a sentence""#, "invalid type: string"),
+            (
+                r#"{"changed_files":"src/lib.rs","summary":"s","claimed_complete":true}"#,
+                "invalid type: string",
+            ),
+            (
+                r#"{"parameters":{"parameters":{"changed_files":["a"],"summary":"s","claimed_complete":true}}}"#,
+                "changed_files",
+            ),
+        ] {
+            match read_report(answered) {
+                Ok(report) => panic!(
+                    "`{answered}` is not a report, and a parser that accepts anything is not a \
+                     parser: {report:?}"
+                ),
+                Err(refused) => assert!(
+                    refused.to_string().contains(named),
+                    "the refusal has to name what could not be read, and `{answered}` said: \
+                     {refused}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_schema_the_model_is_given_is_the_reports_own() {
+        assert_eq!(
+            serde_json::to_value(schemars::schema_for!(Reported)).expect("a schema is JSON"),
+            serde_json::to_value(schemars::schema_for!(RepairReport)).expect("a schema is JSON"),
+            "the unwrap is a tolerance in the parse, not a change to what the model is asked for"
         );
     }
 

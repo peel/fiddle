@@ -2,7 +2,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use support::{Scenario, StubGateway};
+use support::{Answering, Scenario, StubGateway};
 
 const TICKET: &str = "ISP-42";
 
@@ -73,6 +73,15 @@ const THE_OPEN_QUESTION: &str =
     "Keep the old helper beside the new one, or remove it? Either is defensible.";
 
 const THE_DECISION: &str = "Remove it. Nothing calls the old helper any more.";
+
+const THE_SUGGESTION: &str =
+    "Suggested: keep the old helper beside the new one, and remove it later if nothing calls it.";
+
+const THE_COMMENTS_CHOICE: &str = "pub fn last_index(len: usize) -> usize { len - 1 }\n";
+
+const THE_DESCRIPTIONS_CHOICE: &str = "pub fn last_index(len: usize) -> usize { len - 1 }\n\
+                                       pub fn deprecated_last(len: usize) -> usize { \
+                                       last_index(len) }\n";
 
 struct Posted {
     issue: String,
@@ -161,6 +170,15 @@ impl ToilJira {
             .as_mut()
             .expect("the ticket was just written")
             .description = format!("{DESCRIPTION} {THE_OPEN_QUESTION}");
+    }
+
+    pub fn holds_a_ticket_whose_description_suggests_keeping_the_helper(&self, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("the ticket was just written")
+            .description = format!("{DESCRIPTION} {THE_OPEN_QUESTION} {THE_SUGGESTION}");
     }
 
     pub fn is_commented_on_by(&self, author: &str) {
@@ -699,6 +717,35 @@ fn a_review_that_reads_the_decision_a_comment_made() -> support::Reply {
     })))
 }
 
+fn a_change_the_ticket_chooses() -> Vec<Answering> {
+    vec![
+        support::on_reading(
+            THE_DECISION,
+            a_review_that_reads_the_decision_a_comment_made(),
+            a_review_that_reads_a_change(),
+        ),
+        support::on_reading(
+            THE_DECISION,
+            support::accepted(support::calls(
+                "write_file",
+                serde_json::json!({ "path": "src/lib.rs", "contents": THE_COMMENTS_CHOICE }),
+            )),
+            support::accepted(support::calls(
+                "write_file",
+                serde_json::json!({ "path": "src/lib.rs", "contents": THE_DESCRIPTIONS_CHOICE }),
+            )),
+        ),
+        Answering::Always(support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "made the change the ticket decided on",
+            "claimed_complete": true,
+        })))),
+        Answering::Always(support::accepted(support::reports(serde_json::json!({
+            "verdict": "accepted",
+        })))),
+    ]
+}
+
 fn an_accepted_change() -> Vec<support::Reply> {
     an_accepted_change_writing(REPAIRED)
 }
@@ -748,6 +795,10 @@ impl ToilWorld {
         )
     }
 
+    pub fn start_letting_the_ticket_choose_the_change() -> Self {
+        ToilWorld::built(a_change_the_ticket_chooses(), true)
+    }
+
     pub fn start_reviewing_once() -> Self {
         ToilWorld::serving(vec![a_review_that_reads_the_decision_a_comment_made()])
     }
@@ -761,14 +812,14 @@ impl ToilWorld {
     }
 
     pub fn start_on_a_deployment_that_configured_no_model() -> Self {
-        ToilWorld::built(an_accepted_change(), false)
+        ToilWorld::built(support::always(an_accepted_change()), false)
     }
 
     fn serving(script: Vec<support::Reply>) -> Self {
-        ToilWorld::built(script, true)
+        ToilWorld::built(support::always(script), true)
     }
 
-    fn built(script: Vec<support::Reply>, with_an_agent_table: bool) -> Self {
+    fn built(script: Vec<Answering>, with_an_agent_table: bool) -> Self {
         let scenario = Scenario::new();
         let fixture = scenario.write_fixture_repo();
 
@@ -787,7 +838,7 @@ impl ToilWorld {
         ship_the_workflow(scenario.dir());
 
         let jira = ToilJira::start();
-        let gateway = StubGateway::serving(script);
+        let gateway = StubGateway::deciding(script);
         let world = ToilWorld {
             forge: ToilForge {
                 stub: stub.clone(),
@@ -1170,6 +1221,71 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
          comment it had already posted and once to settle the one it posted, so a \
          prior link would have been found by the first of those reads: {:?}",
         world.jira().request_lines()
+    );
+}
+
+#[test]
+fn an_authorized_comment_directs_the_change_and_without_one_the_description_directs_it() {
+    let decided = ToilWorld::start_letting_the_ticket_choose_the_change();
+    decided.authorizes_the_account(OPERATOR_ACCOUNT);
+    decided
+        .jira()
+        .holds_a_ticket_whose_description_suggests_keeping_the_helper(TICKET);
+    decided.jira().is_commented_on_by(OPERATOR_ACCOUNT);
+
+    let run = decided.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the ticket suggests one option, an authorized comment chooses the other, and the \
+         run takes it on: {payload}"
+    );
+    let branch = decided.github().only_branch();
+    assert_eq!(
+        decided
+            .github()
+            .file_at(&decided.github().head_of(&branch), "src/lib.rs"),
+        THE_COMMENTS_CHOICE.trim_end(),
+        "the change that reached the forge is the one the comment chose, not the one the \
+         description suggested: {payload}"
+    );
+    let asked = decided.model_prompts();
+    assert!(
+        asked[1].contains(THE_DECISION),
+        "the second model call is the implementer, and the comment reached it, which is why \
+         it could choose: {}",
+        asked[1]
+    );
+
+    let undecided = ToilWorld::start_letting_the_ticket_choose_the_change();
+    undecided.authorizes_the_account(OPERATOR_ACCOUNT);
+    undecided
+        .jira()
+        .holds_a_ticket_whose_description_suggests_keeping_the_helper(TICKET);
+
+    let alone = undecided.run_toil(REFERENCE);
+    let told = payload_of(&alone);
+    assert_eq!(
+        alone.status.code(),
+        Some(0),
+        "the same ticket with nobody commenting on it is eligible on its description \
+         alone: {told}"
+    );
+    let branch = undecided.github().only_branch();
+    assert_eq!(
+        undecided
+            .github()
+            .file_at(&undecided.github().head_of(&branch), "src/lib.rs"),
+        THE_DESCRIPTIONS_CHOICE.trim_end(),
+        "and the change that reached the forge is the one the description suggested, so \
+         the row above is the comment directing it and not this build writing one thing \
+         whatever it reads: {told}"
+    );
+    assert!(
+        !undecided.model_prompts()[1].contains(THE_DECISION),
+        "no comment was written, so no decision reached the implementer: {}",
+        undecided.model_prompts()[1]
     );
 }
 

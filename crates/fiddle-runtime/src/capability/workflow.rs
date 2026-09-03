@@ -200,16 +200,21 @@ fn task_in(prompt: &Path, prompts: &Path) -> Result<String, WorkflowRefusal> {
     }
 }
 
-fn quoted_ticket(work_item: Option<&WorkItemState>) -> Option<String> {
-    let work_item = work_item?;
-    let text = crate::toil::ticket_text(
-        work_item.summary.as_deref().unwrap_or_default(),
-        work_item.description.as_deref(),
-        &[],
-    );
-    match text.is_empty() {
+fn quoted_ticket(admitted: Option<&Eligible>, work_item: Option<&WorkItemState>) -> Option<String> {
+    let quoted = match admitted {
+        Some(admitted) => admitted.quoted.clone(),
+        None => {
+            let work_item = work_item?;
+            Quoted::of(&crate::toil::ticket_text(
+                work_item.summary.as_deref().unwrap_or_default(),
+                work_item.description.as_deref(),
+                &[],
+            ))
+        }
+    };
+    match quoted.text().is_empty() {
         true => None,
-        false => Some(Quoted::of(&text).fenced()),
+        false => Some(quoted.fenced()),
     }
 }
 
@@ -503,7 +508,7 @@ where
                 asked: invocation_ref.to_string(),
             });
         }
-        let quoted = quoted_ticket(work_item);
+        let quoted = quoted_ticket(self.qualification.as_ref(), work_item);
         let mut params = StepParams {
             earned: StepOutputs::default(),
             ..self.params.clone()

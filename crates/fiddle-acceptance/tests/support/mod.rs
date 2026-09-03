@@ -758,6 +758,43 @@ pub fn refused(status: u16, phrase: &'static str, body: serde_json::Value) -> Re
     }
 }
 
+pub enum Answering {
+    Always(Reply),
+    OnReading {
+        needle: String,
+        present: Reply,
+        absent: Reply,
+    },
+}
+
+impl Answering {
+    fn reply_for(&self, received: &[u8]) -> &Reply {
+        match self {
+            Answering::Always(reply) => reply,
+            Answering::OnReading {
+                needle,
+                present,
+                absent,
+            } => match String::from_utf8_lossy(received).contains(needle.as_str()) {
+                true => present,
+                false => absent,
+            },
+        }
+    }
+}
+
+pub fn always(script: Vec<Reply>) -> Vec<Answering> {
+    script.into_iter().map(Answering::Always).collect()
+}
+
+pub fn on_reading(needle: &str, present: Reply, absent: Reply) -> Answering {
+    Answering::OnReading {
+        needle: needle.to_string(),
+        present,
+        absent,
+    }
+}
+
 pub struct StubGateway {
     port: u16,
     served: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -766,6 +803,10 @@ pub struct StubGateway {
 
 impl StubGateway {
     pub fn serving(script: Vec<Reply>) -> Self {
+        StubGateway::deciding(script.into_iter().map(Answering::Always).collect())
+    }
+
+    pub fn deciding(script: Vec<Answering>) -> Self {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
 
@@ -776,11 +817,11 @@ impl StubGateway {
         let bodies = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&bodies);
         std::thread::spawn(move || {
-            for reply in script {
+            for answering in script {
                 let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
-                let Ok(body) = answer(stream, &reply) else {
+                let Ok(body) = answer(stream, &answering) else {
                     return;
                 };
                 recorder
@@ -813,7 +854,7 @@ impl StubGateway {
     }
 }
 
-fn answer(mut stream: std::net::TcpStream, reply: &Reply) -> std::io::Result<Vec<u8>> {
+fn answer(mut stream: std::net::TcpStream, answering: &Answering) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Write};
 
     let mut request = Vec::new();
@@ -840,6 +881,7 @@ fn answer(mut stream: std::net::TcpStream, reply: &Reply) -> std::io::Result<Vec
     }
     let received = request[head..].to_vec();
 
+    let reply = answering.reply_for(&received);
     let body = reply.body.to_string();
     stream.write_all(
         format!(

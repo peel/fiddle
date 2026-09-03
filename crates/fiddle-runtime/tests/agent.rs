@@ -12,6 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 const REPAIRED: &str = "pub fn f() -> u8 { 1 }\n";
 
+const RECORDED_ENVELOPE: &str =
+    include_str!("../../../tests/fixtures/gateway-real/repair-report-answer.json");
+
 fn test_host() -> (ToolHost, tempfile::TempDir) {
     test_host_declaring(Vec::new())
 }
@@ -203,6 +206,38 @@ async fn an_ignore_rule_the_model_wrote_cannot_lift_the_changed_file_cap() {
         4,
         "the ignore rule and the three files it was written to hide"
     );
+}
+
+#[tokio::test]
+async fn the_report_a_real_gateway_enveloped_completes_the_attempt() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([MockTurn::text(RECORDED_ENVELOPE)]);
+
+    let report = attempt(model, &redaction(), host, budget(), Direction::Fresh, None)
+        .await
+        .expect("the report of 2026-09-03, envelope and all, is one this build reads");
+
+    assert_eq!(
+        report.changed_files,
+        ["pkg/service/batch_processor.go"],
+        "the whole attempt, and not only the parse, has to carry the enveloped report through"
+    );
+    assert!(
+        report.claimed_complete,
+        "and the completion that report claimed survives the envelope. This lane is where \
+         the recorded value is read, because `nothing_in_this_workspace_decides_on_claimed_complete` \
+         refuses every read of the field under `src` that is not a plain recording, and an \
+         assertion is not one"
+    );
+    assert!(
+        report
+            .summary
+            .starts_with("Implemented Option A from the ticket:"),
+        "and so does the summary: {}",
+        report.summary
+    );
+    assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+    assert_eq!(report.quoted_from_a_comment, None);
 }
 
 #[tokio::test]

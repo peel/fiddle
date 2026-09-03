@@ -1,9 +1,10 @@
 mod fixture;
 mod support;
 
+use async_trait::async_trait;
 use fiddle_core::{
     AttemptId, DeploymentRule, EffectId, EffectName, EvidenceRef, HumanDecisionRequirement,
-    NextAction, PayloadHash, Published, WorkItemState, ENSURE_BRANCH_PUBLISHED,
+    NextAction, PayloadHash, Published, WorkItemComment, WorkItemState, ENSURE_BRANCH_PUBLISHED,
     ENSURE_PULL_REQUEST, ENSURE_PULL_REQUEST_READY, JIRA_PULL_REQUEST_LINKED, STUB_MARK, TOIL,
 };
 use fiddle_runtime::agent::{AgentBudget, ToolHost, ToolReceipts, Verdict};
@@ -17,7 +18,14 @@ use fiddle_runtime::effect::{
     registry, EffectContext, EffectError, EffectOutcome, EffectTrace, ErasedReceipt, ExecutionStep,
     Executor, OutputRefusal, ReadRetry, Recurrence, StepOutputs, StepParams,
 };
+use fiddle_runtime::human::validate::Decider;
+use fiddle_runtime::jira::comment::{marked_body, marker_for};
+use fiddle_runtime::jira::conversation::written;
 use fiddle_runtime::ports::ChangePort;
+use fiddle_runtime::toil::{
+    qualify, AmbiguityReview, Eligibility, Eligible, Judgement, Quoted, ReviewError, TicketFacts,
+    Verdict as Reviewed,
+};
 use fiddle_runtime::workspace::{Workspace, WorkspaceCommand};
 use fiddle_runtime::{GhCli, GhError, Redaction};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
@@ -2671,5 +2679,273 @@ async fn a_run_starts_holding_nothing_earned_though_the_step_parameters_carry_a_
         format!("{refusal}")
             .contains("no step before this one in this run committed the workspace"),
         "got {refusal}"
+    );
+}
+
+const OPERATOR: &str = "70121:11111111-2222-3333-4444-555555555555";
+
+const A_STRANGER: &str = "70121:99999999-8888-7777-6666-555555555555";
+
+const TICKET_KEY: &str = "ISP-263";
+
+const TRIGGER_LABEL: &str = "toil";
+
+const TRIAGE_HEADING: &str = "Triage this project.";
+
+const THE_SUGGESTION: &str =
+    "Suggested: A as the immediate fix, B as a follow-up if a true interval max is wanted.";
+
+const THE_DECISION: &str = "Option B. More-reliable long-term. The bare metrics should be still \
+                            type-compatible as described.";
+
+const WHAT_A_STRANGER_SAID: &str = "Option A. I would not rename anything here.";
+
+const WHAT_FIDDLE_WROTE: &str =
+    "fiddle opened a pull request for this ticket, and Option A is the change it made.";
+
+fn said_by(author: &str, text: &str) -> WorkItemComment {
+    WorkItemComment {
+        author: author.to_string(),
+        text: text.to_string(),
+    }
+}
+
+fn as_fiddle_publishes_it(text: &str) -> WorkItemComment {
+    let effect = fiddle_core::effect_id(
+        REPO,
+        &format!("jira:{TICKET_KEY}"),
+        fiddle_core::JIRA_COMMENT_ADDED,
+        &format!("{TICKET_KEY}@{AT_SEVEN}"),
+    );
+    said_by(
+        OPERATOR,
+        &written(&marked_body(text, &marker_for(&effect))["body"]),
+    )
+}
+
+fn a_ticket_suggesting_a(conversation: Vec<WorkItemComment>) -> TicketFacts {
+    TicketFacts {
+        id: TICKET_KEY.into(),
+        revision: Some(AT_SEVEN.into()),
+        issue_type: "Task".into(),
+        labels: Some(vec![TRIGGER_LABEL.into()]),
+        repository: Some(REPO.into()),
+        summary: "merge_graph_size_max always reports 0, hiding merge cap saturation".into(),
+        description: Some(format!(
+            "**Option A, no downstream risk.** Guard the report site so merge-less batches \
+             stop clobbering the value.\n\n\
+             **Option B, correct but involves a rename.** Emit as a sample rather than a \
+             gauge.\n\n\
+             {THE_SUGGESTION}"
+        )),
+        comments: match conversation.is_empty() {
+            true => None,
+            false => Some(conversation),
+        },
+    }
+}
+
+fn observed_without_the_conversation(ticket: &TicketFacts) -> WorkItemState {
+    WorkItemState {
+        summary: Some(ticket.summary.clone()),
+        description: ticket.description.clone(),
+        comments: None,
+        ..observed_issue()
+    }
+}
+
+fn bounds_authorizing(authorized: Vec<Decider>) -> Eligibility {
+    Eligibility {
+        trigger_label: TRIGGER_LABEL.into(),
+        worked_issue_types: vec!["Task".into()],
+        bounded_repositories: vec![REPO.into()],
+        shortest_description: 20,
+        authorized_commenters: authorized,
+    }
+}
+
+fn bounds_authorizing_the_operator() -> Eligibility {
+    bounds_authorizing(vec![Decider::JiraAccount(OPERATOR.into())])
+}
+
+struct ReadsWhatItIsGiven {
+    saw: Mutex<Vec<Quoted>>,
+}
+
+impl ReadsWhatItIsGiven {
+    fn new() -> Self {
+        Self {
+            saw: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn read_once(&self) -> Quoted {
+        let saw = self.saw.lock().unwrap();
+        assert_eq!(
+            saw.len(),
+            1,
+            "one qualification asks the review once, and this one asked it {} times",
+            saw.len()
+        );
+        saw[0].clone()
+    }
+}
+
+#[async_trait]
+impl AmbiguityReview for ReadsWhatItIsGiven {
+    async fn review(&self, quoted: &Quoted) -> Result<Judgement, ReviewError> {
+        self.saw
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(quoted.clone());
+        let quoting = match quoted.text().contains(THE_DECISION) {
+            true => THE_DECISION,
+            false => THE_SUGGESTION,
+        };
+        Ok(Judgement {
+            verdict: Reviewed::AsksForAChange,
+            quoting: quoting.to_string(),
+            certainty: 0.9,
+        })
+    }
+}
+
+async fn admitted_by_the_gate(
+    ticket: &TicketFacts,
+    bounds: &Eligibility,
+    review: &ReadsWhatItIsGiven,
+) -> Eligible {
+    let qualification = qualify(ticket, bounds, review).await;
+    qualification
+        .eligible()
+        .unwrap_or_else(|| {
+            panic!("this ticket holds the deterministic rules and the review admits it: {qualification:?}")
+        })
+        .clone()
+}
+
+async fn concluded_qualified(
+    world: &World,
+    steps: Vec<Step>,
+    model: MockCompletionModel,
+    observed: Option<&WorkItemState>,
+    admitted: Eligible,
+) -> Executed {
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        workflow(steps),
+        executor(world, &ctx, &deployment),
+        params(),
+        world.ports(model),
+    )
+    .expect("a workflow this build can run")
+    .qualified_by(admitted);
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            observed,
+        ))
+        .await
+        .expect("a workflow that ran to an end")
+}
+
+fn the_ticket_one_step_was_quoted(model: &MockCompletionModel) -> String {
+    let requests = what_each_request_carried(model);
+    assert!(
+        !requests.is_empty(),
+        "no request reached the model, so the text below is the text of nothing"
+    );
+    let tasks = carrying(TRIAGE_HEADING, &requests[0]);
+    assert_eq!(
+        tasks.len(),
+        1,
+        "one of the texts this step was sent is its task, and {} of them name the prompt's \
+         own heading: {:?}",
+        tasks.len(),
+        requests[0]
+    );
+    quotation_in(tasks[0]).inside
+}
+
+#[tokio::test]
+async fn the_gate_and_the_implementer_read_one_text() {
+    let ticket = a_ticket_suggesting_a(vec![said_by(OPERATOR, THE_DECISION)]);
+    let review = ReadsWhatItIsGiven::new();
+    let admitted = admitted_by_the_gate(&ticket, &bounds_authorizing_the_operator(), &review).await;
+    let read_by_the_gate = review.read_once();
+
+    let world = world();
+    let told = reporting();
+    concluded_qualified(
+        &world,
+        vec![agent_step()],
+        told.clone(),
+        Some(&observed_without_the_conversation(&ticket)),
+        admitted,
+    )
+    .await;
+    let read_by_the_implementer = the_ticket_one_step_was_quoted(&told);
+
+    assert_eq!(
+        read_by_the_implementer,
+        read_by_the_gate.text(),
+        "one run reads one ticket: the text the ambiguity review was given is the text the \
+         implementer is given, character for character"
+    );
+    assert!(
+        read_by_the_implementer.contains(THE_DECISION),
+        "and the observation this run carried holds no comment, so the decision reached the \
+         implementer from the gate's own text and from nowhere else: \
+         {read_by_the_implementer}"
+    );
+}
+
+#[tokio::test]
+async fn no_comment_the_gate_excludes_reaches_the_implementer() {
+    let ticket = a_ticket_suggesting_a(vec![
+        as_fiddle_publishes_it(WHAT_FIDDLE_WROTE),
+        said_by(A_STRANGER, WHAT_A_STRANGER_SAID),
+        said_by(OPERATOR, THE_DECISION),
+    ]);
+    let review = ReadsWhatItIsGiven::new();
+    let admitted = admitted_by_the_gate(&ticket, &bounds_authorizing_the_operator(), &review).await;
+    let read_by_the_gate = review.read_once();
+
+    let world = world();
+    let told = reporting();
+    concluded_qualified(
+        &world,
+        vec![agent_step()],
+        told.clone(),
+        Some(&observed_without_the_conversation(&ticket)),
+        admitted,
+    )
+    .await;
+    let read_by_the_implementer = the_ticket_one_step_was_quoted(&told);
+
+    assert_eq!(
+        read_by_the_implementer,
+        read_by_the_gate.text(),
+        "the wider surface admits the same set as the gate and not a wider one"
+    );
+    assert!(
+        read_by_the_implementer.contains(THE_DECISION),
+        "the one authorized person's own word reaches the implementer, or these exclusions \
+         have eaten the feature: {read_by_the_implementer}"
+    );
+    assert!(
+        !read_by_the_implementer.contains(WHAT_FIDDLE_WROTE),
+        "a comment fiddle wrote is not a person's later word, although its author is \
+         authorized: {read_by_the_implementer}"
+    );
+    assert!(
+        !read_by_the_implementer.contains(WHAT_A_STRANGER_SAID),
+        "and neither is a comment from an account the deployment did not authorize: \
+         {read_by_the_implementer}"
     );
 }
