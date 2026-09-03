@@ -1676,6 +1676,13 @@ mod tests {
              not an object, and a fixture normalised either way would prove nothing: \
              {RECORDED_STRING}"
         );
+        assert_eq!(
+            RECORDED_STRING.len(),
+            2432,
+            "and it is the whole of that body, byte for byte. A prefix says the shape is right \
+             and says nothing about the rest, so the length is here to catch a fixture tidied \
+             after the fact"
+        );
         let sent: serde_json::Value =
             serde_json::from_str(RECORDED_STRING).expect("the outer object is well formed JSON");
         let refused =
@@ -1697,6 +1704,12 @@ mod tests {
             .as_str()
             .expect("the envelope of this recorded body holds a string")
             .to_string();
+        assert_eq!(
+            (carried.len(), carried.ends_with(']')),
+            (2395, true),
+            "the stray byte is the last one, so nothing follows it and the object before it is \
+             the whole of what the gateway meant to send"
+        );
         let strictly = serde_json::from_str::<serde_json::Value>(&carried).expect_err(
             "this recorded string is not a whole JSON document, and that is why the \
                          decode reads a value off the front of it rather than all of it",
@@ -1704,10 +1717,10 @@ mod tests {
         assert_eq!(
             strictly.to_string(),
             "trailing characters at line 1 column 2395",
-            "the gateway sent one JSON object and then a stray `]`, at 2395 of the string's \
-             2395. A strict parse of the whole string therefore refuses this body, so a lane \
-             that only proved `serde_json::from_str` would be proving the wrong parse. It said: \
-             {strictly}"
+            "the gateway sent one JSON object and then a stray `]`, the last of the string's \
+             2395 bytes. A strict parse of the whole string therefore refuses this body, so a \
+             lane that only proved `serde_json::from_str` would be proving the wrong parse. It \
+             said: {strictly}"
         );
 
         let report = read_report(RECORDED_STRING).unwrap_or_else(|error| {
