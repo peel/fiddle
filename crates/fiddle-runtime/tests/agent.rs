@@ -1,6 +1,9 @@
 mod fixture;
 
-use fiddle_runtime::agent::{attempt, AgentBudget, AgentError, Direction, ToolHost, ToolReceipts};
+use fiddle_runtime::agent::{
+    attempt, judge_briefed, AgentBudget, AgentError, Brief, Direction, RepairReport, ToolHost,
+    ToolReceipts, Verdict,
+};
 use fiddle_runtime::core::AttemptId;
 use fiddle_runtime::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_runtime::Redaction;
@@ -418,4 +421,109 @@ async fn the_budgets_tool_timeout_bounds_a_single_tool_without_ending_the_run() 
         receipts.calls[0].outcome, "failed",
         "a tool the host's bound killed is a failure, not a cancellation: {receipts:?}"
     );
+}
+
+const JUDGE_PREAMBLE_FOR_TESTS: &str = "You are judging one change.";
+
+const COMBINERS: [&str; 3] = ["oneOf", "allOf", "anyOf"];
+
+fn schemas_of(model: &MockCompletionModel) -> Vec<(String, serde_json::Value)> {
+    let requests = model.requests();
+    assert!(
+        !requests.is_empty(),
+        "no request reached the model, so the schemas below are the schemas of nothing"
+    );
+    requests[0]
+        .tools
+        .iter()
+        .map(|tool| (tool.name.clone(), tool.parameters.clone()))
+        .collect()
+}
+
+fn combiners_at_the_top_of(schemas: &[(String, serde_json::Value)]) -> Vec<String> {
+    schemas
+        .iter()
+        .flat_map(|(name, schema)| {
+            COMBINERS
+                .iter()
+                .filter(|combiner| schema.get(*combiner).is_some())
+                .map(move |combiner| format!("{name}.input_schema.{combiner}: {schema}"))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
+    let (repairing, _g) = test_host();
+    let repairer = MockCompletionModel::new([report_turn("nothing", true)]);
+    let _ = attempt(
+        repairer.clone(),
+        &redaction(),
+        repairing,
+        budget(),
+        Direction::Fresh,
+        None,
+    )
+    .await;
+
+    let (judging, _j) = test_host();
+    let judge =
+        MockCompletionModel::new([MockTurn::text(json!({"verdict": "accepted"}).to_string())]);
+    let _ = judge_briefed(
+        judge.clone(),
+        &redaction(),
+        judging,
+        budget(),
+        Brief {
+            preamble: JUDGE_PREAMBLE_FOR_TESTS,
+            task: "Judge this.",
+        },
+        None,
+    )
+    .await;
+
+    let structured = [
+        (
+            "the repairer's report",
+            schemars::schema_for!(RepairReport).to_value(),
+        ),
+        (
+            "the judge's verdict",
+            schemars::schema_for!(Verdict).to_value(),
+        ),
+    ];
+    let refused = combiners_at_the_top_of(
+        &structured
+            .iter()
+            .map(|(named, schema)| ((*named).to_string(), schema.clone()))
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        refused.is_empty(),
+        "a structured-output schema reaches the provider as `response_format`, and a \
+         gateway that fronts Anthropic lifts it into a prepended tool, so a top-level \
+         combiner there is refused as `tools.0.custom.input_schema`. {} of them carry \
+         one:\n{}",
+        refused.len(),
+        refused.join("\n")
+    );
+
+    for (offered, model) in [("the repairer", &repairer), ("the judge", &judge)] {
+        let schemas = schemas_of(model);
+        assert!(
+            schemas.len() > 1,
+            "{offered} is sent its tools and the structured-output tool, and this request \
+             carried {}: {schemas:?}",
+            schemas.len()
+        );
+        let offenders = combiners_at_the_top_of(&schemas);
+        assert!(
+            offenders.is_empty(),
+            "Anthropic refuses `oneOf`, `allOf` or `anyOf` at the top of a tool's \
+             input_schema, and {offered} is sent {} such schema(s), so this build cannot \
+             talk to that provider at all:\n{}",
+            offenders.len(),
+            offenders.join("\n")
+        );
+    }
 }

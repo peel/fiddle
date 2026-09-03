@@ -83,6 +83,9 @@ const THE_DESCRIPTIONS_CHOICE: &str = "pub fn last_index(len: usize) -> usize { 
                                        pub fn deprecated_last(len: usize) -> usize { \
                                        last_index(len) }\n";
 
+const NEITHER_TEXT_REACHED_THE_IMPLEMENTER: &str =
+    "// neither the comment's decision nor the description's suggestion was in the prompt\n";
+
 struct Posted {
     issue: String,
     body: String,
@@ -717,6 +720,13 @@ fn a_review_that_reads_the_decision_a_comment_made() -> support::Reply {
     })))
 }
 
+fn writing(contents: &str) -> support::Reply {
+    support::accepted(support::calls(
+        "write_file",
+        serde_json::json!({ "path": "src/lib.rs", "contents": contents }),
+    ))
+}
+
 fn a_change_the_ticket_chooses() -> Vec<Answering> {
     vec![
         support::on_reading(
@@ -724,16 +734,12 @@ fn a_change_the_ticket_chooses() -> Vec<Answering> {
             a_review_that_reads_the_decision_a_comment_made(),
             a_review_that_reads_a_change(),
         ),
-        support::on_reading(
-            THE_DECISION,
-            support::accepted(support::calls(
-                "write_file",
-                serde_json::json!({ "path": "src/lib.rs", "contents": THE_COMMENTS_CHOICE }),
-            )),
-            support::accepted(support::calls(
-                "write_file",
-                serde_json::json!({ "path": "src/lib.rs", "contents": THE_DESCRIPTIONS_CHOICE }),
-            )),
+        support::choosing(
+            vec![
+                (THE_DECISION, writing(THE_COMMENTS_CHOICE)),
+                (THE_SUGGESTION, writing(THE_DESCRIPTIONS_CHOICE)),
+            ],
+            writing(NEITHER_TEXT_REACHED_THE_IMPLEMENTER),
         ),
         Answering::Always(support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
@@ -743,6 +749,28 @@ fn a_change_the_ticket_chooses() -> Vec<Answering> {
         Answering::Always(support::accepted(support::reports(serde_json::json!({
             "verdict": "accepted",
         })))),
+    ]
+}
+
+fn an_accepted_change_whose_judge_reads_before_it_answers() -> Vec<support::Reply> {
+    vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::calls(
+            "read_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "verdict": "accepted",
+        }))),
     ]
 }
 
@@ -797,6 +825,13 @@ impl ToilWorld {
 
     pub fn start_letting_the_ticket_choose_the_change() -> Self {
         ToilWorld::built(a_change_the_ticket_chooses(), true)
+    }
+
+    pub fn start_with_a_judge_that_reads_before_it_answers() -> Self {
+        ToilWorld::built(
+            support::always(an_accepted_change_whose_judge_reads_before_it_answers()),
+            true,
+        )
     }
 
     pub fn start_reviewing_once() -> Self {
@@ -1224,8 +1259,108 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
     );
 }
 
+const COMBINERS: [&str; 3] = ["oneOf", "allOf", "anyOf"];
+
+fn combiners_at_the_top_of(named: &str, schema: &serde_json::Value) -> Vec<String> {
+    COMBINERS
+        .iter()
+        .filter(|combiner| schema.get(*combiner).is_some())
+        .map(|combiner| format!("{named}.{combiner}: {schema}"))
+        .collect()
+}
+
+fn schemas_sent_in(body: &str) -> Vec<(String, serde_json::Value)> {
+    let request: serde_json::Value =
+        serde_json::from_str(body).unwrap_or_else(|why| panic!("a request body is JSON: {why}"));
+    let mut sent: Vec<(String, serde_json::Value)> = request["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|tool| {
+                    (
+                        format!("tool {}", tool["function"]["name"]),
+                        tool["function"]["parameters"].clone(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(schema) = request
+        .get("response_format")
+        .and_then(|format| format.get("json_schema"))
+        .and_then(|json_schema| json_schema.get("schema"))
+    {
+        sent.push((
+            format!(
+                "response_format {}",
+                request["response_format"]["json_schema"]["name"]
+            ),
+            schema.clone(),
+        ));
+    }
+    sent
+}
+
 #[test]
-fn an_authorized_comment_directs_the_change_and_without_one_the_description_directs_it() {
+fn no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself() {
+    let world = ToilWorld::start_with_a_judge_that_reads_before_it_answers();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the run must reach every step, or the schemas below are not the schemas a whole \
+         toil run sends: {payload}"
+    );
+
+    let bodies = world.model_prompts();
+    assert!(
+        bodies.len() >= 4,
+        "a whole toil run asks the review, the implementer and the judge, and this one sent \
+         {} requests: {payload}",
+        bodies.len()
+    );
+
+    let mut sent = 0;
+    let mut structured = 0;
+    let mut refused: Vec<String> = Vec::new();
+    for (turn, body) in bodies.iter().enumerate() {
+        for (named, schema) in schemas_sent_in(body) {
+            sent += 1;
+            structured += usize::from(named.starts_with("response_format"));
+            refused.extend(combiners_at_the_top_of(
+                &format!("turn {turn} {named}"),
+                &schema,
+            ));
+        }
+    }
+    assert!(
+        sent > 0,
+        "no request carried a schema at all, so an assertion over their shapes proved nothing"
+    );
+    assert_eq!(
+        structured, 2,
+        "the implementer's report and the judge's verdict are the two structured-output \
+         schemas a toil run sends, and this run sent {structured} of them. A judge that \
+         answers on its first turn is never sent one, so this lane would pass over a \
+         verdict schema no gateway accepts: {payload}"
+    );
+    assert!(
+        refused.is_empty(),
+        "a gateway that fronts Anthropic refuses `oneOf`, `allOf` or `anyOf` at the top of a \
+         tool's input_schema, and it lifts `response_format` into a prepended tool, so each \
+         of these {} schemas of {sent} makes the whole request a 400 before the model is \
+         reached:\n{}",
+        refused.len(),
+        refused.join("\n")
+    );
+}
+
+#[test]
+fn an_authorized_comment_directs_the_change_the_description_suggested_against() {
     let decided = ToilWorld::start_letting_the_ticket_choose_the_change();
     decided.authorizes_the_account(OPERATOR_ACCOUNT);
     decided
@@ -1241,51 +1376,76 @@ fn an_authorized_comment_directs_the_change_and_without_one_the_description_dire
         "the ticket suggests one option, an authorized comment chooses the other, and the \
          run takes it on: {payload}"
     );
+
+    let told = decided.model_prompts();
+    let implementer = &told[1];
+    assert!(
+        implementer.contains(THE_SUGGESTION),
+        "the description's own suggestion reached the implementer, or this lane is not the \
+         contest it claims to be: {implementer}"
+    );
+    assert!(
+        implementer.contains(THE_DECISION),
+        "and so did the comment that overrides it: {implementer}"
+    );
+
     let branch = decided.github().only_branch();
     assert_eq!(
         decided
             .github()
             .file_at(&decided.github().head_of(&branch), "src/lib.rs"),
         THE_COMMENTS_CHOICE.trim_end(),
-        "the change that reached the forge is the one the comment chose, not the one the \
-         description suggested: {payload}"
+        "so the change that reached the forge is the one the comment chose, with the \
+         description's suggestion in the same prompt and losing to it: {payload}"
     );
-    let asked = decided.model_prompts();
-    assert!(
-        asked[1].contains(THE_DECISION),
-        "the second model call is the implementer, and the comment reached it, which is why \
-         it could choose: {}",
-        asked[1]
-    );
+}
 
+#[test]
+fn with_no_authorized_comment_the_description_directs_the_change_it_suggested() {
     let undecided = ToilWorld::start_letting_the_ticket_choose_the_change();
     undecided.authorizes_the_account(OPERATOR_ACCOUNT);
     undecided
         .jira()
         .holds_a_ticket_whose_description_suggests_keeping_the_helper(TICKET);
 
-    let alone = undecided.run_toil(REFERENCE);
-    let told = payload_of(&alone);
+    let run = undecided.run_toil(REFERENCE);
+    let payload = payload_of(&run);
     assert_eq!(
-        alone.status.code(),
+        run.status.code(),
         Some(0),
         "the same ticket with nobody commenting on it is eligible on its description \
-         alone: {told}"
+         alone: {payload}"
     );
-    let branch = undecided.github().only_branch();
-    assert_eq!(
-        undecided
-            .github()
-            .file_at(&undecided.github().head_of(&branch), "src/lib.rs"),
-        THE_DESCRIPTIONS_CHOICE.trim_end(),
-        "and the change that reached the forge is the one the description suggested, so \
-         the row above is the comment directing it and not this build writing one thing \
-         whatever it reads: {told}"
+
+    let told = undecided.model_prompts();
+    let implementer = &told[1];
+    assert!(
+        implementer.contains(THE_SUGGESTION),
+        "the description's suggestion is what must direct this run, so it has to be in the \
+         text the implementer received; a lane that only checks the comment is absent would \
+         pass with no description at all: {implementer}"
     );
     assert!(
-        !undecided.model_prompts()[1].contains(THE_DECISION),
-        "no comment was written, so no decision reached the implementer: {}",
-        undecided.model_prompts()[1]
+        !implementer.contains(THE_DECISION),
+        "and no decision was written, so none reached it: {implementer}"
+    );
+
+    let branch = undecided.github().only_branch();
+    let written = undecided
+        .github()
+        .file_at(&undecided.github().head_of(&branch), "src/lib.rs");
+    assert_ne!(
+        written,
+        NEITHER_TEXT_REACHED_THE_IMPLEMENTER.trim_end(),
+        "the implementer was given neither the decision nor the suggestion, so what it \
+         built rests on nothing this ticket says: {payload}"
+    );
+    assert_eq!(
+        written,
+        THE_DESCRIPTIONS_CHOICE.trim_end(),
+        "the change that reached the forge is the one the description suggested, which is \
+         what makes the row above the comment directing a change rather than this build \
+         writing one thing whatever it reads: {payload}"
     );
 }
 
