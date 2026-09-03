@@ -1036,6 +1036,14 @@ const THE_ANSWER: &str = "Replace it. Nothing reads the old version any more.";
 
 const ASKS_FOR_A_CHANGE_RULE: &str = "the ticket asks for a change and not a product decision";
 
+const QUOTES_THE_TICKET_RULE: &str = "a judgement quotes the ticket text it rests on";
+
+const THE_SUGGESTION: &str =
+    "Suggested: A as the immediate fix, B as a follow-up if a true interval max is wanted.";
+
+const THE_DECISION: &str = "Option B. More-reliable long-term. The bare metrics should be still \
+                            type-compatible as described.";
+
 fn asking() -> TicketFacts {
     TicketFacts {
         description: Some(format!(
@@ -1063,6 +1071,32 @@ fn answered_by(author: &str) -> TicketFacts {
     }
 }
 
+fn suggesting() -> TicketFacts {
+    TicketFacts {
+        summary: "merge_graph_size_max always reports 0, hiding merge cap saturation across the \
+                  fleet"
+            .into(),
+        description: Some(format!(
+            "## Options\n\n\
+             **Option A, no downstream risk.** Guard the report site so merge-less batches stop \
+             clobbering the value. Same name, same type, same registration, nothing downstream \
+             changes.\n\n\
+             **Option B, correct but involves a rename.** Emit as a sample rather than a gauge. \
+             The rename is the breaking part, not the type change.\n\n\
+             {THE_SUGGESTION}"
+        )),
+        comments: None,
+        ..eligible_ticket()
+    }
+}
+
+fn decided_by(author: &str) -> TicketFacts {
+    TicketFacts {
+        comments: Some(vec![commented(author, THE_DECISION)]),
+        ..suggesting()
+    }
+}
+
 fn bounds_naming(authorized: Vec<Decider>) -> Eligibility {
     Eligibility {
         authorized_commenters: authorized,
@@ -1075,12 +1109,20 @@ fn bounds_naming_the_operator() -> Eligibility {
 }
 
 struct DecidesFromWhatItReads {
+    answer: &'static str,
+    question: &'static str,
     saw: Mutex<Vec<Quoted>>,
 }
 
 impl DecidesFromWhatItReads {
     fn new() -> Self {
+        Self::reading(THE_ANSWER, THE_QUESTION)
+    }
+
+    fn reading(answer: &'static str, question: &'static str) -> Self {
         Self {
+            answer,
+            question,
             saw: Mutex::new(Vec::new()),
         }
     }
@@ -1101,9 +1143,9 @@ impl DecidesFromWhatItReads {
 impl AmbiguityReview for DecidesFromWhatItReads {
     async fn review(&self, quoted: &Quoted) -> Result<Judgement, ReviewError> {
         self.saw.lock().unwrap().push(quoted.clone());
-        let (verdict, quoting) = match quoted.text().contains(THE_ANSWER) {
-            true => (Verdict::AsksForAChange, THE_ANSWER),
-            false => (Verdict::NeedsAProductDecision, THE_QUESTION),
+        let (verdict, quoting) = match quoted.text().contains(self.answer) {
+            true => (Verdict::AsksForAChange, self.answer),
+            false => (Verdict::NeedsAProductDecision, self.question),
         };
         Ok(Judgement {
             verdict,
@@ -1562,6 +1604,81 @@ async fn an_empty_comment_is_not_a_word_anybody_said() {
         authorized_comments(None, &[Decider::JiraAccount(OPERATOR.into())]),
         Vec::<&str>::new(),
         "and a read that carried no comment field says nothing about the conversation"
+    );
+}
+
+#[tokio::test]
+async fn a_comment_decides_a_ticket_whose_description_suggested_one_of_its_own_options() {
+    let settled = DecidesFromWhatItReads::reading(THE_DECISION, THE_SUGGESTION);
+    let admitted = qualify(
+        &decided_by(OPERATOR),
+        &bounds_naming_the_operator(),
+        &settled,
+    )
+    .await;
+    let eligible = admitted.eligible().unwrap_or_else(|| {
+        panic!("a decision in a comment closes the options the description weighed: {admitted:?}")
+    });
+
+    let read = settled.read_once();
+    let text = read.text();
+    let suggested = text
+        .find(THE_SUGGESTION)
+        .unwrap_or_else(|| panic!("the description's own suggestion reaches the review: {text}"));
+    let decided = text
+        .find(THE_DECISION)
+        .unwrap_or_else(|| panic!("and so does the comment that settles it: {text}"));
+    assert!(
+        suggested < decided,
+        "the decision arrives after the suggestion it overrides, and the order is the only \
+         thing in the text that says which is later: {text}"
+    );
+    assert_eq!(
+        eligible
+            .ledger
+            .iter()
+            .find(|standing| standing.rule == QUOTES_THE_TICKET_RULE)
+            .map(|standing| standing.state),
+        Some(RuleState::Held(EvidenceClass::Measured)),
+        "a judgement that quotes the decision rests on the ticket, because the text the gate \
+         compares the span against carries the comments: {:?}",
+        eligible.ledger
+    );
+
+    let unsettled = DecidesFromWhatItReads::reading(THE_DECISION, THE_SUGGESTION);
+    let refused = qualify(&suggesting(), &bounds_naming_the_operator(), &unsettled).await;
+    let refusal = refused.refused().unwrap_or_else(|| {
+        panic!("a choice the description only suggests is not a decision: {refused:?}")
+    });
+    assert_eq!(refusal.failed_rule, ASKS_FOR_A_CHANGE_RULE);
+    assert_eq!(refusal.evidence_class, EvidenceClass::Argued);
+    assert_eq!(
+        refusal.quoted.as_ref().map(Quoted::text),
+        Some(THE_SUGGESTION),
+        "and it is refused on the span the live run of ISP-263 was refused on: {refusal:?}"
+    );
+
+    let from_a_stranger = DecidesFromWhatItReads::reading(THE_DECISION, THE_SUGGESTION);
+    let also_refused = qualify(
+        &decided_by(A_STRANGER),
+        &bounds_naming_the_operator(),
+        &from_a_stranger,
+    )
+    .await;
+    assert!(
+        also_refused.refused().is_some(),
+        "an account the deployment did not authorize names an option and decides nothing on \
+         this shape either: {also_refused:?}"
+    );
+    assert_eq!(
+        from_a_stranger.read_once().text(),
+        unsettled.read_once().text(),
+        "so the review reads the ticket it would have read had nobody commented"
+    );
+    assert_eq!(
+        differing(&suggesting(), &decided_by(OPERATOR)),
+        vec!["comments"],
+        "the admitted ticket and the refused one differ in the conversation and nowhere else"
     );
 }
 

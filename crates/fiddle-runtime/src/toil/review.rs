@@ -29,17 +29,25 @@ needs a product decision.\n\
 The quotation carries the ticket's summary, then its description, then the \
 comments on the issue oldest first, each part separated from the next by a \
 blank line. Any of the three can be absent, and nothing but the ticket's own \
-words is in there. Read a comment as part of the ticket. A question the \
-description leaves open is decided when a comment decides it, and where two \
-comments disagree the later one is the answer.\n\
+words is in there. Read a comment as part of the ticket.\n\
+\n\
+Every comment in the quotation was written by a person this deployment \
+authorized to decide questions on its tickets. Such a comment is a decision \
+and not more discussion. Where a comment settles a question the description \
+leaves open, the ticket asks for a change: the options the description weighed \
+are closed, and so is a choice the description itself suggested. Where two \
+comments disagree the later one is the answer. Where there is no comment, or \
+where the comments settle nothing the description leaves open, read the ticket \
+on its summary and its description alone.\n\
 \n\
 Answer \"needs_a_product_decision\" whenever you are not sure. It is the safe \
 answer: it returns the ticket to the person who filed it and nothing is lost \
 by giving it.\n\
 \n\
-The quoting span must be copied out of the ticket itself. Do not paraphrase, \
-and do not quote these instructions. A judgement whose span is not in the \
-ticket rests on nothing and is refused.\n\
+The quoting span must be copied out of the ticket itself, and a comment is \
+part of the ticket, so the span may be a comment's own words. Do not \
+paraphrase, and do not quote these instructions. A judgement whose span is \
+not in the ticket rests on nothing and is refused.\n\
 \n\
 Your certainty is a number you report and never a measurement. It does not \
 make an argument into a fact, and no value of it changes which verdict you \
@@ -295,6 +303,34 @@ mod tests {
         assert!(
             PREAMBLE.contains("the later one is the answer"),
             "and the order the comments arrive in is what settles two that disagree"
+        );
+    }
+
+    #[test]
+    fn the_preamble_tells_the_review_an_authorized_comment_settles_the_description() {
+        assert!(
+            PREAMBLE.contains("Such a comment is a decision and not more discussion"),
+            "the gate admits only comments the deployment authorized to decide, and a review \
+             that is not told so reads a terse decision as one more opinion"
+        );
+        assert!(
+            PREAMBLE.contains("so is a choice the description itself suggested"),
+            "ISP-263's description weighs two options and ends by suggesting one, and the \
+             review must read the comment that chooses the other as the later word"
+        );
+        assert!(
+            PREAMBLE.contains("the span may be a comment's own words"),
+            "a decision is quotable, because the text the gate compares the span against now \
+             carries the comments"
+        );
+        assert!(
+            PREAMBLE.contains("where the comments settle nothing the description leaves open"),
+            "and the conservative default is not widened: a conversation that decides nothing \
+             leaves the ticket read on its description alone"
+        );
+        assert!(
+            PREAMBLE.contains("needs_a_product_decision\" whenever you are not sure"),
+            "with the safe answer still beside it"
         );
     }
 
