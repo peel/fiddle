@@ -98,7 +98,11 @@ future caller can loosen.
 
 A deployment names each channel's deciders in that channel's own table:
 `[github.decision].authorized` holds numeric user ids and
-`[jira.decision].authorized` holds Jira account ids. One table per channel, under
+`[jira.decision].authorized` holds Jira account ids. The Jira table has since
+gained a second reader outside this record: the toil eligibility gate weighs a
+comment on a ticket against it, because a comment that decides a question the
+ticket left open is deciding something. ADR 083 records that, and nothing about
+the table's shape or its namespace changed for it. One table per channel, under
 the channel's table, mirrors the enum and mirrors `[jira.labels]`, which is where
 this document already puts a Jira-only setting. The alternative considered was one
 heterogeneous list of tagged entries. It was declined because it makes the GitHub
@@ -232,15 +236,22 @@ is neither. Each claim below carries its class.
   supplied to the capability in
   `crates/fiddle-runtime/tests/propose_capability.rs`. No test drives the binary
   through two Jira invocations end to end.
-- **Measured against stubs, and re-graded.** `config check` reports each decision
-  table as `enforced-by-propose-change`. It reported `accepted-not-enforced` with
-  the phrase "no capability in this build reads it", and that reading was already
-  false when written: `main.rs` fed `[github.decision].authorized` into the
-  propose configuration, `ProposeChange::walk` passes it to `resolve` as the
-  allowlist, and `an_ignored_reply_is_visible_in_what_the_run_published` drives the
-  shipped binary against a document naming one authorized id and records the reply
-  the allowlist declined. The status word is scoped to `propose-change` because no
-  other capability builds a decider list.
+- **Measured against stubs, and re-graded twice.** `config check` reports
+  `[github.decision]` as `enforced-by-propose-change` and `[jira.decision]` as
+  `enforced-by-propose-change-and-by-the-toil-gate`. It reported
+  `accepted-not-enforced` for both with the phrase "no capability in this build
+  reads it", and that reading was already false when written: `main.rs` fed
+  `[github.decision].authorized` into the propose configuration,
+  `ProposeChange::walk` passes it to `resolve` as the allowlist, and
+  `an_ignored_reply_is_visible_in_what_the_run_published` drives the shipped
+  binary against a document naming one authorized id and records the reply the
+  allowlist declined. It then reported both tables as `enforced-by-propose-change`,
+  and the Jira half of that reading stopped being complete when `fiddle-v6pu` made
+  the toil eligibility gate read the same table: `[jira.decision].authorized` now
+  also names the accounts whose comment on a ticket is context the ambiguity
+  review reads, and a comment from anybody else is not. ADR 083 records that
+  decision and grades it. The GitHub status word is still scoped to
+  `propose-change`, because no other capability reads that table.
 
 ## Consequences
 

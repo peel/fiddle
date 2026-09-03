@@ -19,6 +19,10 @@ pub fn marker_for(effect: &EffectId) -> String {
     format!("{MARKER}{}", effect.0)
 }
 
+pub fn carries_a_marker_fiddle_writes(text: &str) -> bool {
+    text.contains(MARKER) || fiddle_core::decision::names_a_decision_marker(text)
+}
+
 pub fn canonical_updated(raw: &str) -> Result<String, JiraError> {
     canonical_revision(raw).ok_or_else(|| {
         JiraError::Malformed(format!(

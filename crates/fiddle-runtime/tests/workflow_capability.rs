@@ -1975,7 +1975,7 @@ async fn a_step_is_given_the_text_the_gate_judged_and_not_the_description_alone(
     let told_both = the_task_one_step_was_given(&both);
     assert_eq!(
         quotation_in(&told_both).inside,
-        fiddle_runtime::toil::ticket_text(&summary, Some(described)),
+        fiddle_runtime::toil::ticket_text(&summary, Some(described), &[]),
         "the implementer is given the text the gate judged, which is the summary followed \
          by the description and not the description alone"
     );

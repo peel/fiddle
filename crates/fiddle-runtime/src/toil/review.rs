@@ -26,6 +26,13 @@ open. A ticket that asks which of two behaviours is wanted, that asks whether \
 something should exist, or that states a goal without stating the change, \
 needs a product decision.\n\
 \n\
+The quotation carries the ticket's summary, then its description, then the \
+comments on the issue oldest first, each part separated from the next by a \
+blank line. Any of the three can be absent, and nothing but the ticket's own \
+words is in there. Read a comment as part of the ticket. A question the \
+description leaves open is decided when a comment decides it, and where two \
+comments disagree the later one is the answer.\n\
+\n\
 Answer \"needs_a_product_decision\" whenever you are not sure. It is the safe \
 answer: it returns the ticket to the person who filed it and nothing is lost \
 by giving it.\n\
@@ -275,6 +282,19 @@ mod tests {
         assert!(
             PREAMBLE.contains("never a measurement"),
             "and that a reported certainty is not evidence"
+        );
+    }
+
+    #[test]
+    fn the_preamble_tells_the_review_a_comment_is_part_of_the_ticket_it_reads() {
+        assert!(
+            PREAMBLE.contains("Read a comment as part of the ticket"),
+            "a review that is given the conversation and is not told what it is would weigh a \
+             decided question as an open one"
+        );
+        assert!(
+            PREAMBLE.contains("the later one is the answer"),
+            "and the order the comments arrive in is what settles two that disagree"
         );
     }
 

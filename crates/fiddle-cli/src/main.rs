@@ -700,6 +700,7 @@ fn facts_of(ticket: &fiddle_core::WorkItemState, config: &config::Config) -> Tic
         repository: config.github.as_ref().map(|github| github.repo.to_string()),
         summary: ticket.summary.clone().unwrap_or_default(),
         description: ticket.description.clone(),
+        comments: ticket.comments.clone(),
     }
 }
 

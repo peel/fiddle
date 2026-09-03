@@ -468,6 +468,8 @@ const DECIDER: u64 = 505_401;
 
 const DECISION_STATUS: &str = "enforced-by-propose-change";
 
+const JIRA_DECISION_STATUS: &str = "enforced-by-propose-change-and-by-the-toil-gate";
+
 const DECISION_STATUS_PHRASE: &str = "enforced by propose-change";
 
 fn with_decision(body: &str) -> String {
@@ -1239,7 +1241,16 @@ fn config_check_reports_the_jira_accounts_that_may_decide() {
          under the key the document writes it under: {jira}"
     );
     assert_eq!(decision["matched_on"], "jira_account_id", "{jira}");
-    assert_eq!(decision["status"], DECISION_STATUS, "{jira}");
+    assert_eq!(
+        decision["status"], JIRA_DECISION_STATUS,
+        "the jira table bounds two things and the github table bounds one, so the two tables \
+         cannot report one status word: {jira}"
+    );
+    assert_ne!(
+        decision["status"], DECISION_STATUS,
+        "and the jira word is not the github word, so the row above cannot pass on a rendering \
+         that prints one status for both tables: {jira}"
+    );
     assert_eq!(
         checked(&format!("{AGENTIC}{TRACKER}"))["jira"]["decision"],
         serde_json::Value::Null,
@@ -1252,8 +1263,13 @@ fn config_check_reports_the_jira_accounts_that_may_decide() {
     assert!(
         stdout.contains(&format!("jira.decision.authorized = {JIRA_ACCOUNT}"))
             && stdout.contains("jira_account_id")
-            && stdout.contains(DECISION_STATUS_PHRASE),
+            && stdout.contains("enforced by propose-change and by the toil gate"),
         "an operator at a terminal cannot confirm the account that may decide: {stdout}"
+    );
+    assert!(
+        stdout.contains("a comment from anybody else is not context the ambiguity review reads"),
+        "and the terminal rendering says what the table bounds beyond a reply, or an operator \
+         reads it as governing propose-change alone: {stdout}"
     );
 }
 

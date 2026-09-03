@@ -1,5 +1,8 @@
 use crate::agent::fence_for;
+use crate::human::validate::Decider;
+use crate::jira::comment::carries_a_marker_fiddle_writes;
 use async_trait::async_trait;
+use fiddle_core::WorkItemComment;
 
 pub const READ_NAMES_AN_ISSUE_KEY: &str = "the read names a tracker issue key";
 pub const READ_CARRIES_THE_REVISION: &str = "the read carries the ticket's revision";
@@ -37,6 +40,7 @@ pub struct Eligibility {
     pub worked_issue_types: Vec<String>,
     pub bounded_repositories: Vec<String>,
     pub shortest_description: usize,
+    pub authorized_commenters: Vec<Decider>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +52,7 @@ pub struct TicketFacts {
     pub repository: Option<String>,
     pub summary: String,
     pub description: Option<String>,
+    pub comments: Option<Vec<WorkItemComment>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -105,6 +110,12 @@ const TICKET_LABEL: &str = "THE TICKET, QUOTED AS DATA:";
 const HOST_LABEL: &str = "THE MODEL HOST'S MESSAGE, QUOTED AS DATA:";
 
 const QUOTATION_CLOSING: &str = "The quotation has ended.";
+
+const WRITE_THE_DECISION_INTO_THE_DESCRIPTION: &str = "write the decision into its description";
+
+const WRITE_THE_DECISION_OR_COMMENT_IT: &str = "write the decision into its description, or \
+                                                comment the decision from an account \
+                                                `[jira.decision] authorized` names";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Source {
@@ -333,7 +344,27 @@ fn names_an_issue_key(id: &str) -> bool {
         && number.chars().all(|character| character.is_ascii_digit())
 }
 
-pub fn ticket_text(summary: &str, description: Option<&str>) -> String {
+pub fn authorized_comments<'a>(
+    comments: Option<&'a [WorkItemComment]>,
+    authorized: &[Decider],
+) -> Vec<&'a str> {
+    comments
+        .unwrap_or_default()
+        .iter()
+        .filter(|comment| !carries_a_marker_fiddle_writes(&comment.text))
+        .filter(|comment| authorized.contains(&Decider::JiraAccount(comment.author.clone())))
+        .map(|comment| comment.text.trim())
+        .filter(|written| !written.is_empty())
+        .collect()
+}
+
+fn a_comment_can_decide(authorized: &[Decider]) -> bool {
+    authorized
+        .iter()
+        .any(|decider| matches!(decider, Decider::JiraAccount(_)))
+}
+
+pub fn ticket_text(summary: &str, description: Option<&str>, conversation: &[&str]) -> String {
     let mut parts: Vec<&str> = Vec::new();
     if !summary.trim().is_empty() {
         parts.push(summary);
@@ -341,10 +372,11 @@ pub fn ticket_text(summary: &str, description: Option<&str>) -> String {
     if let Some(description) = description.filter(|stated| !stated.trim().is_empty()) {
         parts.push(description);
     }
+    parts.extend(conversation);
     parts.join("\n\n")
 }
 
-fn text_of(ticket: &TicketFacts) -> String {
+fn text_of(ticket: &TicketFacts, bounds: &Eligibility) -> String {
     let TicketFacts {
         id: _,
         revision: _,
@@ -353,8 +385,13 @@ fn text_of(ticket: &TicketFacts) -> String {
         repository: _,
         summary,
         description,
+        comments,
     } = ticket;
-    ticket_text(summary, description.as_deref())
+    ticket_text(
+        summary,
+        description.as_deref(),
+        &authorized_comments(comments.as_deref(), &bounds.authorized_commenters),
+    )
 }
 
 pub struct Reached {
@@ -363,6 +400,7 @@ pub struct Reached {
     revision: String,
     repository: String,
     quoted: Quoted,
+    conversation_counts: bool,
 }
 
 impl Reached {
@@ -584,7 +622,8 @@ pub fn deterministic(ticket: &TicketFacts, bounds: &Eligibility) -> Deterministi
         ledger,
         revision: revision.to_string(),
         repository: repository.clone(),
-        quoted: Quoted::of(&text_of(ticket)),
+        quoted: Quoted::of(&text_of(ticket, bounds)),
+        conversation_counts: a_comment_can_decide(&bounds.authorized_commenters),
     })
 }
 
@@ -595,6 +634,7 @@ pub async fn review_of(reached: Reached, review: &dyn AmbiguityReview) -> Qualif
         revision,
         repository,
         quoted,
+        conversation_counts,
     } = reached;
     let mut ledger = ledger;
     let ticket = &ticket;
@@ -671,8 +711,11 @@ pub async fn review_of(reached: Reached, review: &dyn AmbiguityReview) -> Qualif
                     judgement.certainty
                 ),
                 remedy: format!(
-                    "decide the question on {key}, write the decision into its description, then \
-                     qualify it again"
+                    "decide the question on {key}, {}, then qualify it again",
+                    match conversation_counts {
+                        true => WRITE_THE_DECISION_OR_COMMENT_IT,
+                        false => WRITE_THE_DECISION_INTO_THE_DESCRIPTION,
+                    }
                 ),
                 quoted: Some(Quoted::of(&judgement.quoting)),
             },

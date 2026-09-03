@@ -205,6 +205,7 @@ fn quoted_ticket(work_item: Option<&WorkItemState>) -> Option<String> {
     let text = crate::toil::ticket_text(
         work_item.summary.as_deref().unwrap_or_default(),
         work_item.description.as_deref(),
+        &[],
     );
     match text.is_empty() {
         true => None,

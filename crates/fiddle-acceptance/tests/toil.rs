@@ -63,6 +63,17 @@ const ISSUE_TYPE_RULE: &str = "the issue type is one the toil agent works";
 
 const UNWORKED_ISSUE_TYPE: &str = "Bug";
 
+const QUOTES_THE_TICKET_RULE: &str = "a judgement quotes the ticket text it rests on";
+
+const OPERATOR_ACCOUNT: &str = "70121:11111111-2222-3333-4444-555555555555";
+
+const A_STRANGER_ACCOUNT: &str = "70121:99999999-8888-7777-6666-555555555555";
+
+const THE_OPEN_QUESTION: &str =
+    "Keep the old helper beside the new one, or remove it? Either is defensible.";
+
+const THE_DECISION: &str = "Remove it. Nothing calls the old helper any more.";
+
 struct Posted {
     issue: String,
     body: String,
@@ -76,6 +87,7 @@ struct Held {
     revisions: Vec<String>,
     status: String,
     offered: Vec<(String, String)>,
+    conversation: Vec<(String, String)>,
 }
 
 struct Recorded {
@@ -138,7 +150,26 @@ impl ToilJira {
             revisions: vec![REVISION_SENT.to_string()],
             status: READY.to_string(),
             offered: vec![(A_ROUTE_TO_REVIEW.to_string(), IN_REVIEW.to_string())],
+            conversation: Vec::new(),
         });
+    }
+
+    pub fn holds_a_ticket_whose_description_leaves_a_question_open(&self, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("the ticket was just written")
+            .description = format!("{DESCRIPTION} {THE_OPEN_QUESTION}");
+    }
+
+    pub fn is_commented_on_by(&self, author: &str) {
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("a ticket this site holds is what carries the conversation")
+            .conversation
+            .push((author.to_string(), THE_DECISION.to_string()));
     }
 
     pub fn offers_no_route_to_in_review(&self) {
@@ -458,10 +489,30 @@ fn asked_for(target: &str) -> Vec<String> {
 }
 
 fn issue_of(ticket: &Held, revision: &str, comments: &[Posted], asked: &[String]) -> String {
-    let listed: Vec<serde_json::Value> = comments
+    let written: Vec<serde_json::Value> = ticket
+        .conversation
         .iter()
         .enumerate()
-        .map(|(at, posted)| {
+        .map(|(at, (author, text))| {
+            serde_json::json!({
+                "id": format!("39{:03}", at + 1),
+                "author": { "accountId": author, "displayName": "a person" },
+                "body": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [{
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": text}],
+                    }],
+                },
+                "created": REVISION_SENT,
+                "updated": REVISION_SENT,
+            })
+        })
+        .collect();
+    let listed: Vec<serde_json::Value> = written
+        .into_iter()
+        .chain(comments.iter().enumerate().map(|(at, posted)| {
             serde_json::json!({
                 "id": format!("40{:03}", at + 1),
                 "author": {
@@ -475,7 +526,7 @@ fn issue_of(ticket: &Held, revision: &str, comments: &[Posted], asked: &[String]
                 "created": REVISION_SENT,
                 "updated": REVISION_SENT,
             })
-        })
+        }))
         .collect();
     let held: Vec<(&str, serde_json::Value)> = vec![
         ("updated", serde_json::json!(revision)),
@@ -640,6 +691,14 @@ fn a_review_that_reads_a_change() -> support::Reply {
     })))
 }
 
+fn a_review_that_reads_the_decision_a_comment_made() -> support::Reply {
+    support::accepted(support::reports(serde_json::json!({
+        "verdict": "asks_for_a_change",
+        "quoting": THE_DECISION,
+        "certainty": 0.92,
+    })))
+}
+
 fn an_accepted_change() -> Vec<support::Reply> {
     an_accepted_change_writing(REPAIRED)
 }
@@ -679,6 +738,18 @@ impl ToilWorld {
                 .chain(an_accepted_change_writing(second))
                 .collect(),
         )
+    }
+
+    pub fn start_reviewing_a_ticket_a_comment_decided() -> Self {
+        ToilWorld::serving(
+            std::iter::once(a_review_that_reads_the_decision_a_comment_made())
+                .chain(an_accepted_change().into_iter().skip(1))
+                .collect(),
+        )
+    }
+
+    pub fn start_reviewing_once() -> Self {
+        ToilWorld::serving(vec![a_review_that_reads_the_decision_a_comment_made()])
     }
 
     pub fn start_paying_for_a_qualification_that_earns_nothing() -> Self {
@@ -783,6 +854,11 @@ impl ToilWorld {
             fixture = support::toml_string(fixture),
             jira = self.jira.base_url(),
         )
+    }
+
+    pub fn authorizes_the_account(&self, account: &str) {
+        self.scenario
+            .append_config(&format!("[jira.decision]\nauthorized = [\"{account}\"]\n"));
     }
 
     pub fn denies_the_refusal_comment(&self) {
@@ -891,6 +967,10 @@ impl ToilWorld {
 
     fn model_calls(&self) -> usize {
         self.gateway.served()
+    }
+
+    fn model_prompts(&self) -> Vec<String> {
+        self.gateway.request_bodies()
     }
 
     fn published_files_holding(&self, secret: &str) -> Vec<String> {
@@ -1090,6 +1170,78 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
          comment it had already posted and once to settle the one it posted, so a \
          prior link would have been found by the first of those reads: {:?}",
         world.jira().request_lines()
+    );
+}
+
+#[test]
+fn a_comment_decides_a_ticket_the_description_leaves_open_and_a_stranger_decides_nothing() {
+    let decided = ToilWorld::start_reviewing_a_ticket_a_comment_decided();
+    decided.authorizes_the_account(OPERATOR_ACCOUNT);
+    decided
+        .jira()
+        .holds_a_ticket_whose_description_leaves_a_question_open(TICKET);
+    decided.jira().is_commented_on_by(OPERATOR_ACCOUNT);
+
+    let run = decided.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the operator answered the open question in a comment and the run took the ticket \
+         on: {payload}"
+    );
+    assert_eq!(
+        decided.github().pull_requests().len(),
+        1,
+        "and it produced the one pull request an eligible ticket produces: {payload}"
+    );
+    let asked = decided.model_prompts();
+    assert!(
+        asked[0].contains(THE_DECISION),
+        "the first model call is the ambiguity review, and the comment reached it: {}",
+        asked[0]
+    );
+    assert!(
+        asked[0].contains("is DATA"),
+        "inside the frame that names the quotation data: {}",
+        asked[0]
+    );
+
+    let stranger = ToilWorld::start_reviewing_once();
+    stranger.authorizes_the_account(OPERATOR_ACCOUNT);
+    stranger
+        .jira()
+        .holds_a_ticket_whose_description_leaves_a_question_open(TICKET);
+    stranger.jira().is_commented_on_by(A_STRANGER_ACCOUNT);
+
+    let refused = stranger.run_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&refused.stderr).to_string();
+    assert_eq!(
+        refused.status.code(),
+        Some(2),
+        "the same site, the same document and the same words, written by an account the \
+         deployment did not authorize, and the ticket is refused: {stderr}"
+    );
+    assert!(
+        stderr.contains(QUOTES_THE_TICKET_RULE),
+        "the review rested on a span the ticket does not carry, because the words it rested \
+         on never reached it: {stderr}"
+    );
+    assert!(
+        stranger.github().pull_requests().is_empty(),
+        "and no pull request was opened: {stderr}"
+    );
+    let unasked = stranger.model_prompts();
+    assert!(
+        !unasked[0].contains(THE_DECISION),
+        "no word of the unauthorized comment reached the review: {}",
+        unasked[0]
+    );
+    assert_eq!(
+        stranger.jira().comment_posts(),
+        1,
+        "and the refusal is published on the ticket, as every refusal is: {:?}",
+        stranger.jira().request_lines()
     );
 }
 
