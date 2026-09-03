@@ -975,6 +975,7 @@ pub fn toil_bounds(config: &Config) -> ToilBounds {
                 .map(|github| vec![github.repo.to_string()])
                 .unwrap_or_default(),
             shortest_description: TOIL_SHORTEST_DESCRIPTION,
+            authorized_commenters: deciders(config),
         },
         scope: fiddle_runtime::toil::Scope {
             max_files_changed: toil
@@ -2900,6 +2901,7 @@ token = { env = "JIRA_API_TOKEN" }
             description: Some(
                 "Rename the deprecated helper in workspace.rs and its one caller.".to_string(),
             ),
+            comments: None,
         }
     }
 

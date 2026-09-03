@@ -602,6 +602,29 @@ changed changes Rust. `fiddle config check` reports the label it resolved and
 both scope bounds below; it reports neither frozen value, so read them here or
 in that file.
 
+### Answering an open question in a comment
+
+The gate refuses a ticket whose description asks a question rather than stating a
+change, with the rule `the ticket asks for a change and not a product decision`.
+The answer can go in the description, and it can go in a comment on the ticket.
+
+A comment counts only when its author is named in `[jira.decision] authorized`,
+which is the same table that names who may answer a question a `propose_change`
+run asks. It has to be that table: an account in `[github.decision] authorized`
+authorizes no comment, whatever its digits look like. A deployment that writes no
+`[jira.decision]` table reads no comment at all: the gate reads the summary and
+the description, as it did before, and the refusal's remedy names the description
+alone. Fill the table in and the remedy names both
+routes. `fiddle config check` reports the accounts it holds.
+
+Two things follow that are worth knowing before you fill it in. Do not name
+fiddle's own tracker account there; nothing stops the gate reading fiddle's own
+refusal comments back as context. And the implementer is given the summary and
+the description only, so a ticket admitted because a comment decided the
+question still hands the agent a description that leaves it open. Writing the
+decision into the description as well is the way to avoid that. ADR 083 records
+both.
+
 ### The document, and where it is read from
 
 `workflows/toil.toml`, resolved **beside the deployment document**, so a

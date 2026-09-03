@@ -39,6 +39,12 @@ const DECISION_STATUS: &str = "enforced-by-propose-change";
 const DECISION_STATUS_PHRASE: &str =
     "enforced by propose-change: a reply from anybody else decides nothing";
 
+const JIRA_DECISION_STATUS: &str = "enforced-by-propose-change-and-by-the-toil-gate";
+
+const JIRA_DECISION_STATUS_PHRASE: &str =
+    "enforced by propose-change and by the toil gate: a reply from anybody else decides \
+     nothing, and a comment from anybody else is not context the ambiguity review reads";
+
 pub fn config_check_json(config: &Config) -> String {
     let toil = crate::config::toil_bounds(config);
     let mut body = serde_json::json!({
@@ -139,7 +145,7 @@ pub fn config_check_json(config: &Config) -> String {
             "decision": jira.decision.as_ref().map(|decision| serde_json::json!({
                 "authorized": decision.authorized,
                 "matched_on": JIRA_AUTHORIZED_MATCHED_ON,
-                "status": DECISION_STATUS,
+                "status": JIRA_DECISION_STATUS,
             })),
             "filing": jira.filing.as_ref().map(|filing| filing.resolved()).map(|filing| serde_json::json!({
                 "project": filing.project_key,
@@ -390,7 +396,7 @@ pub fn config_check_human(config: &Config) -> String {
             optional(jira.decision.as_ref().map(|decision| {
                 format!(
                     "{} (matched on {JIRA_AUTHORIZED_MATCHED_ON}; \
-                     {DECISION_STATUS_PHRASE})",
+                     {JIRA_DECISION_STATUS_PHRASE})",
                     decision.authorized.join(" "),
                 )
             })),
