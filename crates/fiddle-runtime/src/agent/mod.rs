@@ -1525,7 +1525,6 @@ mod tests {
             ["pkg/service/batch_processor.go"],
             "the file the agent edited survives the envelope"
         );
-        assert!(report.claimed_complete);
         assert!(
             report
                 .summary

@@ -222,7 +222,22 @@ async fn the_report_a_real_gateway_enveloped_completes_the_attempt() {
         ["pkg/service/batch_processor.go"],
         "the whole attempt, and not only the parse, has to carry the enveloped report through"
     );
-    assert!(report.claimed_complete);
+    assert!(
+        report.claimed_complete,
+        "and the completion that report claimed survives the envelope. This lane is where \
+         the recorded value is read, because `nothing_in_this_workspace_decides_on_claimed_complete` \
+         refuses every read of the field under `src` that is not a plain recording, and an \
+         assertion is not one"
+    );
+    assert!(
+        report
+            .summary
+            .starts_with("Implemented Option A from the ticket:"),
+        "and so does the summary: {}",
+        report.summary
+    );
+    assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+    assert_eq!(report.quoted_from_a_comment, None);
 }
 
 #[tokio::test]
