@@ -80,6 +80,10 @@ pub fn decision_request_id(
     DecisionRequestId(truncated_digest(&material))
 }
 
+pub fn names_a_decision_marker(body: &str) -> bool {
+    body.contains(OPENING)
+}
+
 pub fn render_marker(binding: &DecisionBinding) -> String {
     let values = [
         binding.request.0.as_str(),

@@ -1,11 +1,17 @@
 use async_trait::async_trait;
 use fiddle_core::{
-    AttemptId, CapabilityId, EffectName, EvidenceRef, RunOutcome, WorkItemComment, TOIL,
+    AttemptId, CapabilityId, EffectName, EvidenceRef, HumanDecisionRequest, RunOutcome,
+    WorkItemComment, TOIL,
 };
 use fiddle_runtime::capability::{Capability, CapabilityError, Executed, ExecutionInput};
 use fiddle_runtime::effect::ExecutionStep;
 use fiddle_runtime::evidence::EvidenceError;
+use fiddle_runtime::human::render_request;
 use fiddle_runtime::human::validate::{Decider, DecisionStep};
+use fiddle_runtime::jira::comment::{
+    carries_a_marker_fiddle_writes, document, marked_body, marker_for,
+};
+use fiddle_runtime::jira::conversation::written;
 use fiddle_runtime::journal::AttemptJournal;
 use fiddle_runtime::orchestration::{self, Addressed, RunContext, RunReport};
 use fiddle_runtime::stub::{StubChangePort, StubWorkItemPort};
@@ -1252,6 +1258,173 @@ async fn a_github_author_id_spelled_like_the_commenter_authorizes_no_comment() {
         admitted.eligible().is_some(),
         "and the same number written as a jira account admits it, so the refusal above rests \
          on the namespace and not on the digits: {admitted:?}"
+    );
+}
+
+fn an_effect_on_the_ticket() -> fiddle_core::EffectId {
+    fiddle_core::effect_id(
+        "snowplow/iglu",
+        "jira:ISP-43",
+        fiddle_core::JIRA_COMMENT_ADDED,
+        &format!("ISP-43@{QUALIFIED_AT}"),
+    )
+}
+
+fn as_fiddle_publishes_it(text: &str) -> String {
+    let posted = marked_body(text, &marker_for(&an_effect_on_the_ticket()));
+    written(&posted["body"])
+}
+
+fn as_fiddle_asks_it() -> String {
+    let effect = an_effect_on_the_ticket();
+    let request = HumanDecisionRequest {
+        invocation_ref: "jira:ISP-43".to_string(),
+        work_ref: Some(fiddle_core::WorkRef("ISP-43".to_string())),
+        capability: fiddle_core::PROPOSE_CHANGE,
+        binding: fiddle_core::DecisionBinding {
+            request: fiddle_core::decision_request_id("snowplow/iglu", "jira:ISP-43", &effect),
+            effect,
+            payload: fiddle_core::payload_hash(r#"{"pr":7}"#),
+            head_sha: "1111111111111111111111111111111111111111".to_string(),
+        },
+        question: format!("May fiddle act on this? {THE_ANSWER}"),
+        rationale: "The check passed at this revision.".to_string(),
+        risks: vec!["review notifications reach the team".to_string()],
+        alternatives: vec!["leave it a draft".to_string()],
+        evidence: vec![EvidenceRef("check=pass".to_string())],
+    };
+    written(&document(&render_request(&request))["body"])
+}
+
+fn a_refusal_fiddle_would_publish() -> String {
+    as_fiddle_publishes_it(&format!(
+        "fiddle did not take `ISP-43` on, and this comment is the whole reason.\n\
+         The rule that failed: {ASKS_FOR_A_CHANGE_RULE}.\n\
+         The text on this issue that the rule read: {THE_ANSWER}"
+    ))
+}
+
+#[test]
+fn the_marker_test_names_the_comments_fiddle_writes_and_no_others() {
+    let published = a_refusal_fiddle_would_publish();
+    let asked = as_fiddle_asks_it();
+    for (named, text) in [("a refusal", &published), ("a question", &asked)] {
+        assert!(
+            carries_a_marker_fiddle_writes(text),
+            "{named} is a comment fiddle wrote, and it is built here by the same functions \
+             that post it: {text}"
+        );
+    }
+    for (named, text) in [
+        ("a plain answer", THE_ANSWER.to_string()),
+        (
+            "an answer that talks about fiddle",
+            format!("{THE_ANSWER} fiddle should have known that already."),
+        ),
+        (
+            "an answer that names the effect word",
+            "Replace it. The effect on downstream readers is nil.".to_string(),
+        ),
+    ] {
+        assert!(
+            !carries_a_marker_fiddle_writes(&text),
+            "{named} is a person's word and must not be excluded, or the exclusion eats the \
+             feature: {text}"
+        );
+    }
+    assert!(
+        published.contains(THE_ANSWER) && asked.contains(THE_ANSWER),
+        "and both fixtures carry the words a later review would rest on, which is why \
+         excluding them matters: {published}\n{asked}"
+    );
+}
+
+#[tokio::test]
+async fn a_comment_fiddle_published_is_not_conversation_although_its_author_is_authorized() {
+    let published = a_refusal_fiddle_would_publish();
+    let fiddles_own = DecidesFromWhatItReads::new();
+    let refused = qualify(
+        &TicketFacts {
+            comments: Some(vec![commented(OPERATOR, &published)]),
+            ..asking()
+        },
+        &bounds_naming_the_operator(),
+        &fiddles_own,
+    )
+    .await;
+    assert_eq!(
+        refused
+            .refused()
+            .unwrap_or_else(|| panic!("fiddle's own words decide nothing: {refused:?}"))
+            .failed_rule,
+        ASKS_FOR_A_CHANGE_RULE,
+        "fiddle posts its comments with the operator's own credential, so the author of a \
+         refusal is the account the operator authorizes to steer; the marker is what tells \
+         the two apart"
+    );
+
+    let nobody_spoke = DecidesFromWhatItReads::new();
+    let also_refused = qualify(&asking(), &bounds_naming_the_operator(), &nobody_spoke).await;
+    assert!(also_refused.refused().is_some());
+    assert_eq!(
+        fiddles_own.read_once().text(),
+        nobody_spoke.read_once().text(),
+        "a ticket whose only authorized comment is one fiddle wrote reaches the review as the \
+         ticket alone, and not as the ticket plus fiddle's argument for the verdict it already \
+         gave"
+    );
+
+    let a_person_too = DecidesFromWhatItReads::new();
+    let admitted = qualify(
+        &TicketFacts {
+            comments: Some(vec![
+                commented(OPERATOR, &published),
+                commented(OPERATOR, THE_ANSWER),
+            ]),
+            ..asking()
+        },
+        &bounds_naming_the_operator(),
+        &a_person_too,
+    )
+    .await;
+    assert!(
+        admitted.eligible().is_some(),
+        "and a person's own comment beside it still decides the ticket, so the exclusion has \
+         not eaten the feature: {admitted:?}"
+    );
+    let read = a_person_too.read_once();
+    assert!(
+        !read.text().contains(ASKS_FOR_A_CHANGE_RULE),
+        "one of the two comments reached the review and the other did not: {}",
+        read.text()
+    );
+}
+
+#[tokio::test]
+async fn a_question_fiddle_asked_on_the_issue_is_not_conversation_either() {
+    let asked = as_fiddle_asks_it();
+    let fiddles_question = DecidesFromWhatItReads::new();
+    let refused = qualify(
+        &TicketFacts {
+            comments: Some(vec![commented(OPERATOR, &asked)]),
+            ..asking()
+        },
+        &bounds_naming_the_operator(),
+        &fiddles_question,
+    )
+    .await;
+    assert!(
+        refused.refused().is_some(),
+        "a question fiddle asked is fiddle's own text and decides nothing: {refused:?}"
+    );
+
+    let nobody_spoke = DecidesFromWhatItReads::new();
+    let _ = qualify(&asking(), &bounds_naming_the_operator(), &nobody_spoke).await;
+    assert_eq!(
+        fiddles_question.read_once().text(),
+        nobody_spoke.read_once().text(),
+        "a decision request carries no `fiddle-effect:` marker and is still fiddle's own \
+         writing, so the effect marker alone would let this one through"
     );
 }
 

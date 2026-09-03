@@ -1,5 +1,6 @@
 use crate::agent::fence_for;
 use crate::human::validate::Decider;
+use crate::jira::comment::carries_a_marker_fiddle_writes;
 use async_trait::async_trait;
 use fiddle_core::WorkItemComment;
 
@@ -350,6 +351,7 @@ pub fn authorized_comments<'a>(
     comments
         .unwrap_or_default()
         .iter()
+        .filter(|comment| !carries_a_marker_fiddle_writes(&comment.text))
         .filter(|comment| authorized.contains(&Decider::JiraAccount(comment.author.clone())))
         .map(|comment| comment.text.trim())
         .filter(|written| !written.is_empty())

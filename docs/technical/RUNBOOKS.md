@@ -617,13 +617,17 @@ the description, as it did before, and the refusal's remedy names the descriptio
 alone. Fill the table in and the remedy names both
 routes. `fiddle config check` reports the accounts it holds.
 
-Two things follow that are worth knowing before you fill it in. Do not name
-fiddle's own tracker account there; nothing stops the gate reading fiddle's own
-refusal comments back as context. And the implementer is given the summary and
-the description only, so a ticket admitted because a comment decided the
-question still hands the agent a description that leaves it open. Writing the
-decision into the description as well is the way to avoid that. ADR 083 records
-both.
+Name your own account. fiddle has no tracker account of its own: it comments
+with the credential in `[jira] user` and `token`, so the comments it publishes
+read back as yours. That is handled — the gate drops any comment carrying a
+marker fiddle writes, before it looks at the author — so authorizing yourself
+does not hand the review fiddle's own refusals. It does mean the author check
+alone is not what protects you, and ADR 083 records why.
+
+One thing to know before you rely on it: the implementer is given the summary and
+the description only, so a ticket admitted because a comment decided the question
+still hands the agent a description that leaves it open. Writing the decision
+into the description as well is the way to avoid that. ADR 083 records that too.
 
 ### The document, and where it is read from
 
