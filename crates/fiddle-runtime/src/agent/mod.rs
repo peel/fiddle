@@ -1627,6 +1627,9 @@ mod tests {
     const RECORDED_STRING: &str =
         include_str!("../../../../tests/fixtures/gateway-real/repair-report-string.json");
 
+    const RECORDED_STRING_DIGEST: &str =
+        "5035ac4446e06add1eb955eeb1cf69465e9263ee4ea7d8dd09bd0f6f59d8f155";
+
     const BARE_REPORT: &str =
         r#"{"changed_files":["src/lib.rs"],"summary":"fixed","claimed_complete":true}"#;
 
@@ -1661,7 +1664,7 @@ mod tests {
             report
                 .summary
                 .starts_with("Implemented Option A from the ticket:"),
-            "the summary survives the envelope character for character: {}",
+            "the summary's opening survives the envelope: {}",
             report.summary
         );
         assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
@@ -1672,16 +1675,18 @@ mod tests {
     fn the_recorded_double_encoded_answer_is_read_as_the_report_it_carries() {
         assert!(
             RECORDED_STRING.starts_with(r#"{"parameters": "{\"changed_files\""#),
-            "the fixture is the body the gateway sent, with the envelope holding a string and \
-             not an object, and a fixture normalised either way would prove nothing: \
-             {RECORDED_STRING}"
+            "the envelope of this recorded body holds a string and not an object, which is \
+             the shape a fixture normalised either way would have lost. Provenance is the \
+             digest below and not this prefix: {RECORDED_STRING}"
         );
         assert_eq!(
-            RECORDED_STRING.len(),
-            2432,
-            "and it is the whole of that body, byte for byte. A prefix says the shape is right \
-             and says nothing about the rest, so the length is here to catch a fixture tidied \
-             after the fact"
+            blake3::hash(RECORDED_STRING.as_bytes()).to_hex().as_str(),
+            RECORDED_STRING_DIGEST,
+            "and it is the whole of that body, byte for byte, digested with BLAKE3 over all \
+             2432 of them. A prefix and a length together still permit any same-length \
+             rewriting of the 2395-byte summary this string carries, and the criterion is that \
+             the fixture is the body the gateway sent rather than an approximation of it. \
+             Nothing but the recorded bytes hashes to this"
         );
         let sent: serde_json::Value =
             serde_json::from_str(RECORDED_STRING).expect("the outer object is well formed JSON");
@@ -1707,8 +1712,8 @@ mod tests {
         assert_eq!(
             (carried.len(), carried.ends_with(']')),
             (2395, true),
-            "the stray byte is the last one, so nothing follows it and the object before it is \
-             the whole of what the gateway meant to send"
+            "the stray byte is the last one, so nothing follows it. What precedes it parses as \
+             a report, which the read below requires"
         );
         let strictly = serde_json::from_str::<serde_json::Value>(&carried).expect_err(
             "this recorded string is not a whole JSON document, and that is why the \
@@ -1745,7 +1750,8 @@ mod tests {
             report
                 .summary
                 .starts_with("The ticket's description offered Option A"),
-            "and so does the summary, character for character: {}",
+            "and the summary opens with the sentence that run wrote. This checks the opening \
+             only; the digest above is what holds all 2432 bytes: {}",
             report.summary
         );
         assert!(report.findings.is_empty(), "{:?}", report.findings);

@@ -610,6 +610,7 @@ const A_VERDICT_THE_GATEWAY_DOUBLE_ENCODED: &str =
 struct ObeysItsToolChoice {
     answer: String,
     seen: Arc<Mutex<Vec<Option<ToolChoice>>>>,
+    schemas: Arc<Mutex<Vec<Option<serde_json::Value>>>>,
 }
 
 impl ObeysItsToolChoice {
@@ -617,11 +618,19 @@ impl ObeysItsToolChoice {
         ObeysItsToolChoice {
             answer: answer.to_string(),
             seen: Arc::new(Mutex::new(Vec::new())),
+            schemas: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn choices_it_was_sent(&self) -> Vec<Option<ToolChoice>> {
         self.seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn output_schemas_it_was_sent(&self) -> Vec<Option<serde_json::Value>> {
+        self.schemas
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -646,6 +655,15 @@ impl CompletionModel for ObeysItsToolChoice {
         request: CompletionRequest,
     ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
         let choice = request.tool_choice.clone();
+        self.schemas
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(
+                request
+                    .output_schema
+                    .clone()
+                    .map(schemars::Schema::to_value),
+            );
         let turn = {
             let mut seen = self
                 .seen
@@ -872,16 +890,70 @@ async fn the_schema_the_evaluation_sends_is_the_verdicts_own_and_the_newtype_mov
     )
     .await;
 
-    let sent = gateway
-        .seen
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .len();
-    assert_eq!(sent, 1, "one turn answered, so one request was sent");
+    let schemas = gateway.output_schemas_it_was_sent();
     assert_eq!(
-        schemars::schema_for!(Verdict).to_value()["title"],
+        schemas.len(),
+        1,
+        "one turn answered, so one request was sent, and the schema below is that request's \
+         and not a schema this lane generated for itself"
+    );
+    let sent = schemas[0]
+        .clone()
+        .expect("the evaluation's request carries a structured-output schema");
+    assert_eq!(
+        sent,
+        schemars::schema_for!(Verdict).to_value(),
+        "the request carries the verdict's own schema, whole and field for field. It is built \
+         from `Judged` and not from the `.output_schema::<Verdict>()` the builder names, which \
+         `from_agent` overrides the way it overrides `output_mode`, so this equality is the \
+         newtype's delegation and nothing else holds it. Comparing one member of a locally \
+         generated schema would have passed whatever the request held"
+    );
+    assert_eq!(
+        sent["title"],
         json!("Verdict"),
-        "`response_format.json_schema.name` is read off the schema's title, so a newtype that \
-         renamed it would move the wire payload"
+        "and the provider reads `response_format.json_schema.name` off that title, so a newtype \
+         that named itself would rename the wire payload. rig builds that `response_format` and \
+         this build does not, which is why \
+         `no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself` reads the wire \
+         form off the socket and this lane reads the request: {sent}"
+    );
+}
+
+#[tokio::test]
+async fn the_schema_the_repair_step_sends_is_the_reports_own_and_the_newtype_moves_nothing() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([report_turn("nothing", true)]);
+    let _ = attempt(
+        model.clone(),
+        &redaction(),
+        host,
+        budget(),
+        Direction::Fresh,
+        None,
+    )
+    .await;
+
+    let requests = model.requests();
+    assert!(
+        !requests.is_empty(),
+        "no request reached the model, so the schema below would be the schema of nothing"
+    );
+    let sent = requests[0]
+        .output_schema
+        .clone()
+        .expect("the repair step's request carries a structured-output schema")
+        .to_value();
+    assert_eq!(
+        sent,
+        schemars::schema_for!(RepairReport).to_value(),
+        "the repair side is held the same way the verdict side is, and read off the request \
+         rather than off two schemas this lane generated for itself. It is built from \
+         `Reported`, so this equality is that newtype's delegation"
+    );
+    assert_eq!(
+        sent["title"],
+        json!("RepairReport"),
+        "and the title the provider names the wire payload by is the report's own: {sent}"
     );
 }
