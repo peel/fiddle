@@ -5,6 +5,10 @@ use rig_agent::AgentBuilder;
 use std::future::IntoFuture;
 use std::time::Duration;
 
+const FENCE: char = '`';
+
+const SHORTEST_FENCE: usize = 3;
+
 const PREAMBLE: &str = "\
 You are reading one tracker ticket and deciding which of two things it \
 amounts to: it asks for a change somebody can make, or it needs a product \
@@ -93,8 +97,21 @@ where
     }
 }
 
+fn unfenced(answered: &str) -> &str {
+    let body = answered.trim();
+    let opened = body.trim_start_matches(FENCE);
+    if body.len() - opened.len() < SHORTEST_FENCE {
+        return body;
+    }
+    let content = match opened.split_once('\n') {
+        Some((_language_tag, content)) => content,
+        None => opened,
+    };
+    content.trim().trim_end_matches(FENCE).trim()
+}
+
 fn read(answered: &str) -> Result<Judgement, ReviewError> {
-    let parsed = serde_json::from_str::<Answer>(answered.trim()).map_err(|error| {
+    let parsed = serde_json::from_str::<Answer>(unfenced(answered)).map_err(|error| {
         ReviewError(format!(
             "the ambiguity review answered something this build cannot read: {error}"
         ))
@@ -112,6 +129,65 @@ fn read(answered: &str) -> Result<Judgement, ReviewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RECORDED_RESPONSE: &str =
+        include_str!("../../../../tests/fixtures/gateway-real/review-answer.json");
+
+    const RECORDED_SPAN: &str = "Option A, no downstream risk.  Guard the report site so merge-less batches stop clobbering the value: if ctx.maxGraphSize > 0 { bp.metrics.MergeGraphSizeMax(ctx.maxGraphSize) }";
+
+    const BARE: &str = r#"{"verdict":"asks_for_a_change","quoting":"a span","certainty":0.5}"#;
+
+    fn recorded_answer() -> String {
+        let response: serde_json::Value = serde_json::from_str(RECORDED_RESPONSE)
+            .expect("the recorded gateway response is the body the gateway sent, and it is JSON");
+        response["choices"][0]["message"]["content"]
+            .as_str()
+            .expect("the recorded response carries the answer as text")
+            .to_string()
+    }
+
+    #[test]
+    fn the_recorded_gateway_answer_is_read_through_the_fence_it_arrived_in() {
+        let answered = recorded_answer();
+        assert!(
+            answered.starts_with(" ```json\n") && answered.ends_with("\n```"),
+            "the fixture is the answer as the gateway sent it, leading space and fence included, \
+             and a fixture normalised to bare JSON would prove nothing: {answered:?}"
+        );
+        let judgement = read(&answered).unwrap_or_else(|error| {
+            panic!("the answer a real gateway sent is one this build reads: {error}")
+        });
+        assert_eq!(
+            judgement.verdict,
+            Reviewed::AsksForAChange,
+            "the recorded answer votes asks_for_a_change: {answered:?}"
+        );
+        assert_eq!(
+            judgement.quoting, RECORDED_SPAN,
+            "the span survives the fence character for character, two spaces after `risk.` \
+             included"
+        );
+        assert_eq!(judgement.certainty, 0.95);
+    }
+
+    #[test]
+    fn a_fenced_object_is_read_and_so_is_the_bare_object_it_wraps() {
+        for fenced in [
+            BARE.to_string(),
+            format!("```\n{BARE}\n```"),
+            format!("```json\n{BARE}\n```"),
+            format!("````json\n{BARE}\n````"),
+            format!("  ```json\n{BARE}\n```  \n"),
+            format!("```{BARE}```"),
+        ] {
+            let judgement = read(&fenced).unwrap_or_else(|error| {
+                panic!("`{fenced}` wraps one object this build reads: {error}")
+            });
+            assert_eq!(judgement.verdict, Reviewed::AsksForAChange);
+            assert_eq!(judgement.quoting, "a span");
+            assert_eq!(judgement.certainty, 0.5);
+        }
+    }
 
     #[test]
     fn each_spelling_of_the_verdict_reaches_the_arm_it_names() {
@@ -153,6 +229,44 @@ mod tests {
     }
 
     #[test]
+    fn a_fence_around_something_that_is_not_an_answer_still_refuses() {
+        let misspelled = r#"{"verdict":"maybe","quoting":"a span","certainty":0.5}"#;
+        let short = r#"{"quoting":"a span","certainty":0.5}"#;
+        for unreadable in [
+            "``".to_string(),
+            "```".to_string(),
+            "```json\n```".to_string(),
+            "```json\nnot json\n```".to_string(),
+            format!("```json\n{misspelled}\n```"),
+            format!("```json\n{short}\n```"),
+            format!("```json\n{BARE}\n```\n```json\n{BARE}\n```"),
+            format!("Here is my answer:\n```json\n{BARE}\n```"),
+            format!("```json\n{BARE}\n```\nand that is my answer."),
+        ] {
+            let refused = read(&unreadable).expect_err(
+                "stripping a fence is not a licence to accept anything that arrives inside or \
+                 beside one",
+            );
+            assert!(
+                refused.0.contains("cannot read"),
+                "the refusal names what happened for `{unreadable}`: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_answer_wrapped_in_a_tool_call_envelope_is_still_refused() {
+        let enveloped = format!(r#"{{"name":"json_tool_call","arguments":{BARE}}}"#);
+        let refused = read(&enveloped).expect_err(
+            "this read tolerates a fence around the object and not a rewritten tool contract",
+        );
+        assert!(
+            refused.0.contains("cannot read"),
+            "the refusal names what happened: {refused}"
+        );
+    }
+
+    #[test]
     fn the_preamble_names_the_safe_answer_and_refuses_certainty_as_evidence() {
         assert!(
             PREAMBLE.contains("needs_a_product_decision\" whenever you are not sure"),
@@ -161,6 +275,19 @@ mod tests {
         assert!(
             PREAMBLE.contains("never a measurement"),
             "and that a reported certainty is not evidence"
+        );
+    }
+
+    #[test]
+    fn the_preamble_still_asks_for_one_object_and_the_read_tolerates_a_fence_anyway() {
+        assert!(
+            PREAMBLE.contains("a single JSON object and nothing else"),
+            "the fence a real gateway sent is tolerated in the read, and the ask stays in the \
+             preamble rather than being softened into asking for a fence"
+        );
+        assert!(
+            read(&recorded_answer()).is_ok(),
+            "and the tolerance is what carries the fenced answer, not the wording above it"
         );
     }
 }
