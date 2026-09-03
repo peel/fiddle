@@ -7,6 +7,11 @@ use fiddle_runtime::agent::{
 use fiddle_runtime::core::AttemptId;
 use fiddle_runtime::workspace::{DeclaredCommand, Workspace, WorkspaceCommand};
 use fiddle_runtime::Redaction;
+use rig_core::completion::message::ToolChoice;
+use rig_core::completion::{
+    CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
+};
+use rig_core::streaming::StreamingCompletionResponse;
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -508,13 +513,34 @@ async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
         refused.join("\n")
     );
 
-    for (offered, model) in [("the repairer", &repairer), ("the judge", &judge)] {
+    for (offered, model, expected) in [
+        (
+            "the repairer",
+            &repairer,
+            [
+                "edit_file",
+                "list_files",
+                "read_file",
+                "run_check",
+                "search_files",
+                "write_file",
+            ]
+            .as_slice(),
+        ),
+        (
+            "the judge",
+            &judge,
+            ["list_files", "read_file", "search_files"].as_slice(),
+        ),
+    ] {
         let schemas = schemas_of(model);
-        assert!(
-            schemas.len() > 1,
-            "{offered} is sent its tools and the structured-output tool, and this request \
-             carried {}: {schemas:?}",
-            schemas.len()
+        let mut named: Vec<&str> = schemas.iter().map(|(name, _)| name.as_str()).collect();
+        named.sort_unstable();
+        assert_eq!(
+            named, expected,
+            "{offered} is sent its own tools and no others. No synthetic output tool is among \
+             them, because `prompt_typed` pins `OutputMode::Native`, and a count-only assertion \
+             here would pass whether or not one arrived"
         );
         let offenders = combiners_at_the_top_of(&schemas);
         assert!(
@@ -526,4 +552,283 @@ async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
             offenders.join("\n")
         );
     }
+}
+
+const A_VERDICT_THE_GATEWAY_ENVELOPED: &str = r#"{"parameters": {"verdict": "accepted"}}"#;
+
+#[derive(Clone)]
+struct ObeysItsToolChoice {
+    answer: String,
+    seen: Arc<Mutex<Vec<Option<ToolChoice>>>>,
+}
+
+impl ObeysItsToolChoice {
+    fn answering(answer: &str) -> Self {
+        ObeysItsToolChoice {
+            answer: answer.to_string(),
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn choices_it_was_sent(&self) -> Vec<Option<ToolChoice>> {
+        self.seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn calls(&self) -> usize {
+        self.choices_it_was_sent().len()
+    }
+}
+
+impl CompletionModel for ObeysItsToolChoice {
+    type Response = <MockCompletionModel as CompletionModel>::Response;
+    type StreamingResponse = <MockCompletionModel as CompletionModel>::StreamingResponse;
+    type Client = ();
+
+    fn make(_: &Self::Client, _: impl Into<String>) -> Self {
+        ObeysItsToolChoice::answering("")
+    }
+
+    async fn completion(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse<Self::Response>, CompletionError> {
+        let choice = request.tool_choice.clone();
+        let turn = {
+            let mut seen = self
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            seen.push(choice.clone());
+            seen.len()
+        };
+        let scripted = match choice {
+            Some(ToolChoice::Required) => MockTurn::tool_call(
+                format!("read-{turn}"),
+                "read_file",
+                json!({"path": "src/lib.rs"}),
+            ),
+            _ => MockTurn::text(&self.answer),
+        };
+        MockCompletionModel::new([scripted])
+            .completion(request)
+            .await
+    }
+
+    async fn stream(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<StreamingCompletionResponse<Self::StreamingResponse>, CompletionError> {
+        MockCompletionModel::new([MockTurn::text(&self.answer)])
+            .stream(request)
+            .await
+    }
+}
+
+fn judging() -> Brief<'static> {
+    Brief {
+        preamble: JUDGE_PREAMBLE_FOR_TESTS,
+        task: "Judge this.",
+    }
+}
+
+fn bounded_at(max_turns: usize) -> AgentBudget {
+    AgentBudget {
+        max_turns,
+        ..budget()
+    }
+}
+
+const THE_DOCUMENTS_BOUND: usize = 12;
+
+#[tokio::test]
+async fn the_evaluation_answers_inside_the_bound_the_document_gives_it() {
+    let (host, _g) = test_host();
+    let gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
+
+    let verdict = judge_briefed(
+        gateway.clone(),
+        &redaction(),
+        host,
+        bounded_at(THE_DOCUMENTS_BOUND),
+        judging(),
+        None,
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "the evaluation has to answer against a gateway that obeys the tool choice fiddle \
+             sends, and it spent {} of {THE_DOCUMENTS_BOUND} turns instead: {error}",
+            gateway.calls()
+        )
+    });
+
+    assert_eq!(verdict, Verdict::Accepted {});
+    assert!(
+        gateway.calls() < THE_DOCUMENTS_BOUND,
+        "the fix has to show as termination and not as a larger budget, and this run took all \
+         {THE_DOCUMENTS_BOUND} turns the document allows"
+    );
+    assert_eq!(
+        gateway.choices_it_was_sent(),
+        vec![Some(ToolChoice::Auto)],
+        "the evaluation is read-only, so `required` leaves it no move but to read again. \
+         What it is sent, and how many times, is the whole of this lane"
+    );
+}
+
+#[tokio::test]
+async fn the_stub_obeys_the_tool_choice_it_is_sent() {
+    let gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
+
+    let obliged = gateway
+        .completion_request(rig_core::completion::Message::user("judge this"))
+        .tool_choice(ToolChoice::Required)
+        .send()
+        .await
+        .expect("the stub answers every request");
+    let free = gateway
+        .completion_request(rig_core::completion::Message::user("judge this"))
+        .tool_choice(ToolChoice::Auto)
+        .send()
+        .await
+        .expect("the stub answers every request");
+
+    assert!(
+        matches!(
+            obliged.choice.first(),
+            rig_core::completion::AssistantContent::ToolCall(_)
+        ),
+        "a gateway that obeys `required` calls a tool and does not answer, which is the whole \
+         behaviour the two lanes above rest on. It returned {:?}",
+        obliged.choice
+    );
+    assert!(
+        matches!(
+            free.choice.first(),
+            rig_core::completion::AssistantContent::Text(_)
+        ),
+        "and answers when it is not obliged, so the passing lane above is not passing against \
+         a stub that answers whatever it is sent. It returned {:?}",
+        free.choice
+    );
+}
+
+#[tokio::test]
+async fn the_repair_step_still_obliges_a_tool_call_and_a_gateway_that_obeys_leaves_it_no_answer() {
+    let (host, _g) = test_host();
+    let gateway = ObeysItsToolChoice::answering(RECORDED_ENVELOPE);
+
+    let unanswered = attempt(
+        gateway.clone(),
+        &redaction(),
+        host,
+        bounded_at(4),
+        Direction::Fresh,
+        None,
+    )
+    .await;
+
+    assert!(
+        matches!(unanswered, Err(AgentError::Bounded { .. })),
+        "this lane pins a defect rather than a fix. `prompt_typed` pins `OutputMode::Native`, so \
+         no output tool is offered and the answer can only be the assistant's final text, which \
+         `required` forbids. The repair step survives in production because the recorded gateway \
+         returned `stop` with text anyway, not because fiddle offered it a way to answer. It \
+         returned {unanswered:?}"
+    );
+    assert_eq!(
+        gateway.choices_it_was_sent(),
+        vec![Some(ToolChoice::Required); 4],
+        "and it is `required` on every turn, so the repair step's escape is the gateway's \
+         leniency and not this build's design"
+    );
+}
+
+#[tokio::test]
+async fn an_answer_that_is_not_a_verdict_is_refused_and_the_refusal_names_the_verdict() {
+    for answered in [
+        "I read the change and it looks fine to me.",
+        r#"{"parameters": {"summary": "an envelope holding no verdict"}}"#,
+        r#"{"verdict": "maybe"}"#,
+    ] {
+        let (host, _g) = test_host();
+        let refused = judge_briefed(
+            MockCompletionModel::new([MockTurn::text(answered)]),
+            &redaction(),
+            host,
+            budget(),
+            judging(),
+            None,
+        )
+        .await;
+
+        let Err(AgentError::Protocol { reason }) = &refused else {
+            panic!("an answer that is not a verdict is never a verdict: {answered} -> {refused:?}");
+        };
+        assert!(
+            reason.starts_with("the verdict did not match the schema:"),
+            "the refusal has to name what could not be read, and this one says {reason:?} of \
+             {answered:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_verdict_a_gateway_envelopes_is_read_and_a_bare_one_still_reads() {
+    for (answered, expected) in [
+        (A_VERDICT_THE_GATEWAY_ENVELOPED, Verdict::Accepted {}),
+        (r#"{"verdict": "accepted"}"#, Verdict::Accepted {}),
+        (
+            r#"```json
+{"verdict": "rejected", "findings": ["it renamed a symbol the ticket never named"]}
+```"#,
+            Verdict::Rejected {
+                findings: vec!["it renamed a symbol the ticket never named".to_string()],
+            },
+        ),
+    ] {
+        let (host, _g) = test_host();
+        let read = judge_briefed(
+            MockCompletionModel::new([MockTurn::text(answered)]),
+            &redaction(),
+            host,
+            budget(),
+            judging(),
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("this build reads {answered:?}: {error}"));
+        assert_eq!(read, expected, "of {answered:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_schema_the_evaluation_sends_is_the_verdicts_own_and_the_newtype_moves_nothing() {
+    let (host, _g) = test_host();
+    let gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
+    let _ = judge_briefed(
+        gateway.clone(),
+        &redaction(),
+        host,
+        budget(),
+        judging(),
+        None,
+    )
+    .await;
+
+    let sent = gateway
+        .seen
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .len();
+    assert_eq!(sent, 1, "one turn answered, so one request was sent");
+    assert_eq!(
+        schemars::schema_for!(Verdict).to_value()["title"],
+        json!("Verdict"),
+        "`response_format.json_schema.name` is read off the schema's title, so a newtype that \
+         renamed it would move the wire payload"
+    );
 }

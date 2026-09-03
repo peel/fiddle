@@ -17,7 +17,6 @@ pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
-use rig_agent::agent::OutputMode;
 use rig_agent::agent::{NoToolConfig, WithBuilderTools};
 use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::{Tool, ToolContext};
@@ -201,6 +200,8 @@ const ENVELOPE: &str = "parameters";
 
 const REPORT_FIELDS: [&str; 3] = ["changed_files", "summary", "claimed_complete"];
 
+const VERDICT_FIELDS: [&str; 1] = ["verdict"];
+
 #[derive(Clone, Debug)]
 struct Reported(RepairReport);
 
@@ -228,16 +229,16 @@ impl<'de> serde::Deserialize<'de> for Reported {
         D: serde::Deserializer<'de>,
     {
         let answered = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
-        serde_json::from_value(unenveloped(answered))
+        serde_json::from_value(unenveloped(answered, &REPORT_FIELDS))
             .map(Reported)
             .map_err(serde::de::Error::custom)
     }
 }
 
-fn unenveloped(answered: serde_json::Value) -> serde_json::Value {
+fn unenveloped(answered: serde_json::Value, fields_of_its_own: &[&str]) -> serde_json::Value {
     match answered {
         serde_json::Value::Object(mut fields)
-            if !REPORT_FIELDS
+            if !fields_of_its_own
                 .iter()
                 .any(|field| fields.contains_key(*field)) =>
         {
@@ -361,8 +362,6 @@ where
     .await
 }
 
-const TOOL_CHOICE: &str = "required";
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ability {
     Read,
@@ -405,6 +404,10 @@ pub enum Offer {
     Judge,
 }
 
+const CHOICE_REQUIRED: &str = "required";
+
+const CHOICE_AUTO: &str = "auto";
+
 impl Offer {
     pub fn abilities(self, declares_commands: bool) -> Vec<Ability> {
         let mut abilities = READING.to_vec();
@@ -416,6 +419,20 @@ impl Offer {
             abilities.push(Ability::Command);
         }
         abilities
+    }
+
+    pub fn tool_choice(self) -> rig_core::completion::message::ToolChoice {
+        match self {
+            Offer::Repair => rig_core::completion::message::ToolChoice::Required,
+            Offer::Judge => rig_core::completion::message::ToolChoice::Auto,
+        }
+    }
+
+    pub const fn chose(self) -> &'static str {
+        match self {
+            Offer::Repair => CHOICE_REQUIRED,
+            Offer::Judge => CHOICE_AUTO,
+        }
     }
 }
 
@@ -464,13 +481,15 @@ where
     M: rig_core::completion::CompletionModel + 'static,
 {
     let declares_commands = !host.commands.is_empty();
-    let abilities = Offer::Repair.abilities(declares_commands);
+    let offer = Offer::Repair;
+    let abilities = offer.abilities(declares_commands);
     let preamble = briefed(brief.preamble, &host.commands);
     announced(
         redaction,
         &budget,
         &preamble,
         brief.task,
+        offer,
         &abilities,
         transcripts,
     );
@@ -483,8 +502,7 @@ where
             .max_tokens(budget.max_tokens)
             .default_max_turns(budget.max_turns)
             .output_schema::<RepairReport>()
-            .output_mode(OutputMode::Tool)
-            .tool_choice(rig_core::completion::message::ToolChoice::Required),
+            .tool_choice(offer.tool_choice()),
         &abilities,
     );
     let mut builder = builder.add_hook(AuditHook::for_host(&host));
@@ -512,8 +530,9 @@ where
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result
-            .map_err(|error| classify(error, redaction, &returns.spent(), budget.max_tokens))?,
+        result = run => result.map_err(|error| {
+            classify(error, REPORT, redaction, &returns.spent(), budget.max_tokens)
+        })?,
     };
 
     let changed = host
@@ -539,6 +558,7 @@ fn announced(
     budget: &AgentBudget,
     preamble: &str,
     task: &str,
+    offer: Offer,
     abilities: &[Ability],
     transcripts: Option<&Transcripts>,
 ) {
@@ -556,7 +576,7 @@ fn announced(
             .text("preamble", preamble)
             .text("task", task)
             .text("tools", &named.join(", "))
-            .text("tool_choice", TOOL_CHOICE),
+            .text("tool_choice", offer.chose()),
     );
 }
 
@@ -644,6 +664,39 @@ impl Verdict {
     }
 }
 
+#[derive(Clone, Debug)]
+struct Judged(Verdict);
+
+impl schemars::JsonSchema for Judged {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        <Verdict as schemars::JsonSchema>::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("fiddle_runtime::agent::Judged")
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <Verdict as schemars::JsonSchema>::json_schema(generator)
+    }
+
+    fn inline_schema() -> bool {
+        <Verdict as schemars::JsonSchema>::inline_schema()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Judged {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let answered = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        serde_json::from_value(unenveloped(answered, &VERDICT_FIELDS))
+            .map(Judged)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 pub async fn judge_briefed<M>(
     model: M,
     redaction: &Redaction,
@@ -655,12 +708,14 @@ pub async fn judge_briefed<M>(
 where
     M: rig_core::completion::CompletionModel + 'static,
 {
-    let abilities = Offer::Judge.abilities(!host.commands.is_empty());
+    let offer = Offer::Judge;
+    let abilities = offer.abilities(!host.commands.is_empty());
     announced(
         redaction,
         &budget,
         brief.preamble,
         brief.task,
+        offer,
         &abilities,
         transcripts,
     );
@@ -673,8 +728,7 @@ where
             .max_tokens(budget.max_tokens)
             .default_max_turns(budget.max_turns)
             .output_schema::<Verdict>()
-            .output_mode(OutputMode::Tool)
-            .tool_choice(rig_core::completion::message::ToolChoice::Required),
+            .tool_choice(offer.tool_choice()),
         &abilities,
     );
     let mut builder = builder.add_hook(AuditHook::for_host(&host));
@@ -690,19 +744,20 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<Verdict>(brief.task.to_string())
+        .prompt_typed::<Judged>(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .into_future();
 
-    let verdict = tokio::select! {
+    let Judged(verdict) = tokio::select! {
         biased;
         _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result
-            .map_err(|error| classify(error, redaction, &Spent::default(), budget.max_tokens))?,
+        result = run => result.map_err(|error| {
+            classify(error, VERDICT, redaction, &Spent::default(), budget.max_tokens)
+        })?,
     };
 
     match &verdict {
@@ -725,15 +780,20 @@ fn unanswered(max_tokens: u64) -> String {
     )
 }
 
+const REPORT: &str = "report";
+
+const VERDICT: &str = "verdict";
+
 fn classify(
     error: StructuredOutputError,
+    asked_for: &str,
     redaction: &Redaction,
     spent: &Spent,
     max_tokens: u64,
 ) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
-            reason: format!("the report did not match the schema: {source}"),
+            reason: format!("the {asked_for} did not match the schema: {source}"),
         },
         StructuredOutputError::EmptyResponse => AgentError::Protocol {
             reason: "the model returned no final content at all".to_string(),
@@ -1186,7 +1246,13 @@ mod tests {
              testing anything: {error}"
         );
 
-        match classify(error, redaction, &Spent::default(), FIXTURE_MAX_TOKENS) {
+        match classify(
+            error,
+            REPORT,
+            redaction,
+            &Spent::default(),
+            FIXTURE_MAX_TOKENS,
+        ) {
             AgentError::Provider { reason } => reason,
             other => panic!("a provider failure must classify as Provider, got {other:?}"),
         }
@@ -1225,7 +1291,13 @@ mod tests {
             ),
         )));
 
-        let whole = classify(error, &Redaction::unknown(), &Spent::default(), 8192);
+        let whole = classify(
+            error,
+            REPORT,
+            &Redaction::unknown(),
+            &Spent::default(),
+            8192,
+        );
         let reason = match &whole {
             AgentError::Unanswered { reason, .. } => reason.clone(),
             other => panic!("an empty answer is its own outcome, got {other:?}"),
@@ -1323,6 +1395,7 @@ mod tests {
 
         match classify(
             error,
+            REPORT,
             &Redaction::of(CREDENTIAL),
             &Spent::default(),
             FIXTURE_MAX_TOKENS,
@@ -1364,6 +1437,7 @@ mod tests {
 
         match classify(
             error,
+            REPORT,
             &Redaction::unknown(),
             &Spent::default(),
             FIXTURE_MAX_TOKENS,
@@ -1390,6 +1464,7 @@ mod tests {
 
         match classify(
             error,
+            REPORT,
             &Redaction::of(CREDENTIAL),
             &Spent::default(),
             FIXTURE_MAX_TOKENS,
@@ -1624,6 +1699,102 @@ mod tests {
                      {refused}"
                 ),
             }
+        }
+    }
+
+    fn read_verdict(answered: &str) -> Result<Verdict, serde_json::Error> {
+        serde_json::from_str::<Judged>(answered).map(|Judged(verdict)| verdict)
+    }
+
+    #[test]
+    fn a_bare_verdict_reads_beside_the_envelope_the_recorded_gateway_wrapped_its_answer_in() {
+        assert_eq!(
+            read_verdict(r#"{"verdict":"accepted"}"#)
+                .expect("the shape the stubs have always sent still reads"),
+            Verdict::Accepted {}
+        );
+        assert_eq!(
+            read_verdict(r#"{"parameters":{"verdict":"accepted"}}"#).unwrap_or_else(|error| {
+                panic!(
+                    "the envelope this gateway wrapped the repair report in on 2026-09-03 is the \
+                     envelope it would wrap a verdict in: {error}"
+                )
+            }),
+            Verdict::Accepted {}
+        );
+
+        let both = r#"{"verdict":"maybe","parameters":{"verdict":"accepted"}}"#;
+        let refused = read_verdict(both)
+            .expect_err("an answer carrying a verdict twice is not one verdict")
+            .to_string();
+        assert!(
+            refused.contains("unknown variant `maybe`"),
+            "the unwrap is additive and never reaches past a top level that already carries \
+             `verdict`. An unconditional unwrap would have read the envelope's `accepted` here \
+             and called it the answer. It said: {refused}"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_is_neither_a_verdict_nor_an_envelope_holding_one_is_refused() {
+        for (answered, named) in [
+            ("{}", "missing field `verdict`"),
+            (r#"{"parameters":{}}"#, "missing field `verdict`"),
+            (r#"{"verdict":"maybe"}"#, "unknown variant `maybe`"),
+            (
+                r#"{"verdict":"accepted","findings":[]}"#,
+                "unknown field `findings`",
+            ),
+            (
+                r#"{"parameters":{"summary":"a report, not a verdict"}}"#,
+                "missing field `verdict`",
+            ),
+            (r#"{"parameters":3}"#, "invalid type: integer"),
+            (r#""a sentence""#, "invalid type: string"),
+            (
+                r#"{"verdict":"rejected","findings":"one sentence"}"#,
+                "invalid type: string",
+            ),
+        ] {
+            match read_verdict(answered) {
+                Ok(verdict) => panic!(
+                    "`{answered}` is not a verdict, and a parse that accepts anything is not a \
+                     parse: {verdict:?}"
+                ),
+                Err(refused) => assert!(
+                    refused.to_string().contains(named),
+                    "the refusal has to name what could not be read, and `{answered}` said: \
+                     {refused}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_evaluation_and_the_repair_ask_for_a_tool_differently_and_the_transcript_says_which() {
+        assert_eq!(
+            (Offer::Judge.chose(), Offer::Repair.chose()),
+            (CHOICE_AUTO, CHOICE_REQUIRED),
+            "the read-only offer permits a text answer because it has no other channel; the \
+             repair offer still obliges a call"
+        );
+        for (offer, expected) in [
+            (
+                Offer::Judge,
+                rig_core::completion::message::ToolChoice::Auto,
+            ),
+            (
+                Offer::Repair,
+                rig_core::completion::message::ToolChoice::Required,
+            ),
+        ] {
+            assert_eq!(
+                offer.tool_choice(),
+                expected,
+                "the word the transcript records is the choice the request carries, and \
+                 `{}` disagreed",
+                offer.chose()
+            );
         }
     }
 
