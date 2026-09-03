@@ -8,12 +8,14 @@ use fiddle_runtime::journal::AttemptJournal;
 use fiddle_runtime::orchestration::{self, Addressed, RunContext, RunReport};
 use fiddle_runtime::stub::{StubChangePort, StubWorkItemPort};
 use fiddle_runtime::toil::{
-    qualify, recheck, AmbiguityReview, Eligibility, Eligible, EvidenceClass, Judgement, Quoted,
-    Refusal, ReviewError, RuleState, Source, Standing, TicketFacts, Verdict, RULES,
-    TICKET_HELD_ITS_REVISION,
+    qualify, recheck, AmbiguityReview, Eligibility, Eligible, EvidenceClass, Judgement,
+    ModelReview, Quoted, Refusal, ReviewBounds, ReviewError, RuleState, Source, Standing,
+    TicketFacts, Verdict, RULES, TICKET_HELD_ITS_REVISION,
 };
+use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use std::collections::BTreeSet;
 use std::sync::Mutex;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const SENTINEL: &str = "IGNORE-ALL-PRIOR-INSTRUCTIONS-7f3a";
@@ -1567,5 +1569,97 @@ async fn an_unread_revision_and_a_changed_revision_are_different_refusals() {
         recheck(&admitted, Some(QUALIFIED_AT)).eligible().is_some(),
         "the revision the qualification read still admits the ticket, so the recheck cannot pass \
          by refusing every ticket"
+    );
+}
+
+const RECORDED_RESPONSE: &str =
+    include_str!("../../../tests/fixtures/gateway-real/review-answer.json");
+
+const RECORDED_SPAN: &str = "Option A, no downstream risk.  Guard the report site so merge-less batches stop clobbering the value: if ctx.maxGraphSize > 0 { bp.metrics.MergeGraphSizeMax(ctx.maxGraphSize) }";
+
+fn recorded_answer() -> String {
+    let response: serde_json::Value = serde_json::from_str(RECORDED_RESPONSE)
+        .expect("the recorded gateway response is the body the gateway sent, and it is JSON");
+    response["choices"][0]["message"]["content"]
+        .as_str()
+        .expect("the recorded response carries the answer as text")
+        .to_string()
+}
+
+fn gateway_answering(answered: &str) -> ModelReview<MockCompletionModel> {
+    ModelReview::new(
+        MockCompletionModel::new([MockTurn::text(answered)]),
+        ReviewBounds {
+            max_tokens: 512,
+            deadline: Duration::from_secs(30),
+        },
+    )
+}
+
+fn ticket_carrying_the_recorded_span() -> TicketFacts {
+    TicketFacts {
+        description: Some(RECORDED_SPAN.into()),
+        ..eligible_ticket()
+    }
+}
+
+#[tokio::test]
+async fn a_gateway_that_fences_its_answer_admits_the_ticket_it_answered_about() {
+    let answered = recorded_answer();
+    assert!(
+        answered.starts_with(" ```json\n") && answered.ends_with("\n```"),
+        "the fixture is the answer as the gateway sent it, leading space and fence included: \
+         {answered:?}"
+    );
+    assert!(
+        answered.contains(RECORDED_SPAN),
+        "the span the ticket below carries is the span the recorded answer quotes: {answered:?}"
+    );
+    let ticket = ticket_carrying_the_recorded_span();
+    let outcome = qualify(&ticket, &bounds(), &gateway_answering(&answered)).await;
+    let admitted = outcome
+        .eligible()
+        .unwrap_or_else(|| panic!("an answer wrapped in a fence is an answer: {outcome:?}"));
+    for (held, class) in [
+        ("the ambiguity review answered", EvidenceClass::Measured),
+        (
+            "the ticket asks for a change and not a product decision",
+            EvidenceClass::Argued,
+        ),
+    ] {
+        assert_eq!(
+            admitted
+                .ledger
+                .iter()
+                .find(|standing| standing.rule == held)
+                .map(|standing| standing.state),
+            Some(RuleState::Held(class)),
+            "`{held}` holds when the gateway fences the answer it sends: {:?}",
+            admitted.ledger
+        );
+    }
+
+    let elsewhere = qualify(&eligible_ticket(), &bounds(), &gateway_answering(&answered)).await;
+    let unquoted = elsewhere.refused().unwrap_or_else(|| {
+        panic!("a span no ticket carries rests on nothing, fenced or not: {elsewhere:?}")
+    });
+    assert_eq!(
+        unquoted.failed_rule, "a judgement quotes the ticket text it rests on",
+        "the span is read out of the fence and compared against this ticket, so a ticket that \
+         does not carry it is refused: {unquoted:?}"
+    );
+
+    let prose = qualify(
+        &ticket,
+        &bounds(),
+        &gateway_answering("I think this one asks for a change."),
+    )
+    .await;
+    let unread = prose
+        .refused()
+        .unwrap_or_else(|| panic!("a gateway that answers in prose has not answered: {prose:?}"));
+    assert_eq!(
+        unread.failed_rule, "the ambiguity review answered",
+        "so the tolerance is not a read that accepts anything a gateway replies with: {unread:?}"
     );
 }
