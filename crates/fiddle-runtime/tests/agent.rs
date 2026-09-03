@@ -12,6 +12,9 @@ use tokio_util::sync::CancellationToken;
 
 const REPAIRED: &str = "pub fn f() -> u8 { 1 }\n";
 
+const RECORDED_ENVELOPE: &str =
+    include_str!("../../../tests/fixtures/gateway-real/repair-report-answer.json");
+
 fn test_host() -> (ToolHost, tempfile::TempDir) {
     test_host_declaring(Vec::new())
 }
@@ -203,6 +206,23 @@ async fn an_ignore_rule_the_model_wrote_cannot_lift_the_changed_file_cap() {
         4,
         "the ignore rule and the three files it was written to hide"
     );
+}
+
+#[tokio::test]
+async fn the_report_a_real_gateway_enveloped_completes_the_attempt() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([MockTurn::text(RECORDED_ENVELOPE)]);
+
+    let report = attempt(model, &redaction(), host, budget(), Direction::Fresh, None)
+        .await
+        .expect("the report of 2026-09-03, envelope and all, is one this build reads");
+
+    assert_eq!(
+        report.changed_files,
+        ["pkg/service/batch_processor.go"],
+        "the whole attempt, and not only the parse, has to carry the enveloped report through"
+    );
+    assert!(report.claimed_complete);
 }
 
 #[tokio::test]

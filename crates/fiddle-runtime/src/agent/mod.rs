@@ -185,6 +185,59 @@ pub struct FindingDisposition {
     pub note: String,
 }
 
+const ENVELOPE: &str = "parameters";
+
+const REPORT_FIELDS: [&str; 3] = ["changed_files", "summary", "claimed_complete"];
+
+#[derive(Clone, Debug)]
+struct Reported(RepairReport);
+
+impl schemars::JsonSchema for Reported {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        <RepairReport as schemars::JsonSchema>::schema_name()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        <RepairReport as schemars::JsonSchema>::schema_id()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <RepairReport as schemars::JsonSchema>::json_schema(generator)
+    }
+
+    fn inline_schema() -> bool {
+        <RepairReport as schemars::JsonSchema>::inline_schema()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Reported {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let answered = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+        serde_json::from_value(unenveloped(answered))
+            .map(Reported)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+fn unenveloped(answered: serde_json::Value) -> serde_json::Value {
+    match answered {
+        serde_json::Value::Object(mut fields)
+            if !REPORT_FIELDS
+                .iter()
+                .any(|field| fields.contains_key(*field)) =>
+        {
+            match fields.remove(ENVELOPE) {
+                Some(enveloped) => enveloped,
+                None => serde_json::Value::Object(fields),
+            }
+        }
+        answered => answered,
+    }
+}
+
 pub fn unaccounted(shown: &[&str], reported: &[FindingDisposition]) -> Option<AgentError> {
     accounting(shown, reported).map(|reason| AgentError::Protocol { reason })
 }
@@ -436,12 +489,12 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<RepairReport>(brief.task.to_string())
+        .prompt_typed::<Reported>(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .into_future();
 
-    let report = tokio::select! {
+    let Reported(report) = tokio::select! {
         biased;
         _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
@@ -1392,6 +1445,114 @@ mod tests {
             unaccounted(&shown, &spoken).is_none(),
             "what is refused is the silence, not the decline: {:?}",
             unaccounted(&shown, &spoken)
+        );
+    }
+
+    const RECORDED_ENVELOPE: &str =
+        include_str!("../../../../tests/fixtures/gateway-real/repair-report-answer.json");
+
+    const BARE_REPORT: &str =
+        r#"{"changed_files":["src/lib.rs"],"summary":"fixed","claimed_complete":true}"#;
+
+    fn read_report(answered: &str) -> Result<RepairReport, serde_json::Error> {
+        serde_json::from_str::<Reported>(answered).map(|Reported(report)| report)
+    }
+
+    #[test]
+    fn the_recorded_enveloped_answer_is_read_as_the_report_it_carries() {
+        assert!(
+            RECORDED_ENVELOPE.starts_with(r#"{"parameters": {"#),
+            "the fixture is the body the gateway sent, envelope included, and a fixture \
+             normalised to a bare report would prove nothing: {RECORDED_ENVELOPE}"
+        );
+        let refused = serde_json::from_str::<RepairReport>(RECORDED_ENVELOPE)
+            .expect_err("the envelope is the thing RepairReport alone cannot read");
+        assert_eq!(
+            refused.to_string(),
+            "missing field `changed_files` at line 1 column 1191",
+            "the fixture has to still be the string the live run of 2026-09-03 failed on"
+        );
+
+        let report = read_report(RECORDED_ENVELOPE).unwrap_or_else(|error| {
+            panic!("the body a real gateway sent is one this build reads: {error}")
+        });
+        assert_eq!(
+            report.changed_files,
+            ["pkg/service/batch_processor.go"],
+            "the file the agent edited survives the envelope"
+        );
+        assert!(report.claimed_complete);
+        assert!(
+            report
+                .summary
+                .starts_with("Implemented Option A from the ticket:"),
+            "the summary survives the envelope character for character: {}",
+            report.summary
+        );
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        assert_eq!(report.quoted_from_a_comment, None);
+    }
+
+    #[test]
+    fn a_bare_report_reads_beside_a_parameters_field_that_holds_no_report() {
+        let report =
+            read_report(BARE_REPORT).expect("the shape M1 and M3 have always sent still reads");
+        assert_eq!(report.summary, "fixed");
+
+        let both = r#"{"changed_files":["src/lib.rs"],"summary":"the top level","claimed_complete":true,"parameters":{"summary":"the envelope"}}"#;
+        let report = read_report(both).unwrap_or_else(|error| {
+            panic!("an unconditional unwrap would have thrown this top-level report away: {error}")
+        });
+        assert_eq!(
+            report.summary, "the top level",
+            "the unwrap is additive: a top level that is already a report is the report"
+        );
+    }
+
+    #[test]
+    fn an_answer_that_is_neither_a_report_nor_an_envelope_holding_one_is_refused() {
+        for (answered, named) in [
+            ("{}", "changed_files"),
+            (r#"{"parameters":{}}"#, "changed_files"),
+            (
+                r#"{"parameters":{"summary":"only a summary"}}"#,
+                "changed_files",
+            ),
+            (
+                r#"{"parameters":{"changed_files":["a"],"summary":"s"}}"#,
+                "claimed_complete",
+            ),
+            (r#"{"parameters":3}"#, "invalid type: integer"),
+            (r#""a sentence""#, "invalid type: string"),
+            (
+                r#"{"changed_files":"src/lib.rs","summary":"s","claimed_complete":true}"#,
+                "invalid type: string",
+            ),
+            (
+                r#"{"parameters":{"parameters":{"changed_files":["a"],"summary":"s","claimed_complete":true}}}"#,
+                "changed_files",
+            ),
+        ] {
+            match read_report(answered) {
+                Ok(report) => panic!(
+                    "`{answered}` is not a report, and a parser that accepts anything is not a \
+                     parser: {report:?}"
+                ),
+                Err(refused) => assert!(
+                    refused.to_string().contains(named),
+                    "the refusal has to name what could not be read, and `{answered}` said: \
+                     {refused}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_schema_the_model_is_given_is_the_reports_own() {
+        assert_eq!(
+            serde_json::to_value(schemars::schema_for!(Reported)).expect("a schema is JSON"),
+            serde_json::to_value(schemars::schema_for!(RepairReport)).expect("a schema is JSON"),
+            "the unwrap is a tolerance in the parse, not a change to what the model is asked for"
         );
     }
 
