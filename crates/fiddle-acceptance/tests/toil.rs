@@ -701,6 +701,12 @@ pub struct ToilWorld {
 
 const REPAIRED: &str = support::REPAIRED_FIXTURE;
 
+const THE_EVALUATIONS_DOCUMENTED_BOUND: usize = 12;
+
+const A_REQUEST_THAT_OBLIGES_A_TOOL_CALL: &str = "\"tool_choice\":\"required\"";
+
+const A_REQUEST_THAT_PERMITS_AN_ANSWER: &str = "\"tool_choice\":\"auto\"";
+
 const REPAIRED_ANOTHER_WAY: &str =
     "pub fn last_index(len: usize) -> usize {\n    len.saturating_sub(1)\n}\n";
 
@@ -825,6 +831,34 @@ impl ToilWorld {
 
     pub fn start_letting_the_ticket_choose_the_change() -> Self {
         ToilWorld::built(a_change_the_ticket_chooses(), true)
+    }
+
+    pub fn start_with_a_gateway_that_obeys_the_tool_choice_it_is_sent() -> Self {
+        let mut script = vec![
+            Answering::Always(a_review_that_reads_a_change()),
+            Answering::Always(support::accepted(support::calls(
+                "write_file",
+                serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+            ))),
+            Answering::Always(support::accepted(support::reports(serde_json::json!({
+                "changed_files": ["src/lib.rs"],
+                "summary": "corrected the off-by-one the ticket named",
+                "claimed_complete": true,
+            })))),
+        ];
+        for _ in 0..THE_EVALUATIONS_DOCUMENTED_BOUND {
+            script.push(support::on_reading(
+                A_REQUEST_THAT_OBLIGES_A_TOOL_CALL,
+                support::accepted(support::calls(
+                    "read_file",
+                    serde_json::json!({ "path": "src/lib.rs" }),
+                )),
+                support::accepted(support::reports(serde_json::json!({
+                    "verdict": "accepted",
+                }))),
+            ));
+        }
+        ToilWorld::built(script, true)
     }
 
     pub fn start_with_a_judge_that_reads_before_it_answers() -> Self {
@@ -1356,6 +1390,61 @@ fn no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself() {
          reached:\n{}",
         refused.len(),
         refused.join("\n")
+    );
+}
+
+#[test]
+fn the_read_only_evaluation_answers_a_gateway_that_obeys_the_tool_choice_the_run_sends_it() {
+    let world = ToilWorld::start_with_a_gateway_that_obeys_the_tool_choice_it_is_sent();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let bodies = world.model_prompts();
+    let obliged: Vec<usize> = bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| body.contains(A_REQUEST_THAT_OBLIGES_A_TOOL_CALL))
+        .map(|(turn, _)| turn)
+        .collect();
+    let permitted: Vec<usize> = bodies
+        .iter()
+        .enumerate()
+        .filter(|(_, body)| body.contains(A_REQUEST_THAT_PERMITS_AN_ANSWER))
+        .map(|(turn, _)| turn)
+        .collect();
+
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "this gateway answers a request that obliges a tool call with a tool call, which is \
+         what an OpenAI-compatible gateway is supposed to do. The evaluation is read-only, so \
+         under `required` it can only read again, and the run burns \
+         {THE_EVALUATIONS_DOCUMENTED_BOUND} turns without a verdict. It sent {} requests, \
+         {} obliging a call and {} permitting an answer: {payload}",
+        bodies.len(),
+        obliged.len(),
+        permitted.len()
+    );
+    assert_eq!(
+        permitted.len(),
+        1,
+        "exactly one step permits a text answer, and it is the read-only evaluation. The \
+         review asks for no tool at all and the implementer is still obliged. {} did: \
+         {payload}",
+        permitted.len()
+    );
+    assert!(
+        !obliged.is_empty() && obliged.iter().all(|turn| *turn < permitted[0]),
+        "and the implementer's turns come before it, so this lane is reading the evaluation's \
+         own request and not the review's. Obliged {obliged:?}, permitted {permitted:?}: \
+         {payload}"
+    );
+    assert!(
+        bodies.len() < 3 + THE_EVALUATIONS_DOCUMENTED_BOUND,
+        "the verdict has to arrive as termination and not as a spent budget, and this run made \
+         {} model calls: {payload}",
+        bodies.len()
     );
 }
 
