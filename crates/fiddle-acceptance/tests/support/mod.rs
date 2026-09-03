@@ -760,10 +760,9 @@ pub fn refused(status: u16, phrase: &'static str, body: serde_json::Value) -> Re
 
 pub enum Answering {
     Always(Reply),
-    OnReading {
-        needle: String,
-        present: Reply,
-        absent: Reply,
+    Choosing {
+        choices: Vec<(String, Reply)>,
+        otherwise: Reply,
     },
 }
 
@@ -771,14 +770,14 @@ impl Answering {
     fn reply_for(&self, received: &[u8]) -> &Reply {
         match self {
             Answering::Always(reply) => reply,
-            Answering::OnReading {
-                needle,
-                present,
-                absent,
-            } => match String::from_utf8_lossy(received).contains(needle.as_str()) {
-                true => present,
-                false => absent,
-            },
+            Answering::Choosing { choices, otherwise } => {
+                let read = String::from_utf8_lossy(received);
+                choices
+                    .iter()
+                    .find(|(needle, _)| read.contains(needle.as_str()))
+                    .map(|(_, reply)| reply)
+                    .unwrap_or(otherwise)
+            }
         }
     }
 }
@@ -788,10 +787,16 @@ pub fn always(script: Vec<Reply>) -> Vec<Answering> {
 }
 
 pub fn on_reading(needle: &str, present: Reply, absent: Reply) -> Answering {
-    Answering::OnReading {
-        needle: needle.to_string(),
-        present,
-        absent,
+    choosing(vec![(needle, present)], absent)
+}
+
+pub fn choosing(choices: Vec<(&str, Reply)>, otherwise: Reply) -> Answering {
+    Answering::Choosing {
+        choices: choices
+            .into_iter()
+            .map(|(needle, reply)| (needle.to_string(), reply))
+            .collect(),
+        otherwise,
     }
 }
 
