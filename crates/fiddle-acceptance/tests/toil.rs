@@ -746,6 +746,28 @@ fn a_change_the_ticket_chooses() -> Vec<Answering> {
     ]
 }
 
+fn an_accepted_change_whose_judge_reads_before_it_answers() -> Vec<support::Reply> {
+    vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::calls(
+            "read_file",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "verdict": "accepted",
+        }))),
+    ]
+}
+
 fn an_accepted_change() -> Vec<support::Reply> {
     an_accepted_change_writing(REPAIRED)
 }
@@ -797,6 +819,13 @@ impl ToilWorld {
 
     pub fn start_letting_the_ticket_choose_the_change() -> Self {
         ToilWorld::built(a_change_the_ticket_chooses(), true)
+    }
+
+    pub fn start_with_a_judge_that_reads_before_it_answers() -> Self {
+        ToilWorld::built(
+            support::always(an_accepted_change_whose_judge_reads_before_it_answers()),
+            true,
+        )
     }
 
     pub fn start_reviewing_once() -> Self {
@@ -1221,6 +1250,106 @@ fn an_eligible_ticket_produces_one_pull_request_and_one_jira_link() {
          comment it had already posted and once to settle the one it posted, so a \
          prior link would have been found by the first of those reads: {:?}",
         world.jira().request_lines()
+    );
+}
+
+const COMBINERS: [&str; 3] = ["oneOf", "allOf", "anyOf"];
+
+fn combiners_at_the_top_of(named: &str, schema: &serde_json::Value) -> Vec<String> {
+    COMBINERS
+        .iter()
+        .filter(|combiner| schema.get(*combiner).is_some())
+        .map(|combiner| format!("{named}.{combiner}: {schema}"))
+        .collect()
+}
+
+fn schemas_sent_in(body: &str) -> Vec<(String, serde_json::Value)> {
+    let request: serde_json::Value =
+        serde_json::from_str(body).unwrap_or_else(|why| panic!("a request body is JSON: {why}"));
+    let mut sent: Vec<(String, serde_json::Value)> = request["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|tool| {
+                    (
+                        format!("tool {}", tool["function"]["name"]),
+                        tool["function"]["parameters"].clone(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(schema) = request
+        .get("response_format")
+        .and_then(|format| format.get("json_schema"))
+        .and_then(|json_schema| json_schema.get("schema"))
+    {
+        sent.push((
+            format!(
+                "response_format {}",
+                request["response_format"]["json_schema"]["name"]
+            ),
+            schema.clone(),
+        ));
+    }
+    sent
+}
+
+#[test]
+fn no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself() {
+    let world = ToilWorld::start_with_a_judge_that_reads_before_it_answers();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the run must reach every step, or the schemas below are not the schemas a whole \
+         toil run sends: {payload}"
+    );
+
+    let bodies = world.model_prompts();
+    assert!(
+        bodies.len() >= 4,
+        "a whole toil run asks the review, the implementer and the judge, and this one sent \
+         {} requests: {payload}",
+        bodies.len()
+    );
+
+    let mut sent = 0;
+    let mut structured = 0;
+    let mut refused: Vec<String> = Vec::new();
+    for (turn, body) in bodies.iter().enumerate() {
+        for (named, schema) in schemas_sent_in(body) {
+            sent += 1;
+            structured += usize::from(named.starts_with("response_format"));
+            refused.extend(combiners_at_the_top_of(
+                &format!("turn {turn} {named}"),
+                &schema,
+            ));
+        }
+    }
+    assert!(
+        sent > 0,
+        "no request carried a schema at all, so an assertion over their shapes proved nothing"
+    );
+    assert_eq!(
+        structured, 2,
+        "the implementer's report and the judge's verdict are the two structured-output \
+         schemas a toil run sends, and this run sent {structured} of them. A judge that \
+         answers on its first turn is never sent one, so this lane would pass over a \
+         verdict schema no gateway accepts: {payload}"
+    );
+    assert!(
+        refused.is_empty(),
+        "a gateway that fronts Anthropic refuses `oneOf`, `allOf` or `anyOf` at the top of a \
+         tool's input_schema, and it lifts `response_format` into a prepended tool, so each \
+         of these {} schemas of {sent} makes the whole request a 400 before the model is \
+         reached:\n{}",
+        refused.len(),
+        refused.join("\n")
     );
 }
 

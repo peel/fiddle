@@ -210,7 +210,7 @@ impl schemars::JsonSchema for Reported {
     }
 
     fn schema_id() -> std::borrow::Cow<'static, str> {
-        <RepairReport as schemars::JsonSchema>::schema_id()
+        std::borrow::Cow::Borrowed("fiddle_runtime::agent::Reported")
     }
 
     fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -588,14 +588,51 @@ not ask for. Reject it otherwise, and reject it when what you read does not tell
 you which of those two it is. Every finding is one sentence naming one thing you \
 read, and a rejection carries at least one.";
 
-#[derive(
-    Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Verdict {
     Accepted {},
 
     Rejected { findings: Vec<String> },
+}
+
+const VERDICT_NAMES_ITS_OWN_SHAPE: &str = "\
+`accepted` when the change is what the ticket asked for and nothing more, and \
+`rejected` otherwise.";
+
+const FINDINGS_BELONG_TO_A_REJECTION: &str = "\
+One sentence for each thing you read that the ticket did not ask for, each \
+naming where you read it. Send this with `rejected`, and send at least one. \
+Leave it out entirely with `accepted`.";
+
+impl schemars::JsonSchema for Verdict {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("Verdict")
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("fiddle_runtime::agent::Verdict")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "verdict": {
+                    "type": "string",
+                    "enum": ["accepted", "rejected"],
+                    "description": VERDICT_NAMES_ITS_OWN_SHAPE,
+                },
+                "findings": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": FINDINGS_BELONG_TO_A_REJECTION,
+                },
+            },
+            "required": ["verdict"],
+        })
+    }
 }
 
 impl Verdict {
@@ -1588,6 +1625,55 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn the_verdict_schema_names_the_two_shapes_the_parse_accepts_and_no_combiner() {
+        let schema = schemars::schema_for!(Verdict).to_value();
+        for combiner in ["oneOf", "allOf", "anyOf"] {
+            assert!(
+                schema.get(combiner).is_none(),
+                "a gateway fronting Anthropic refuses `{combiner}` at the top of the schema \
+                 it lifts out of `response_format`: {schema}"
+            );
+        }
+        assert_eq!(
+            schema["properties"]["verdict"]["enum"],
+            serde_json::json!(["accepted", "rejected"]),
+            "the two words the parse accepts are the two the schema offers: {schema}"
+        );
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["verdict"]),
+            "an acceptance carries no findings, so only the word is required: {schema}"
+        );
+
+        for (named, answered, expected) in [
+            (
+                "an acceptance",
+                r#"{"verdict":"accepted"}"#,
+                Verdict::Accepted {},
+            ),
+            (
+                "a rejection",
+                r#"{"verdict":"rejected","findings":["src/lib.rs names a second function"]}"#,
+                Verdict::Rejected {
+                    findings: vec!["src/lib.rs names a second function".to_string()],
+                },
+            ),
+        ] {
+            let read = serde_json::from_str::<Verdict>(answered).unwrap_or_else(|error| {
+                panic!("{named} is a shape the schema offers and the parse must read: {error}")
+            });
+            assert_eq!(read, expected, "{named} read as something else");
+        }
+
+        assert!(
+            serde_json::from_str::<Verdict>(r#"{"verdict":"accepted","findings":[]}"#).is_err(),
+            "one object schema cannot say `findings belongs to a rejection` without a \
+             combiner, so the schema permits this and the parse is what refuses it; a model \
+             that sends it earns a protocol error and never a verdict nobody meant"
+        );
     }
 
     #[test]
