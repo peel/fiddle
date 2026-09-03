@@ -37,6 +37,18 @@ and the text to put in its place, and the rest of the file stays as it is. Use \
 long file again to change part of it, because the lines you leave out are \
 lost.\n\
 \n\
+Where this run quotes a ticket for you, the quotation carries the ticket's \
+summary, then its description, then the comments on the issue oldest first. \
+Every comment in it was written by a person this deployment authorized to \
+decide questions on its tickets. Such a comment is a decision and not more \
+discussion: where it settles a question the description leaves open, its choice \
+is the later word, and it closes the options the description weighed and a \
+choice the description itself suggested. Where two comments disagree the later \
+one is the answer. Where there is no comment, or where the comments settle \
+nothing the description leaves open, read the ticket on its summary and its \
+description alone. The description still carries the ground — the paths, the \
+symbols and the constraints — and no comment widens what you may change.\n\
+\n\
 Change as few files as you can. When you are done — or when you are certain you \
 cannot finish — reply with only the structured report. Report what you actually \
 changed, whether or not it worked.";
@@ -560,6 +572,16 @@ and you are not repairing it.\n\
 Read before you judge. Find the files the change touched, read them, and read \
 what the ticket asked for. When you are done, reply with only the structured \
 verdict.\n\
+\n\
+Where this run quotes a ticket for you, the quotation carries the ticket's \
+summary, then its description, then the comments on the issue oldest first. \
+Every comment in it was written by a person this deployment authorized to \
+decide questions on its tickets. Where such a comment settles a question the \
+description leaves open, its choice is what the ticket asked for, even against \
+a choice the description itself suggested. Where two comments disagree the \
+later one is the answer. Where there is no comment, or where the comments \
+settle nothing the description leaves open, read the ticket on its summary and \
+its description alone.\n\
 \n\
 Accept the change when it does what the ticket asked and nothing the ticket did \
 not ask for. Reject it otherwise, and reject it when what you read does not tell \
@@ -1445,6 +1467,28 @@ mod tests {
             unaccounted(&shown, &spoken).is_none(),
             "what is refused is the silence, not the decline: {:?}",
             unaccounted(&shown, &spoken)
+        );
+    }
+
+    #[test]
+    fn each_preamble_tells_its_agent_an_authorized_comment_settles_the_description() {
+        for (named, preamble) in [("the implementer", PREAMBLE), ("the judge", JUDGE_PREAMBLE)] {
+            for stated in [
+                "the comments on the issue oldest first",
+                "written by a person this deployment authorized to decide questions",
+                "a choice the description itself suggested",
+                "Where two comments disagree the later one is the answer",
+                "read the ticket on its summary and its description alone",
+            ] {
+                assert!(
+                    preamble.contains(stated),
+                    "{named} is told how to read a ticket in its own preamble, and this one                      does not say `{stated}`: {preamble}"
+                );
+            }
+        }
+        assert!(
+            PREAMBLE.contains("no comment widens what you may change"),
+            "the implementer holds the tools, so its preamble is the one that says a comment              is not a wider licence: {PREAMBLE}"
         );
     }
 

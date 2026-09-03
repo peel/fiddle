@@ -2,7 +2,7 @@
 
 Status: accepted
 
-Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AskOnIssue, AskedOnIssue, PublishDecisionRequest, asked_already, Decider, resolve, DecisionResolution, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, the_port_reads_back_every_reply_beside_the_account_that_wrote_it, the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision, a_jira_run_reads_the_reply_on_its_own_question_and_proceeds, a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing, a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider, a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider, a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider, JiraDecision, deciders, a_jira_account_the_document_names_reaches_the_allowlist_as_a_jira_decider, one_number_written_in_both_decision_tables_resolves_to_two_deciders, a_jira_decision_table_that_names_nobody_is_refused, an_email_address_is_not_a_jira_account_id, a_mistyped_key_in_the_jira_decision_table_is_refused, config_check_reports_the_jira_accounts_that_may_decide, an_ignored_reply_is_visible_in_what_the_run_published, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, orchestration::observe, crates/fiddle-cli/src/config.rs, crates/fiddle-cli/src/render.rs, crates/fiddle-acceptance/tests/config_check.rs, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs
+Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AskOnIssue, AskedOnIssue, PublishDecisionRequest, asked_already, Decider, resolve, DecisionResolution, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, the_port_reads_back_every_reply_beside_the_account_that_wrote_it, the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision, a_jira_run_reads_the_reply_on_its_own_question_and_proceeds, a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing, a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider, a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider, a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider, JiraDecision, deciders, a_jira_account_the_document_names_reaches_the_allowlist_as_a_jira_decider, one_number_written_in_both_decision_tables_resolves_to_two_deciders, a_jira_decision_table_that_names_nobody_is_refused, an_email_address_is_not_a_jira_account_id, a_mistyped_key_in_the_jira_decision_table_is_refused, config_check_reports_the_jira_accounts_that_may_decide, an_ignored_reply_is_visible_in_what_the_run_published, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, orchestration::observe, crates/fiddle-cli/src/config.rs, crates/fiddle-cli/src/render.rs, crates/fiddle-acceptance/tests/config_check.rs, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs, authorized_commenters, authorized_comments, quoted_ticket, within_scope, Eligible, jira.decision, the_gate_and_the_implementer_read_one_text, an_authorized_comment_directs_the_change_and_without_one_the_description_directs_it
 
 ## Context
 
@@ -102,7 +102,8 @@ A deployment names each channel's deciders in that channel's own table:
 gained a second reader outside this record: the toil eligibility gate weighs a
 comment on a ticket against it, because a comment that decides a question the
 ticket left open is deciding something. ADR 083 records that, and nothing about
-the table's shape or its namespace changed for it. One table per channel, under
+the table's shape or its namespace changed for it. What that one reader now
+causes is larger than this record described, and the section below states it. One table per channel, under
 the channel's table, mirrors the enum and mirrors `[jira.labels]`, which is where
 this document already puts a Jira-only setting. The alternative considered was one
 heterogeneous list of tagged entries. It was declined because it makes the GitHub
@@ -129,6 +130,60 @@ a step at all, and `AskOnIssue` is constructed only by `publish` and
 reads back: `AddComment` derives its marker from its own target and refuses when
 the executor authorized another, and `AskOnIssue` writes the request id it was
 given and searches for the same value, so the two cannot diverge.
+
+## What `[jira.decision] authorized` grants
+
+This record introduced the table as the accounts whose reply to a question a run
+asked is an answer. It now grants three things, and the third arrived with
+`fiddle-aicn` on 2026-09-03.
+
+- **Answering a question a run asked.** `resolve` weighs a reply on the issue
+  against the list, and a reply from anybody else decides nothing. This is what
+  the table was introduced for.
+- **Deciding whether work proceeds.** `authorized_comments` at the toil
+  eligibility gate admits a comment from an account in the list, and a comment
+  that settles a question the description left open moves the gate from refused
+  to admitted. `fiddle-v6pu` did this; ADR 083 records it.
+- **Directing the change an agent makes.** The text the gate judged is the text
+  the implementer is given, so an authorized comment reaches an agent holding
+  `edit_file`, `write_file` and `run_check`, and its choice between the options a
+  description weighed is what that agent is told to build. `fiddle-aicn` did
+  this; ADR 083 records it.
+
+The table stays one table, and it keeps this name. Four reasons hold that, and
+the first is the one that decides it.
+
+The three grants are three consequences of one relationship, not three
+relationships. Every reader asks the list the same question — did an account this
+deployment trusts to decide questions about its tickets write this? — and each
+acts on the same answer. `Decider` is unchanged, `deciders` still builds the list
+from both decision tables, and no reader compares anything but a `Decider` value.
+
+Splitting the table would make the incoherence configurable. An account named as
+able to decide whether work proceeds and not named as able to direct it is
+exactly the state `fiddle-aicn` removed: the gate admits a ticket on a decision
+the implementer must then ignore, and the run opens a plausible pull request
+implementing the option nobody chose. A second table re-creates that as an option
+an operator can select by accident, and a divergence between two lists is silent
+in the way a wrong number is silent.
+
+The third grant widens who is trusted by nobody and what a comment can cause by
+nothing. The description already reaches the implementer unconditionally and
+anybody with edit permission on the ticket can write it, which is a wider set
+than this list. What bounds an implementer that was misled is `within_scope`,
+which runs after the agent step and before any effect, and deployment policy,
+which governs every effect. Blindness never bounded it.
+
+`decision` is the right word in the key, and the narrow reading was in this
+record's prose rather than in the name. The alternative names considered were
+`[jira.trusted]` and `[jira.authority]`, and both were declined for the reason
+this record already declined one heterogeneous list: it changes a key deployments
+already write, and it buys nothing the sentence above does not.
+
+What `config check` reports is unchanged, and is still accurate.
+`[jira.decision]` reports as `enforced-by-propose-change-and-by-the-toil-gate`,
+because the gate is still the only reader in the toil route. The implementer reads
+the gate's own output and never the table.
 
 ## The evidence class of each claim
 
@@ -249,8 +304,12 @@ is neither. Each claim below carries its class.
   and the Jira half of that reading stopped being complete when `fiddle-v6pu` made
   the toil eligibility gate read the same table: `[jira.decision].authorized` now
   also names the accounts whose comment on a ticket is context the ambiguity
-  review reads, and a comment from anybody else is not. ADR 083 records that
-  decision and grades it. The GitHub status word is still scoped to
+  review reads, and a comment from anybody else is not. `fiddle-aicn` then carried
+  the text the gate judged to the implementer, so a comment from one of those
+  accounts also directs the change an agent makes; the section above states all
+  three grants and argues why one table carries them. Neither change added a
+  reader of the table, so the status word did not move again. ADR 083 records both
+  decisions and grades them. The GitHub status word is still scoped to
   `propose-change`, because no other capability reads that table.
 
 ## Consequences
