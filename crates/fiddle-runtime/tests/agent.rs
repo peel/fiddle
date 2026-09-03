@@ -23,6 +23,9 @@ const REPAIRED: &str = "pub fn f() -> u8 { 1 }\n";
 const RECORDED_ENVELOPE: &str =
     include_str!("../../../tests/fixtures/gateway-real/repair-report-answer.json");
 
+const RECORDED_STRING: &str =
+    include_str!("../../../tests/fixtures/gateway-real/repair-report-string.json");
+
 fn test_host() -> (ToolHost, tempfile::TempDir) {
     test_host_declaring(Vec::new())
 }
@@ -246,6 +249,50 @@ async fn the_report_a_real_gateway_enveloped_completes_the_attempt() {
     );
     assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
     assert_eq!(report.quoted_from_a_comment, None);
+}
+
+#[tokio::test]
+async fn the_report_a_real_gateway_double_encoded_completes_the_attempt() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([MockTurn::text(RECORDED_STRING)]);
+
+    let report = attempt(model, &redaction(), host, budget(), Direction::Fresh, None)
+        .await
+        .expect(
+            "the report of 2026-09-03, envelope and JSON string and all, is one this build reads",
+        );
+
+    assert_eq!(
+        report.changed_files,
+        ["pkg/service/batch_processor.go"],
+        "the whole attempt, and not only the parse, has to carry the double-encoded report \
+         through"
+    );
+    assert!(
+        report.claimed_complete,
+        "and the completion that report claimed survives both layers. This lane is where \
+         the recorded value is read, because `nothing_in_this_workspace_decides_on_claimed_complete` \
+         refuses every read of the field under `src` that is not a plain recording, and an \
+         assertion is not one"
+    );
+    assert_eq!(
+        report.quoted_from_a_comment.as_deref(),
+        Some(
+            "Option B. More-reliable long-term. The bare metrics should be still \
+             type-compatible as described."
+        ),
+        "and so does the comment the agent quoted, which is the field this recorded run \
+         carries and the enveloped one does not: {:?}",
+        report.quoted_from_a_comment
+    );
+    assert!(
+        report
+            .summary
+            .starts_with("The ticket's description offered Option A"),
+        "and so does the summary: {}",
+        report.summary
+    );
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
 }
 
 #[tokio::test]
@@ -556,6 +603,9 @@ async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
 
 const A_VERDICT_THE_GATEWAY_ENVELOPED: &str = r#"{"parameters": {"verdict": "accepted"}}"#;
 
+const A_VERDICT_THE_GATEWAY_DOUBLE_ENCODED: &str =
+    r#"{"parameters": "{\"verdict\": \"accepted\"}"}"#;
+
 #[derive(Clone)]
 struct ObeysItsToolChoice {
     answer: String,
@@ -753,6 +803,8 @@ async fn an_answer_that_is_not_a_verdict_is_refused_and_the_refusal_names_the_ve
         "I read the change and it looks fine to me.",
         r#"{"parameters": {"summary": "an envelope holding no verdict"}}"#,
         r#"{"verdict": "maybe"}"#,
+        r#"{"parameters": "{\"summary\": \"a string holding no verdict\"}"}"#,
+        r#"{"parameters": "\"{\\\"verdict\\\": \\\"accepted\\\"}\""}"#,
     ] {
         let (host, _g) = test_host();
         let refused = judge_briefed(
@@ -780,6 +832,7 @@ async fn an_answer_that_is_not_a_verdict_is_refused_and_the_refusal_names_the_ve
 async fn the_verdict_a_gateway_envelopes_is_read_and_a_bare_one_still_reads() {
     for (answered, expected) in [
         (A_VERDICT_THE_GATEWAY_ENVELOPED, Verdict::Accepted {}),
+        (A_VERDICT_THE_GATEWAY_DOUBLE_ENCODED, Verdict::Accepted {}),
         (r#"{"verdict": "accepted"}"#, Verdict::Accepted {}),
         (
             r#"```json

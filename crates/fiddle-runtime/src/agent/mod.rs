@@ -236,6 +236,10 @@ impl<'de> serde::Deserialize<'de> for Reported {
 }
 
 fn unenveloped(answered: serde_json::Value, fields_of_its_own: &[&str]) -> serde_json::Value {
+    unstringed(unwrapped(answered, fields_of_its_own))
+}
+
+fn unwrapped(answered: serde_json::Value, fields_of_its_own: &[&str]) -> serde_json::Value {
     match answered {
         serde_json::Value::Object(mut fields)
             if !fields_of_its_own
@@ -248,6 +252,19 @@ fn unenveloped(answered: serde_json::Value, fields_of_its_own: &[&str]) -> serde
             }
         }
         answered => answered,
+    }
+}
+
+fn unstringed(answered: serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::String(carried) = &answered else {
+        return answered;
+    };
+    match serde_json::Deserializer::from_str(carried)
+        .into_iter::<serde_json::Value>()
+        .next()
+    {
+        Some(Ok(serde_json::Value::String(_))) | Some(Err(_)) | None => answered,
+        Some(Ok(decoded)) => decoded,
     }
 }
 
@@ -1607,6 +1624,9 @@ mod tests {
     const RECORDED_ENVELOPE: &str =
         include_str!("../../../../tests/fixtures/gateway-real/repair-report-answer.json");
 
+    const RECORDED_STRING: &str =
+        include_str!("../../../../tests/fixtures/gateway-real/repair-report-string.json");
+
     const BARE_REPORT: &str =
         r#"{"changed_files":["src/lib.rs"],"summary":"fixed","claimed_complete":true}"#;
 
@@ -1649,6 +1669,152 @@ mod tests {
     }
 
     #[test]
+    fn the_recorded_double_encoded_answer_is_read_as_the_report_it_carries() {
+        assert!(
+            RECORDED_STRING.starts_with(r#"{"parameters": "{\"changed_files\""#),
+            "the fixture is the body the gateway sent, with the envelope holding a string and \
+             not an object, and a fixture normalised either way would prove nothing: \
+             {RECORDED_STRING}"
+        );
+        let sent: serde_json::Value =
+            serde_json::from_str(RECORDED_STRING).expect("the outer object is well formed JSON");
+        let refused =
+            serde_json::from_value::<RepairReport>(unwrapped(sent.clone(), &REPORT_FIELDS))
+                .expect_err(
+                    "taking the envelope off is the whole of what fiddle-pr0c did, and it \
+                     leaves a string where a report is wanted",
+                );
+        assert!(
+            refused
+                .to_string()
+                .starts_with(r#"invalid type: string "{\"changed_files\":"#),
+            "the fixture has to still be the body the live run of 2026-09-03 failed on, and the \
+             run's own words were `invalid type: string`, reached through the unwrap and not \
+             before it. It said: {refused}"
+        );
+
+        let carried = sent[ENVELOPE]
+            .as_str()
+            .expect("the envelope of this recorded body holds a string")
+            .to_string();
+        let strictly = serde_json::from_str::<serde_json::Value>(&carried).expect_err(
+            "this recorded string is not a whole JSON document, and that is why the \
+                         decode reads a value off the front of it rather than all of it",
+        );
+        assert_eq!(
+            strictly.to_string(),
+            "trailing characters at line 1 column 2395",
+            "the gateway sent one JSON object and then a stray `]`, at 2395 of the string's \
+             2395. A strict parse of the whole string therefore refuses this body, so a lane \
+             that only proved `serde_json::from_str` would be proving the wrong parse. It said: \
+             {strictly}"
+        );
+
+        let report = read_report(RECORDED_STRING).unwrap_or_else(|error| {
+            panic!("the body a real gateway sent is one this build reads: {error}")
+        });
+        assert_eq!(
+            report.changed_files,
+            ["pkg/service/batch_processor.go"],
+            "the file the agent edited survives the double encoding"
+        );
+        assert_eq!(
+            report.quoted_from_a_comment.as_deref(),
+            Some(
+                "Option B. More-reliable long-term. The bare metrics should be still \
+                 type-compatible as described."
+            ),
+            "and so does the comment the agent quoted, which is the field that decides whether \
+             the run built what a person asked for: {:?}",
+            report.quoted_from_a_comment
+        );
+        assert!(
+            report
+                .summary
+                .starts_with("The ticket's description offered Option A"),
+            "and so does the summary, character for character: {}",
+            report.summary
+        );
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn the_three_shapes_this_gateway_has_sent_a_report_in_all_read() {
+        for (answered, named) in [
+            (BARE_REPORT.to_string(), "a bare report"),
+            (
+                serde_json::json!({ENVELOPE: serde_json::from_str::<serde_json::Value>(BARE_REPORT).unwrap()})
+                    .to_string(),
+                "an envelope holding an object",
+            ),
+            (
+                serde_json::json!({ENVELOPE: BARE_REPORT}).to_string(),
+                "an envelope holding a string",
+            ),
+        ] {
+            let report = read_report(&answered).unwrap_or_else(|error| {
+                panic!("{named} still reads, so the decode is additive: `{answered}` said {error}")
+            });
+            assert_eq!(
+                report.summary, "fixed",
+                "one report reached this build three ways, and {named} did not carry it"
+            );
+        }
+
+        let both = serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "the top level",
+            "claimed_complete": true,
+            ENVELOPE: BARE_REPORT,
+        })
+        .to_string();
+        let report = read_report(&both).unwrap_or_else(|error| {
+            panic!(
+                "an unconditional decode would have thrown this top-level report away for the \
+                 string beside it: {error}"
+            )
+        });
+        assert_eq!(
+            report.summary, "the top level",
+            "the decode is reached through the unwrap, so a top level that is already a report \
+             is never decoded past"
+        );
+    }
+
+    #[test]
+    fn a_report_inside_two_json_strings_is_refused_rather_than_decoded_twice() {
+        let once = serde_json::to_string(BARE_REPORT).expect("a JSON string holding the report");
+        let twice = serde_json::to_string(&once).expect("a JSON string holding that string");
+
+        let read = read_report(&serde_json::json!({ENVELOPE: &BARE_REPORT}).to_string())
+            .expect("the control: one string around this very payload reads");
+        assert_eq!(read.summary, "fixed");
+
+        let refused = read_report(&serde_json::json!({ENVELOPE: &once}).to_string())
+            .map(|report| report.summary)
+            .expect_err(
+                "a string inside a string is a shape nothing has sent, and tolerating it would \
+                 make this a parser that accepts anything",
+            )
+            .to_string();
+        assert!(
+            refused.contains(&format!("invalid type: string {once:?}")),
+            "the refusal names the string the one decode produced, which is how it says no \
+             second decode ran: it should have named {once:?} and said: {refused}"
+        );
+
+        let refused = read_report(&serde_json::json!({ENVELOPE: &twice}).to_string())
+            .map(|report| report.summary)
+            .expect_err("nor does a third layer read, for the same reason")
+            .to_string();
+        assert!(
+            refused.contains(&format!("invalid type: string {twice:?}")),
+            "and it names the outermost of the two strings it did not decode: it should have \
+             named {twice:?} and said: {refused}"
+        );
+    }
+
+    #[test]
     fn a_bare_report_reads_beside_a_parameters_field_that_holds_no_report() {
         let report =
             read_report(BARE_REPORT).expect("the shape M1 and M3 have always sent still reads");
@@ -1685,6 +1851,16 @@ mod tests {
             ),
             (
                 r#"{"parameters":{"parameters":{"changed_files":["a"],"summary":"s","claimed_complete":true}}}"#,
+                "changed_files",
+            ),
+            (
+                r#"{"parameters":"not JSON at all"}"#,
+                "invalid type: string",
+            ),
+            (r#"{"parameters":""}"#, "invalid type: string"),
+            (r#"{"parameters":"3"}"#, "invalid type: integer"),
+            (
+                r#"{"parameters":"{\"summary\":\"a string that decodes and is still not a report\"}"}"#,
                 "changed_files",
             ),
         ] {
@@ -1736,6 +1912,57 @@ mod tests {
     }
 
     #[test]
+    fn a_verdict_reads_through_the_string_the_gateway_double_encoded_a_report_in() {
+        assert_eq!(
+            read_verdict(&serde_json::json!({ENVELOPE: r#"{"verdict":"accepted"}"#}).to_string())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "the double encoding this gateway sent a report in on 2026-09-03 is a \
+                         property of how it serialises an answer and not of what the answer is, \
+                         so a verdict can arrive the same way and `Judged` reads it: {error}"
+                    )
+                }),
+            Verdict::Accepted {}
+        );
+        assert_eq!(
+            read_verdict(
+                &serde_json::json!({ENVELOPE: r#"{"verdict":"rejected","findings":["it renamed the metric"]}"#})
+                    .to_string()
+            )
+            .expect("a rejection carries its findings through the same decode"),
+            Verdict::Rejected {
+                findings: vec!["it renamed the metric".to_string()]
+            }
+        );
+
+        let both = serde_json::json!({
+            "verdict": "maybe",
+            ENVELOPE: r#"{"verdict":"accepted"}"#,
+        })
+        .to_string();
+        let refused = read_verdict(&both)
+            .expect_err("an answer carrying a verdict twice is not one verdict")
+            .to_string();
+        assert!(
+            refused.contains("unknown variant `maybe`"),
+            "the decode is reached through the unwrap on this side too, so a top level that \
+             already carries `verdict` is never decoded past. It said: {refused}"
+        );
+
+        let once = serde_json::to_string(r#"{"verdict":"accepted"}"#)
+            .expect("a JSON string holding a verdict");
+        let refused = read_verdict(&serde_json::json!({ENVELOPE: &once}).to_string())
+            .map(|verdict| verdict.as_str())
+            .expect_err("a verdict inside two strings is refused exactly as a report is")
+            .to_string();
+        assert!(
+            refused.contains(&format!("invalid type: string {once:?}")),
+            "the refusal names the string the one decode produced, which is how it says no \
+             second decode ran: it should have named {once:?} and said: {refused}"
+        );
+    }
+
+    #[test]
     fn an_answer_that_is_neither_a_verdict_nor_an_envelope_holding_one_is_refused() {
         for (answered, named) in [
             ("{}", "missing field `verdict`"),
@@ -1754,6 +1981,19 @@ mod tests {
             (
                 r#"{"verdict":"rejected","findings":"one sentence"}"#,
                 "invalid type: string",
+            ),
+            (
+                r#"{"parameters":"not JSON at all"}"#,
+                "invalid type: string",
+            ),
+            (r#"{"parameters":""}"#, "invalid type: string"),
+            (
+                r#"{"parameters":"{\"summary\":\"a report, not a verdict\"}"}"#,
+                "missing field `verdict`",
+            ),
+            (
+                r#"{"parameters":"{\"verdict\":\"maybe\"}"}"#,
+                "unknown variant `maybe`",
             ),
         ] {
             match read_verdict(answered) {
