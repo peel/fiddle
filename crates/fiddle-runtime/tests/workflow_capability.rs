@@ -205,6 +205,27 @@ impl World {
         .unwrap();
     }
 
+    async fn comments_published(&self) -> Vec<String> {
+        self.jira()
+            .writes()
+            .await
+            .iter()
+            .filter(|write| write.route == WriteRoute::AddComment)
+            .map(|write| {
+                write.body["body"]["content"]
+                    .as_array()
+                    .map(|paragraphs| {
+                        paragraphs
+                            .iter()
+                            .filter_map(|paragraph| paragraph["content"][0]["text"].as_str())
+                            .collect::<Vec<&str>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     async fn linked_pull_requests(&self) -> Vec<u64> {
         self.jira()
             .writes()
@@ -2380,6 +2401,71 @@ async fn a_rejected_run_and_a_failed_run_conclude_as_different_values() {
         Executed::Earned(EvidenceRef(format!("workflow:{STAGE}:{ATTEMPT}"))),
         "an accepted run concludes as the evidence it earned, so the rejection above is one \
          of two values this run can conclude as, and not the only one"
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_run_writes_on_the_work_item_it_was_qualified_from_and_an_unqualified_one_writes_nowhere(
+) {
+    let ticket = a_ticket_suggesting_a(Vec::new());
+    let review = ReadsWhatItIsGiven::new();
+    let admitted = admitted_by_the_gate(&ticket, &bounds_authorizing_the_operator(), &review).await;
+    let observed = observed_without_the_conversation(&ticket);
+
+    let told = world_holding(TICKET_KEY).await;
+    let rejection = concluded_qualified(
+        &told,
+        vec![evaluate_step()],
+        rejecting(),
+        Some(&observed),
+        admitted,
+    )
+    .await;
+    assert!(
+        matches!(rejection, Executed::Rejected { .. }),
+        "the row's own premise: the judge rejected the change: {rejection:?}"
+    );
+
+    let published = told.comments_published().await;
+    assert_eq!(
+        published.len(),
+        1,
+        "a rejected run writes one comment on the work item it was qualified from: \
+         {published:?}"
+    );
+    let note = &published[0];
+    for finding in [A_SIGNATURE, A_SECOND_FAULT] {
+        assert!(
+            note.contains(finding),
+            "and that comment carries what the evaluation read: {note}"
+        );
+    }
+    assert!(
+        note.contains(&format!("fiddle took `{TICKET_KEY}` on")) && note.contains("rejected"),
+        "a reader of the issue is told it was taken on and the change was rejected: {note}"
+    );
+    assert!(
+        note.contains("no branch and no pull request"),
+        "and that nothing was left behind to review: {note}"
+    );
+    assert!(
+        note.contains("fiddle-effect:"),
+        "and it carries the effect marker every Jira write this build performs carries: {note}"
+    );
+
+    let unqualified = world_holding(TICKET_KEY).await;
+    let same_rejection = concluded_by(&unqualified, vec![evaluate_step()], rejecting()).await;
+    assert_eq!(
+        same_rejection, rejection,
+        "the same document and the same judge reject the same way with no qualification, \
+         so the comment above is written by the qualification and not by the harness"
+    );
+    assert_eq!(
+        unqualified.comments_published().await,
+        Vec::<String>::new(),
+        "and a run carrying no qualification names no work item and no revision to write \
+         a comment against, so it writes none: {:?}",
+        unqualified.jira().writes().await
     );
 }
 

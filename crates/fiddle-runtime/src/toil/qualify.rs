@@ -445,9 +445,7 @@ pub fn deterministic(ticket: &TicketFacts, bounds: &Eligibility) -> Deterministi
             Fault {
                 rule: READ_NAMES_AN_ISSUE_KEY,
                 class: EvidenceClass::Measured,
-                found: "the read named no tracker issue key, and the text it named is quoted \
-                        below"
-                    .to_string(),
+                found: "the read named no tracker issue key".to_string(),
                 remedy: "qualify the key the tracker assigned, which is an upper case project \
                          code, a hyphen, and a number"
                     .to_string(),
@@ -526,7 +524,7 @@ pub fn deterministic(ticket: &TicketFacts, bounds: &Eligibility) -> Deterministi
             Fault {
                 rule: ISSUE_TYPE_IS_WORKED,
                 class: EvidenceClass::Measured,
-                found: format!("the issue type of {key} is quoted below"),
+                found: format!("the issue type of {key} is not one the toil agent works"),
                 remedy: format!(
                     "change the issue type of {key} to one of: {}",
                     bounds.worked_issue_types.join(", ")
@@ -562,7 +560,7 @@ pub fn deterministic(ticket: &TicketFacts, bounds: &Eligibility) -> Deterministi
             Fault {
                 rule: FITS_REPOSITORY_BOUNDS,
                 class: EvidenceClass::Measured,
-                found: format!("the repository {key} names is quoted below and is out of bounds"),
+                found: format!("the repository {key} names is out of bounds"),
                 remedy: format!(
                     "move {key} to a project that maps to one of: {}",
                     bounds.bounded_repositories.join(", ")
@@ -648,10 +646,7 @@ pub async fn review_of(reached: Reached, review: &dyn AmbiguityReview) -> Qualif
                 Fault {
                     rule: REVIEW_ANSWERED,
                     class: EvidenceClass::Measured,
-                    found: format!(
-                        "the ambiguity review of {key} did not answer, and the message the model \
-                         host reported is quoted below"
-                    ),
+                    found: format!("the ambiguity review of {key} did not answer"),
                     remedy: format!("run the qualification of {key} again"),
                     quoted: Some(Quoted::reported_by_the_model_host(&why)),
                 },

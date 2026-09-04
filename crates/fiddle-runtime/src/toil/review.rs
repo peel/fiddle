@@ -1,3 +1,4 @@
+use crate::gateway::Redaction;
 use crate::toil::qualify::{AmbiguityReview, Judgement, Quoted, ReviewError, Verdict as Reviewed};
 use async_trait::async_trait;
 use rig_agent::completion::Prompt;
@@ -74,14 +75,28 @@ enum Answered {
     NeedsAProductDecision,
 }
 
+const WITHHELD: &str = "the model host answered with an error and fiddle holds no credential to \
+                        redact, so it withholds the message";
+
 pub struct ModelReview<M> {
     model: M,
     bounds: ReviewBounds,
+    redaction: Redaction,
 }
 
 impl<M> ModelReview<M> {
-    pub fn new(model: M, bounds: ReviewBounds) -> Self {
-        Self { model, bounds }
+    pub fn new(model: M, bounds: ReviewBounds, redaction: Redaction) -> Self {
+        Self {
+            model,
+            bounds,
+            redaction,
+        }
+    }
+
+    fn reported(&self, said: String) -> String {
+        self.redaction
+            .excerpt(&said)
+            .unwrap_or_else(|| WITHHELD.to_string())
     }
 }
 
@@ -107,7 +122,7 @@ where
             result = run => result,
         };
 
-        let answered = answered.map_err(|error| ReviewError(error.to_string()))?;
+        let answered = answered.map_err(|error| ReviewError(self.reported(error.to_string())))?;
         read(&answered)
     }
 }
