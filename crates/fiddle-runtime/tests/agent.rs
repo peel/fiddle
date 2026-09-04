@@ -897,6 +897,50 @@ async fn both_preambles_say_the_answer_is_the_text_and_no_tool_carries_it() {
 }
 
 #[tokio::test]
+async fn the_transcript_records_the_return_of_an_invented_tool_under_its_own_rule() {
+    let (host, _g) = test_host();
+    let dir = tempfile::tempdir().expect("a directory for the transcript");
+    let transcripts = fiddle_runtime::agent::transcript::Transcripts::under(dir.path(), "invented");
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("c1", "verdict", json!({})),
+        MockTurn::text(A_VERDICT_THE_GATEWAY_ENVELOPED),
+    ]);
+
+    judge_briefed(
+        model,
+        &redaction(),
+        host,
+        budget(),
+        judging(),
+        Some(&transcripts),
+    )
+    .await
+    .expect("the return lets the evaluation answer on its next turn");
+
+    let returned: Vec<serde_json::Value> = std::fs::read_to_string(transcripts.path())
+        .expect("the transcript is on disk")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("one JSON object"))
+        .filter(|record| record["record"] == fiddle_runtime::agent::transcript::RETURNED)
+        .collect();
+    assert_eq!(
+        returned.len(),
+        1,
+        "one invented call is one return, and the transcript holds exactly that many: \
+         {returned:?}"
+    );
+    assert_eq!(returned[0]["rule"], "unoffered_tool", "{:?}", returned[0]);
+    assert_eq!(returned[0]["returns"], 1, "{:?}", returned[0]);
+    assert!(
+        returned[0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("verdict") && reason.contains("list_files")),
+        "the record names the tool the model called and the tools this run offers: {:?}",
+        returned[0]
+    );
+}
+
+#[tokio::test]
 async fn the_stub_obeys_the_tool_choice_it_is_sent() {
     let gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
 
