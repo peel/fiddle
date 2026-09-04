@@ -140,6 +140,18 @@ const A_FINDING_THAT_NAMES_THE_SUBSTITUTION: &str =
 
 const THE_EVALUATION_WAS_ASKED: &str = "judge one change against the ticket that asked for it";
 
+const THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY: &str =
+    "it names the option it wants and does not specify that option enough to build.";
+
+const THE_TASK_FORBIDS_THE_SUBSTITUTION: &str =
+    "Making the other change instead is the one response that is never open to you.";
+
+const THE_TASK_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY: &str =
+    "or it names the one it wants and does not give enough of it to build.";
+
+const THE_PREAMBLE_ADMITS_A_DECIDED_OPTION_CAN_BE_UNSPECIFIED: &str =
+    "Before you call a decided option underspecified";
+
 struct Posted {
     issue: String,
     body: String,
@@ -823,6 +835,21 @@ fn a_verdict_that_rejects(finding: &str) -> support::Reply {
     })))
 }
 
+fn reading_the_file_before_it_answers() -> support::Reply {
+    support::accepted(support::calls(
+        "read_file",
+        serde_json::json!({ "path": "src/lib.rs" }),
+    ))
+}
+
+fn a_report_that_built_the_option_the_description_suggested() -> support::Reply {
+    support::accepted(support::reports(serde_json::json!({
+        "changed_files": ["src/lib.rs"],
+        "summary": THE_RUNS_OWN_ACCOUNT_OF_WHY_IT_BUILT_A,
+        "claimed_complete": true,
+    })))
+}
+
 fn a_report_that_changed_nothing_and_asked(question: &str) -> support::Reply {
     support::accepted(support::reports(serde_json::json!({
         "changed_files": [],
@@ -943,9 +970,13 @@ impl ToilWorld {
         ToilWorld::built(
             vec![
                 Answering::Always(a_review_that_reads(A_DECISION_THE_TICKET_DID_NOT_SPECIFY)),
-                Answering::Always(a_report_that_changed_nothing_and_asked(
-                    THE_QUESTION_THAT_STOPPED_IT,
-                )),
+                Answering::Always(reading_the_file_before_it_answers()),
+                support::on_reading(
+                    THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY,
+                    a_report_that_changed_nothing_and_asked(THE_QUESTION_THAT_STOPPED_IT),
+                    writing(THE_DESCRIPTIONS_CHOICE),
+                ),
+                Answering::Always(a_report_that_built_the_option_the_description_suggested()),
                 Answering::Always(an_accepted_verdict()),
             ],
             true,
@@ -1806,6 +1837,32 @@ fn a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_n
          ticket's silence about the option it chose and not a missing decision: {}",
         told[1]
     );
+    let answering = &told[2];
+    assert!(
+        answering.contains(THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY),
+        "the report schema tells the attempt that a ticket which names its option can still \
+         fail to specify that option, which is the case ISP-263 was and the case an earlier \
+         wording of this field excluded. This world serves the question-naming report only \
+         on reading that sentence and builds the option the description suggested without \
+         it, so a build whose schema narrows back to a ticket that never chose reds here and \
+         reds again at every row below: {answering}"
+    );
+    assert!(
+        answering.contains(THE_TASK_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY),
+        "the task the step carries names that same second case, in its own words rather than \
+         the schema's, so neither of these two rows can be satisfied by the other surface's \
+         sentence: {answering}"
+    );
+    assert!(
+        answering.contains(THE_TASK_FORBIDS_THE_SUBSTITUTION),
+        "and the task says the substitution is never open: {answering}"
+    );
+    assert!(
+        answering.contains(THE_PREAMBLE_ADMITS_A_DECIDED_OPTION_CAN_BE_UNSPECIFIED),
+        "and the preamble says the thing that can be underspecified is a decided option, so \
+         the three surfaces this one request carries name the same case rather than two of \
+         them naming a narrower one: {answering}"
+    );
 
     let findings = findings_of(&payload);
     assert_eq!(
@@ -1839,8 +1896,11 @@ fn a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_n
     );
     assert_eq!(
         stopped.model_calls(),
-        2,
-        "the review and the one attempt turn, and no third call"
+        3,
+        "the review, the attempt's read, and the report it answered with. This world scripts \
+         two further answers — a report naming a changed file and an accepting verdict — \
+         which together carry a run to a published branch, so their staying unserved is the \
+         refusal happening rather than the script running out"
     );
 
     assert!(

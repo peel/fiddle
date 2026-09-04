@@ -29,10 +29,13 @@ Where the ticket weighs two options and a comment names one of them, that
 option is the work. The other option is not a smaller version of it and it is
 not a first step towards it.
 
-Do not decide a question the ticket left open. When the ticket does not say
-which of two things it wants, stop, leave the project as you found it, and
-write the question in `stopped_by_this_question`. A guess that reads as a
-decision costs more than no change at all.
+Do not decide a question the ticket left open. Two questions count here, and
+the second is the common one: the ticket does not say which of two things it
+wants,
+or it names the one it wants and does not give enough of it to build.
+For either, stop, leave the project as you found it, and write the question in
+`stopped_by_this_question`. A guess that reads as a decision costs more than
+no change at all.
 
 Before you call the named option underspecified, find the ticket's own
 sentence for each thing you say is missing, and quote it in your report. The

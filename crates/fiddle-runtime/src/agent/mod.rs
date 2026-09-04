@@ -198,10 +198,14 @@ pub struct RepairReport {
     #[serde(default)]
     pub quoted_from_a_comment: Option<String>,
 
-    /// Leave this out unless the ticket does not say which of two things it
-    /// wants. Then change nothing, and write here the one question a person
-    /// has to answer. Making the other change instead is not an answer to a
-    /// ticket you cannot read, and this field does not excuse one you made.
+    /// Leave this out unless the ticket leaves you a question you cannot
+    /// answer out of the ticket itself. There are two such cases and the
+    /// second is the common one. Either the ticket does not say which of two
+    /// things it wants, or
+    /// it names the option it wants and does not specify that option enough to build.
+    /// Then change nothing, and write here the one question a person has to
+    /// answer. Making the other change instead is not an answer to a ticket
+    /// you cannot read, and this field does not excuse one you made.
     #[serde(default)]
     pub stopped_by_this_question: Option<String>,
 }
