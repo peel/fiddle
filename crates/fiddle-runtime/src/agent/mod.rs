@@ -451,8 +451,6 @@ pub enum Offer {
     Judge,
 }
 
-const CHOICE_REQUIRED: &str = "required";
-
 const CHOICE_AUTO: &str = "auto";
 
 const OUTPUT_NATIVE: &str = "native";
@@ -488,15 +486,13 @@ impl Offer {
 
     pub fn tool_choice(self) -> rig_core::completion::message::ToolChoice {
         match self {
-            Offer::Repair => rig_core::completion::message::ToolChoice::Required,
-            Offer::Judge => rig_core::completion::message::ToolChoice::Auto,
+            Offer::Repair | Offer::Judge => rig_core::completion::message::ToolChoice::Auto,
         }
     }
 
     pub const fn chose(self) -> &'static str {
         match self {
-            Offer::Repair => CHOICE_REQUIRED,
-            Offer::Judge => CHOICE_AUTO,
+            Offer::Repair | Offer::Judge => CHOICE_AUTO,
         }
     }
 }
@@ -2151,31 +2147,36 @@ mod tests {
     }
 
     #[test]
-    fn the_evaluation_and_the_repair_ask_for_a_tool_differently_and_the_transcript_says_which() {
-        assert_eq!(
-            (Offer::Judge.chose(), Offer::Repair.chose()),
-            (CHOICE_AUTO, CHOICE_REQUIRED),
-            "the read-only offer permits a text answer because it has no other channel; the \
-             repair offer still obliges a call"
-        );
-        for (offer, expected) in [
-            (
-                Offer::Judge,
-                rig_core::completion::message::ToolChoice::Auto,
-            ),
-            (
-                Offer::Repair,
-                rig_core::completion::message::ToolChoice::Required,
-            ),
-        ] {
+    fn both_offers_permit_an_answer_and_stay_two_offers_where_it_counts() {
+        for offer in [Offer::Judge, Offer::Repair] {
             assert_eq!(
                 offer.tool_choice(),
-                expected,
+                rig_core::completion::message::ToolChoice::Auto,
+                "`prompt_typed` pins `Native` and advertises no output tool, so on both offers \
+                 the answer is the assistant's final text and `required` forbids it. The \
+                 agreement is deliberate: `{:?}` obliged a call and a gateway that obeyed spent \
+                 every turn reading",
+                offer
+            );
+            assert_eq!(
+                offer.chose(),
+                CHOICE_AUTO,
                 "the word the transcript records is the choice the request carries, and \
-                 `{}` disagreed",
-                offer.chose()
+                 `{offer:?}` disagreed"
             );
         }
+        assert_ne!(
+            Offer::Judge.output_mode(),
+            Offer::Repair.output_mode(),
+            "one tool choice does not make one offer: the evaluation asks for its shape in the \
+             prompt and the repair asks the provider"
+        );
+        assert_ne!(
+            Offer::Judge.abilities(false),
+            Offer::Repair.abilities(false),
+            "and the evaluation is read-only where the repair may change files, so collapsing \
+             the two offers into one has to red this lane"
+        );
     }
 
     #[test]
