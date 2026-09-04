@@ -17,8 +17,8 @@ pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
-use rig_agent::agent::{NoToolConfig, WithBuilderTools};
-use rig_agent::completion::{PromptError, StructuredOutputError, TypedPrompt};
+use rig_agent::agent::{NoToolConfig, OutputMode, WithBuilderTools};
+use rig_agent::completion::{Prompt, PromptError, StructuredOutputError, TypedPrompt};
 use rig_agent::tool::{Tool, ToolContext};
 use rig_agent::AgentBuilder;
 use std::collections::{BTreeMap, BTreeSet};
@@ -455,7 +455,25 @@ const CHOICE_REQUIRED: &str = "required";
 
 const CHOICE_AUTO: &str = "auto";
 
+const OUTPUT_NATIVE: &str = "native";
+
+const OUTPUT_PROMPTED: &str = "prompted";
+
 impl Offer {
+    pub fn output_mode(self) -> OutputMode {
+        match self {
+            Offer::Repair => OutputMode::Native,
+            Offer::Judge => OutputMode::Prompted,
+        }
+    }
+
+    pub const fn asks_for_output(self) -> &'static str {
+        match self {
+            Offer::Repair => OUTPUT_NATIVE,
+            Offer::Judge => OUTPUT_PROMPTED,
+        }
+    }
+
     pub fn abilities(self, declares_commands: bool) -> Vec<Ability> {
         let mut abilities = READING.to_vec();
         if self == Offer::Judge {
@@ -549,6 +567,7 @@ where
             .max_tokens(budget.max_tokens)
             .default_max_turns(budget.max_turns)
             .output_schema::<RepairReport>()
+            .output_mode(offer.output_mode())
             .tool_choice(offer.tool_choice()),
         &abilities,
     );
@@ -623,7 +642,8 @@ fn announced(
             .text("preamble", preamble)
             .text("task", task)
             .text("tools", &named.join(", "))
-            .text("tool_choice", offer.chose()),
+            .text("tool_choice", offer.chose())
+            .text("output", offer.asks_for_output()),
     );
 }
 
@@ -714,22 +734,25 @@ impl Verdict {
 #[derive(Clone, Debug)]
 struct Judged(Verdict);
 
-impl schemars::JsonSchema for Judged {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        <Verdict as schemars::JsonSchema>::schema_name()
+pub(crate) fn unfenced(answered: &str) -> &str {
+    let body = answered.trim();
+    let opened = body.trim_start_matches(FENCE);
+    if body.len() - opened.len() < SHORTEST_FENCE {
+        return body;
     }
+    let content = match opened.split_once('\n') {
+        Some((_language_tag, content)) => content,
+        None => opened,
+    };
+    content.trim().trim_end_matches(FENCE).trim()
+}
 
-    fn schema_id() -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("fiddle_runtime::agent::Judged")
+fn judged(answered: &str) -> Result<Judged, StructuredOutputError> {
+    if answered.trim().is_empty() {
+        return Err(StructuredOutputError::EmptyResponse);
     }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        <Verdict as schemars::JsonSchema>::json_schema(generator)
-    }
-
-    fn inline_schema() -> bool {
-        <Verdict as schemars::JsonSchema>::inline_schema()
-    }
+    serde_json::from_str::<Judged>(unfenced(answered))
+        .map_err(StructuredOutputError::DeserializationError)
 }
 
 impl<'de> serde::Deserialize<'de> for Judged {
@@ -775,6 +798,7 @@ where
             .max_tokens(budget.max_tokens)
             .default_max_turns(budget.max_turns)
             .output_schema::<Verdict>()
+            .output_mode(offer.output_mode())
             .tool_choice(offer.tool_choice()),
         &abilities,
     );
@@ -791,21 +815,31 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<Judged>(brief.task.to_string())
+        .prompt(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .into_future();
 
-    let Judged(verdict) = tokio::select! {
+    let refused = |error: StructuredOutputError| {
+        classify(
+            error,
+            VERDICT,
+            redaction,
+            &Spent::default(),
+            budget.max_tokens,
+        )
+    };
+    let answered = tokio::select! {
         biased;
         _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
         result = run => result.map_err(|error| {
-            classify(error, VERDICT, redaction, &Spent::default(), budget.max_tokens)
+            refused(StructuredOutputError::PromptError(Box::new(error)))
         })?,
     };
+    let Judged(verdict) = judged(&answered).map_err(refused)?;
 
     match &verdict {
         Verdict::Rejected { findings } if findings.iter().all(|f| f.trim().is_empty()) => {
@@ -1927,8 +1961,65 @@ mod tests {
         }
     }
 
-    fn read_verdict(answered: &str) -> Result<Verdict, serde_json::Error> {
-        serde_json::from_str::<Judged>(answered).map(|Judged(verdict)| verdict)
+    fn read_verdict(answered: &str) -> Result<Verdict, StructuredOutputError> {
+        judged(answered).map(|Judged(verdict)| verdict)
+    }
+
+    #[test]
+    fn a_verdict_is_read_through_one_fence_and_prose_beside_one_is_refused() {
+        const BARE: &str = r#"{"verdict":"accepted"}"#;
+        for fenced in [
+            BARE.to_string(),
+            format!("```\n{BARE}\n```"),
+            format!("```json\n{BARE}\n```"),
+            format!(" ```json\n{BARE}\n```"),
+            format!("````json\n{BARE}\n````"),
+            format!("```{BARE}```"),
+        ] {
+            assert_eq!(
+                read_verdict(&fenced)
+                    .unwrap_or_else(|error| panic!("`{fenced}` wraps one verdict: {error}")),
+                Verdict::Accepted {},
+                "of `{fenced}`"
+            );
+        }
+
+        for (unreadable, named) in [
+            (format!("Here is my verdict:\n{BARE}"), "expected value"),
+            (
+                format!("```json\n{BARE}\n```\nand that is all."),
+                "trailing characters",
+            ),
+            (
+                format!("```json\n{BARE}\n```\n```json\n{BARE}\n```"),
+                "trailing characters",
+            ),
+            ("```json\n```".to_string(), "EOF while parsing a value"),
+            ("```".to_string(), "EOF while parsing a value"),
+        ] {
+            let refused = read_verdict(&unreadable)
+                .map(|verdict| verdict.as_str())
+                .expect_err("stripping a fence is not a licence to read whatever is beside one")
+                .to_string();
+            assert!(
+                refused.contains(named),
+                "the refusal names what could not be read, and `{unreadable}` said: {refused}"
+            );
+            assert!(
+                !refused.contains("no content"),
+                "an answer that arrived is refused as unreadable and never as absent: {refused}"
+            );
+        }
+
+        for blank in ["", "   ", "\n"] {
+            assert!(
+                matches!(
+                    read_verdict(blank),
+                    Err(StructuredOutputError::EmptyResponse)
+                ),
+                "an answer with nothing in it is named as no answer: {blank:?}"
+            );
+        }
     }
 
     #[test]
@@ -2088,13 +2179,40 @@ mod tests {
     }
 
     #[test]
+    fn the_evaluation_asks_for_its_answer_in_the_prompt_and_the_repair_asks_the_provider() {
+        assert_eq!(
+            (
+                Offer::Judge.asks_for_output(),
+                Offer::Repair.asks_for_output()
+            ),
+            (OUTPUT_PROMPTED, OUTPUT_NATIVE),
+            "the transcript names which mechanism carried the answer, so the next reader of a \
+             failed run knows whether a schema was ever on the wire"
+        );
+        for (offer, expected) in [
+            (Offer::Judge, OutputMode::Prompted),
+            (Offer::Repair, OutputMode::Native),
+        ] {
+            assert_eq!(
+                offer.output_mode(),
+                expected,
+                "the word the transcript records is the mode the builder is given, and `{}` \
+                 disagreed",
+                offer.asks_for_output()
+            );
+        }
+    }
+
+    #[test]
     fn the_verdict_schema_names_the_two_shapes_the_parse_accepts_and_no_combiner() {
         let schema = schemars::schema_for!(Verdict).to_value();
         for combiner in ["oneOf", "allOf", "anyOf"] {
             assert!(
                 schema.get(combiner).is_none(),
-                "a gateway fronting Anthropic refuses `{combiner}` at the top of the schema \
-                 it lifts out of `response_format`: {schema}"
+                "a gateway fronting Anthropic refuses `{combiner}` at the top of a schema it \
+                 lifts out of `response_format`. The verdict's schema travels in the preamble \
+                 now, and it is held to the same rule so that moving it back onto the wire \
+                 cannot bring a combiner with it: {schema}"
             );
         }
         assert_eq!(

@@ -374,6 +374,24 @@ assert_contains "the neighbour is still measured" \
   "the body cites another_name_of_four_words" "$OUT"
 
 echo ""
+echo "=== Test 19b: a record larger than a pipe buffer is read to its end for a retired name ==="
+fresh
+LONG_BODY="$(printf 'The helper `a_name_of_four_words` is gone.\n'; yes 'The record goes on for longer than one pipe buffer holds, and the retired name sits at its head.' | head -3000)"
+adr_body "021-a-decision" "selected" "a_name_of_four_words" "$LONG_BODY"
+RECORD_BYTES=$(wc -c < "$WORK/tree/docs/technical/decisions/021-a-decision.md")
+if [ "$RECORD_BYTES" -gt 131072 ]; then
+  PASS=$((PASS+1)); echo "  PASS: the record is larger than 128KB ($RECORD_BYTES bytes), so the case is the one it claims"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: the record is only $RECORD_BYTES bytes, so this case measures nothing"
+fi
+EARLY_FAILED=0
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  OUT=$(run 2>&1) || EARLY_FAILED=$((EARLY_FAILED+1))
+done
+assert_exit "a retired name on an early line of a large record → exit 0 on 10 of 10 runs" 0 "$EARLY_FAILED"
+assert_contains "and the retirement is counted" "1 retired names, 0 unresolved" "$OUT"
+
+echo ""
 echo "=== Test 20: the repository's own ADRs pass ==="
 EXIT_CODE=0
 OUT=$("$SCRIPT_DIR/check-adr-cites.sh" --root "$SCRIPT_DIR/.." 2>&1) || EXIT_CODE=$?

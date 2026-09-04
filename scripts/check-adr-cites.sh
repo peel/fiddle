@@ -88,6 +88,7 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
 
   : > "$GONE"
   if [ -n "$retired" ]; then
+    prose=$(prose_of "$adr")
     split_entries "$retired" > "$GONE"
     while IFS= read -r entry; do
       gones=$((gones + 1))
@@ -95,7 +96,7 @@ for adr in "$DECISIONS"/[0-9][0-9][0-9]-*.md; do
         printf '%s: Retired: %s still resolves in the repository\n' "$base" "$entry"
         violations=$((violations + 1))
       fi
-      if ! prose_of "$adr" | grep -qF -- "\`$entry\`"; then
+      if [[ "$prose" != *"\`$entry\`"* ]]; then
         printf '%s: Retired: %s is named nowhere in the body\n' "$base" "$entry"
         violations=$((violations + 1))
       fi

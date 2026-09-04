@@ -552,10 +552,11 @@ async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
     );
     assert!(
         refused.is_empty(),
-        "a structured-output schema reaches the provider as `response_format`, and a \
-         gateway that fronts Anthropic lifts it into a prepended tool, so a top-level \
-         combiner there is refused as `tools.0.custom.input_schema`. {} of them carry \
-         one:\n{}",
+        "the report's schema reaches the provider as `response_format`, and a gateway that \
+         fronts Anthropic lifts it into a prepended tool, so a top-level combiner there is \
+         refused as `tools.0.custom.input_schema`. The verdict's schema travels in the \
+         evaluation's preamble instead, and is held to the same rule so that moving it back \
+         onto the wire cannot bring a combiner with it. {} of the two carry one:\n{}",
         refused.len(),
         refused.join("\n")
     );
@@ -586,8 +587,9 @@ async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
         assert_eq!(
             named, expected,
             "{offered} is sent its own tools and no others. No synthetic output tool is among \
-             them, because `prompt_typed` pins `OutputMode::Native`, and a count-only assertion \
-             here would pass whether or not one arrived"
+             them: the repairer's `prompt_typed` pins `OutputMode::Native`, and the judge's \
+             `OutputMode::Prompted` advertises none. A count-only assertion here would pass \
+             whether or not one arrived"
         );
         let offenders = combiners_at_the_top_of(&schemas);
         assert!(
@@ -611,6 +613,7 @@ struct ObeysItsToolChoice {
     answer: String,
     seen: Arc<Mutex<Vec<Option<ToolChoice>>>>,
     schemas: Arc<Mutex<Vec<Option<serde_json::Value>>>>,
+    preambles: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 impl ObeysItsToolChoice {
@@ -619,6 +622,7 @@ impl ObeysItsToolChoice {
             answer: answer.to_string(),
             seen: Arc::new(Mutex::new(Vec::new())),
             schemas: Arc::new(Mutex::new(Vec::new())),
+            preambles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -631,6 +635,13 @@ impl ObeysItsToolChoice {
 
     fn output_schemas_it_was_sent(&self) -> Vec<Option<serde_json::Value>> {
         self.schemas
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn preambles_it_was_sent(&self) -> Vec<Option<String>> {
+        self.preambles
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -663,6 +674,18 @@ impl CompletionModel for ObeysItsToolChoice {
                     .output_schema
                     .clone()
                     .map(schemars::Schema::to_value),
+            );
+        self.preambles
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(
+                request
+                    .chat_history
+                    .iter()
+                    .find_map(|message| match message {
+                        rig_core::completion::Message::System { content } => Some(content.clone()),
+                        _ => None,
+                    }),
             );
         let turn = {
             let mut seen = self
@@ -823,6 +846,10 @@ async fn an_answer_that_is_not_a_verdict_is_refused_and_the_refusal_names_the_ve
         r#"{"verdict": "maybe"}"#,
         r#"{"parameters": "{\"summary\": \"a string holding no verdict\"}"}"#,
         r#"{"parameters": "\"{\\\"verdict\\\": \\\"accepted\\\"}\""}"#,
+        "Here is my verdict:\n{\"verdict\": \"accepted\"}",
+        "```json\n{\"verdict\": \"accepted\"}\n```\nand that is my verdict.",
+        "```json\n{\"verdict\": \"accepted\"}\n```\n```json\n{\"verdict\": \"rejected\"}\n```",
+        "```json\n```",
     ] {
         let (host, _g) = test_host();
         let refused = judge_briefed(
@@ -876,12 +903,131 @@ async fn the_verdict_a_gateway_envelopes_is_read_and_a_bare_one_still_reads() {
     }
 }
 
+const RECORDED_FENCE: &str =
+    include_str!("../../../tests/fixtures/gateway-real/review-answer.json");
+
+fn the_text_the_gateway_fenced() -> String {
+    let response: serde_json::Value =
+        serde_json::from_str(RECORDED_FENCE).expect("the recorded gateway response is JSON");
+    response["choices"][0]["message"]["content"]
+        .as_str()
+        .expect("the recorded response carries the answer as text")
+        .to_string()
+}
+
+fn in_the_fence_the_gateway_sent(payload: &str) -> String {
+    let content = the_text_the_gateway_fenced();
+    let opens = content
+        .find('{')
+        .expect("the recorded text carries one object");
+    let closes = content
+        .rfind('}')
+        .expect("the recorded text carries one object")
+        + 1;
+    format!("{}{payload}{}", &content[..opens], &content[closes..])
+}
+
+fn in_the_envelope_the_gateway_sent(payload: serde_json::Value) -> String {
+    let mut body: serde_json::Value =
+        serde_json::from_str(RECORDED_ENVELOPE).expect("the recorded gateway body is JSON");
+    let envelope = body
+        .as_object_mut()
+        .expect("the recorded body is an object");
+    assert!(
+        envelope.len() == 1 && envelope["parameters"].is_object(),
+        "the recorded envelope is one `parameters` member holding an object, and a fixture of \
+         another shape would make this a shape nobody recorded: {envelope:?}"
+    );
+    envelope.insert("parameters".to_string(), payload);
+    body.to_string()
+}
+
+fn in_the_string_the_gateway_sent(payload: serde_json::Value) -> String {
+    let mut body: serde_json::Value =
+        serde_json::from_str(RECORDED_STRING).expect("the recorded gateway body is JSON");
+    let envelope = body
+        .as_object_mut()
+        .expect("the recorded body is an object");
+    assert!(
+        envelope.len() == 1 && envelope["parameters"].is_string(),
+        "the recorded envelope is one `parameters` member holding a string, and a fixture of \
+         another shape would make this a shape nobody recorded: {envelope:?}"
+    );
+    envelope.insert(
+        "parameters".to_string(),
+        serde_json::Value::String(payload.to_string()),
+    );
+    body.to_string()
+}
+
 #[tokio::test]
-async fn the_schema_the_evaluation_sends_is_the_verdicts_own_and_the_newtype_moves_nothing() {
+async fn a_verdict_reads_in_each_shape_a_recorded_gateway_body_arrived_in() {
+    let content = the_text_the_gateway_fenced();
+    let opens = content.find('{').expect("one object");
+    let closes = content.rfind('}').expect("one object") + 1;
+    assert_eq!(
+        in_the_fence_the_gateway_sent(&content[opens..closes]),
+        content,
+        "the framing is read off the recorded body, so putting the body's own object back \
+         reproduces it byte for byte"
+    );
+    assert!(
+        content.starts_with(" ```json\n") && content.ends_with("\n```"),
+        "and the framing is a fence with a leading space, as the gateway sent it, so a fixture \
+         normalised to bare JSON would prove nothing: {content:?}"
+    );
+
+    let rejected = json!({
+        "verdict": "rejected",
+        "findings": ["src/lib.rs names a second function the ticket never asked for"],
+    });
+    let a_rejection = Verdict::Rejected {
+        findings: vec!["src/lib.rs names a second function the ticket never asked for".to_string()],
+    };
+    for (shape, answered, expected) in [
+        (
+            "the fence the review's answer arrived in",
+            in_the_fence_the_gateway_sent(r#"{"verdict": "accepted"}"#),
+            Verdict::Accepted {},
+        ),
+        (
+            "that fence around a rejection",
+            in_the_fence_the_gateway_sent(&rejected.to_string()),
+            a_rejection.clone(),
+        ),
+        (
+            "the envelope the report arrived in",
+            in_the_envelope_the_gateway_sent(json!({"verdict": "accepted"})),
+            Verdict::Accepted {},
+        ),
+        (
+            "the string the report arrived in",
+            in_the_string_the_gateway_sent(rejected.clone()),
+            a_rejection.clone(),
+        ),
+    ] {
+        let (host, _g) = test_host();
+        let read = judge_briefed(
+            MockCompletionModel::new([MockTurn::text(&answered)]),
+            &redaction(),
+            host,
+            budget(),
+            judging(),
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("a verdict in {shape} is a shape a live run has produced: {error}\n{answered}")
+        });
+        assert_eq!(read, expected, "in {shape}: {answered}");
+    }
+}
+
+#[tokio::test]
+async fn an_evaluation_that_answers_nothing_is_told_apart_from_one_that_answers_wrongly() {
     let (host, _g) = test_host();
-    let gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
-    let _ = judge_briefed(
-        gateway.clone(),
+    let unanswered = judge_briefed(
+        MockCompletionModel::new([MockTurn::text("   ")]),
         &redaction(),
         host,
         budget(),
@@ -889,34 +1035,71 @@ async fn the_schema_the_evaluation_sends_is_the_verdicts_own_and_the_newtype_mov
         None,
     )
     .await;
+    let Err(AgentError::Protocol { reason }) = &unanswered else {
+        panic!("blank text is not a verdict: {unanswered:?}");
+    };
+    assert_eq!(
+        reason, "the model returned no final content at all",
+        "a blank answer is named as no answer, so the person reading the log does not go \
+         looking for a field in it"
+    );
+}
+
+#[tokio::test]
+async fn the_evaluation_sends_no_structured_output_schema_and_asks_for_the_verdict_in_its_preamble()
+{
+    let (host, _g) = test_host();
+    let gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
+    let verdict = judge_briefed(
+        gateway.clone(),
+        &redaction(),
+        host,
+        budget(),
+        judging(),
+        None,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the evaluation answers before the request is read: {error}"));
+    assert_eq!(verdict, Verdict::Accepted {});
 
     let schemas = gateway.output_schemas_it_was_sent();
     assert_eq!(
         schemas.len(),
         1,
-        "one turn answered, so one request was sent, and the schema below is that request's \
-         and not a schema this lane generated for itself"
+        "one turn answered, so one request was sent, and the request below is that one and \
+         not one this lane built for itself"
     );
-    let sent = schemas[0]
+    assert_eq!(
+        schemas,
+        vec![None],
+        "the evaluation's request carries no structured-output schema, so the OpenAI-compatible \
+         provider has nothing to build a `response_format` from. \
+         `the_schema_the_repair_step_sends_is_the_reports_own_and_the_newtype_moves_nothing` \
+         reads `Some` off the same field on the repair side, so this `None` is the evaluation's \
+         choice and not a field the capture cannot see: {schemas:?}"
+    );
+
+    let preambles = gateway.preambles_it_was_sent();
+    let system = preambles[0]
         .clone()
-        .expect("the evaluation's request carries a structured-output schema");
-    assert_eq!(
-        sent,
-        schemars::schema_for!(Verdict).to_value(),
-        "the request carries the verdict's own schema, whole and field for field. It is built \
-         from `Judged` and not from the `.output_schema::<Verdict>()` the builder names, which \
-         `from_agent` overrides the way it overrides `output_mode`, so this equality is the \
-         newtype's delegation and nothing else holds it. Comparing one member of a locally \
-         generated schema would have passed whatever the request held"
+        .expect("the evaluation's request opens with a system message");
+    assert!(
+        system.starts_with(JUDGE_PREAMBLE_FOR_TESTS),
+        "the brief the caller gave still opens the system message: {system}"
     );
-    assert_eq!(
-        sent["title"],
-        json!("Verdict"),
-        "and the provider reads `response_format.json_schema.name` off that title, so a newtype \
-         that named itself would rename the wire payload. rig builds that `response_format` and \
-         this build does not, which is why \
-         `no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself` reads the wire \
-         form off the socket and this lane reads the request: {sent}"
+    let asked_for =
+        serde_json::to_string(schemars::schema_for!(Verdict).as_value()).expect("a schema is JSON");
+    assert!(
+        system.contains(&asked_for),
+        "the shape asked for is the verdict's own schema, whole, and it travels in the system \
+         message rather than as a provider constraint. rig-agent 0.41.0 appends it there under \
+         `OutputMode::Prompted`, and this lane reads it off the request the model was sent and \
+         not off the builder: {system}"
+    );
+    assert!(
+        system.contains("Respond with ONLY a single JSON object"),
+        "and the sentence asking for one object comes with it, so the model is told what to do \
+         with the schema and not only shown it: {system}"
     );
 }
 
