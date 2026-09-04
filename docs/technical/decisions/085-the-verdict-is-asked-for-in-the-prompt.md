@@ -2,6 +2,7 @@
 
 Status: accepted
 Cites: Verdict, Judged, Reported, RepairReport, Offer, OutputMode, unfenced, unstringed, unwrapped, unenveloped, judged, judge_briefed, attempt_briefed, asks_for_output, output_mode, JUDGE_PREAMBLE, PREAMBLE, classify, crates/fiddle-runtime/src/agent/mod.rs, crates/fiddle-runtime/src/toil/review.rs, crates/fiddle-runtime/tests/agent.rs, crates/fiddle-acceptance/tests/toil.rs, the_evaluation_sends_no_structured_output_schema_and_asks_for_the_verdict_in_its_preamble, a_verdict_reads_in_each_shape_a_recorded_gateway_body_arrived_in, an_evaluation_that_answers_nothing_is_told_apart_from_one_that_answers_wrongly, a_verdict_is_read_through_one_fence_and_prose_beside_one_is_refused, the_evaluation_asks_for_its_answer_in_the_prompt_and_the_repair_asks_the_provider, no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself
+Retired: the_repair_step_still_obliges_a_tool_call_and_a_gateway_that_obeys_leaves_it_no_answer
 
 ## Context
 
@@ -50,7 +51,7 @@ MEASURED, the floor: `an_answer_that_is_not_a_verdict_is_refused_and_the_refusal
 
 ARGUED, and it is a narrowing: the typed path's fallback read the first balanced JSON value out of any prose, and ADR 083 relied on it for the fenced verdict. `unfenced` tolerates one fence and nothing else, so an answer with prose before or after the object is refused where rig would have read it. That is the project's rule and not an accident. A reader that searches text for the first value it can parse is choosing among candidates, and the fifth shape is what choosing looks like when it goes wrong. The recorded fenced body is the only fenced answer a live run has produced, and it reads.
 
-ARGUED: `tool_choice` did not move. `Offer::Judge` stays `Auto`, because a text answer is the only channel a read-only step has and `Required` forbids it, which `fiddle-n6o8` measured. Under `Prompted` that reasoning holds for any step whose answer is text. The repair step's answer is still the provider's structured output, so `Offer::Repair` stays `Required`, and `the_repair_step_still_obliges_a_tool_call_and_a_gateway_that_obeys_leaves_it_no_answer` still pins the defect ADR 083 records there.
+ARGUED: `tool_choice` did not move. `Offer::Judge` stays `Auto`, because a text answer is the only channel a read-only step has and `Required` forbids it, which `fiddle-n6o8` measured. Under `Prompted` that reasoning holds for any step whose answer is text. The repair step's answer is still the provider's structured output, so `Offer::Repair` stays `Required`, and `the_repair_step_still_obliges_a_tool_call_and_a_gateway_that_obeys_leaves_it_no_answer` still pins the defect ADR 083 records there. Superseded on 2026-09-04 by `fiddle-yivx`: the repair step's answer is still the provider's structured output and it is still reachable only as the assistant's final text, so `Required` forbade it on the repair step exactly as on the evaluation, and a gateway that obeyed spent 24 and then 120 turns reading. Both offers now send `Auto`. ADR 083 holds the observation and the lanes.
 
 ### `RepairReport` stays where it is, and the reason is a measurement
 
