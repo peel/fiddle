@@ -806,11 +806,7 @@ where
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
-    let held = Held {
-        shown: &[],
-        declarations: Declarations::Unchecked,
-    };
-    let returns = ReturnHook::holding(&held, RETURNS, redaction, transcripts);
+    let returns = ReturnHook::judging(RETURNS, redaction, transcripts);
     let agent = builder.add_hook(returns.clone()).build();
 
     let mut bounded = host.clone();
@@ -880,10 +876,16 @@ fn classify(
 ) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
-            reason: format!("the {asked_for} did not match the schema: {source}"),
+            reason: returns::after_returns(
+                format!("the {asked_for} did not match the schema: {source}"),
+                spent,
+            ),
         },
         StructuredOutputError::EmptyResponse => AgentError::Protocol {
-            reason: "the model returned no final content at all".to_string(),
+            reason: returns::after_returns(
+                "the model returned no final content at all".to_string(),
+                spent,
+            ),
         },
         StructuredOutputError::PromptError(prompt) => match *prompt {
             PromptError::MaxTurnsError { max_turns, .. } => AgentError::Bounded {

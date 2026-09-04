@@ -1133,6 +1133,35 @@ impl ToilWorld {
         )
     }
 
+    pub fn start_with_a_judge_that_answers_prose_first() -> Self {
+        ToilWorld::built(
+            support::always(vec![
+                a_review_that_reads_a_change(),
+                support::accepted(support::calls(
+                    "write_file",
+                    serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+                )),
+                support::accepted(support::reports(serde_json::json!({
+                    "changed_files": ["src/lib.rs"],
+                    "summary": "corrected the off-by-one the ticket named",
+                    "claimed_complete": true,
+                }))),
+                support::accepted(support::completion(
+                    serde_json::json!({
+                        "role": "assistant",
+                        "content": "Everything checks out. The change does what the ticket asked \
+                                    and nothing more.",
+                    }),
+                    "stop",
+                )),
+                support::accepted(support::reports(serde_json::json!({
+                    "verdict": "accepted",
+                }))),
+            ]),
+            true,
+        )
+    }
+
     pub fn start_with_a_judge_that_reads_before_it_answers() -> Self {
         ToilWorld::built(
             support::always(an_accepted_change_whose_judge_reads_before_it_answers()),
@@ -1860,6 +1889,40 @@ fn a_judge_that_names_its_verdict_as_a_tool_is_returned_and_the_run_completes() 
             && bodies[4].contains("no tool carries it"),
         "the fifth request carries the return as the model's own history, naming the tool it \
          called and saying where the answer goes, read off the loopback socket: {}",
+        bodies[4]
+    );
+}
+
+#[test]
+fn a_judge_that_answers_prose_is_returned_and_the_run_completes() {
+    let world = ToilWorld::start_with_a_judge_that_answers_prose_first();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let bodies = world.model_prompts();
+
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "on 2026-09-04 the evaluation answered a live run in prose, an acceptance in sentences \
+         holding no JSON object, and that one answer ended a run whose agent step had finished. \
+         The prose is returned to the model and the run goes on to the verdict it writes next: \
+         {payload}"
+    );
+    assert_eq!(
+        bodies.len(),
+        5,
+        "the review, two agent turns, the prose and the verdict: one request each, so the return \
+         cost one model call and not the run. {} requests: {payload}",
+        bodies.len()
+    );
+    assert!(
+        bodies[4].contains("fiddle refused that answer")
+            && bodies[4].contains("the verdict did not match the schema")
+            && bodies[4].contains("Send one JSON object and nothing else"),
+        "the fifth request carries the return as the model's own history, quoting the refusal \
+         and asking for the shape, read off the loopback socket: {}",
         bodies[4]
     );
 }

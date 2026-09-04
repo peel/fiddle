@@ -462,7 +462,10 @@ mod tests {
     #[tokio::test]
     async fn a_failed_attempt_is_reported_as_the_agents_failure_and_earns_nothing() {
         let f = broken_fixture();
-        let error = FixtureRepair::new(MockCompletionModel::new(malformed()), f.config())
+        let insisting: Vec<MockTurn> = (0..=crate::agent::RETURNS)
+            .flat_map(|_| malformed())
+            .collect();
+        let error = FixtureRepair::new(MockCompletionModel::new(insisting), f.config())
             .execute(ExecutionInput::unobserved(grant(), WORK_ID, INVOCATION_REF))
             .await
             .unwrap_err();

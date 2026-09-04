@@ -842,7 +842,12 @@ async fn no_worktree_survives_the_attempt() {
     let world = migration_world().await;
     for (name, script) in [
         ("migrates", migrates()),
-        ("malformed", vec![MockTurn::text("this is not the schema")]),
+        (
+            "malformed",
+            (0..=fiddle_runtime::agent::RETURNS)
+                .map(|_| MockTurn::text("this is not the schema"))
+                .collect(),
+        ),
     ] {
         let _ = run_migration(MockCompletionModel::new(script), &world).await;
 

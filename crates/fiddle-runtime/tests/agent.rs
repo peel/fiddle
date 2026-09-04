@@ -298,7 +298,11 @@ async fn the_report_a_real_gateway_double_encoded_completes_the_attempt() {
 #[tokio::test]
 async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
     let (host, _g) = test_host();
-    let model = MockCompletionModel::new([MockTurn::text("this is not the schema")]);
+    let model = MockCompletionModel::new(
+        (0..=fiddle_runtime::agent::RETURNS)
+            .map(|_| MockTurn::text("this is not the schema"))
+            .collect::<Vec<_>>(),
+    );
 
     let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh, None).await;
 
@@ -306,6 +310,21 @@ async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
         matches!(outcome, Err(AgentError::Protocol { .. })),
         "a report that does not parse must never become a default-valued one: {outcome:?}"
     );
+}
+
+#[tokio::test]
+async fn a_repair_that_answers_prose_is_returned_to_the_shape_and_reports() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([
+        MockTurn::text("All done, the off-by-one is fixed and the check passes."),
+        MockTurn::text(RECORDED_ENVELOPE),
+    ]);
+
+    let report = attempt(model, &redaction(), host, budget(), Direction::Fresh, None)
+        .await
+        .expect("prose is returned once and the report on the next turn is read");
+
+    assert_eq!(report.changed_files, ["pkg/service/batch_processor.go"]);
 }
 
 #[tokio::test]
@@ -1036,7 +1055,11 @@ async fn an_answer_that_is_not_a_verdict_is_refused_and_the_refusal_names_the_ve
     ] {
         let (host, _g) = test_host();
         let refused = judge_briefed(
-            MockCompletionModel::new([MockTurn::text(answered)]),
+            MockCompletionModel::new(
+                (0..=fiddle_runtime::agent::RETURNS)
+                    .map(|_| MockTurn::text(answered))
+                    .collect::<Vec<_>>(),
+            ),
             &redaction(),
             host,
             budget(),
@@ -1053,7 +1076,71 @@ async fn an_answer_that_is_not_a_verdict_is_refused_and_the_refusal_names_the_ve
             "the refusal has to name what could not be read, and this one says {reason:?} of \
              {answered:?}"
         );
+        assert!(
+            reason.contains(&format!(
+                "after {} of its turns were returned; the last return failed the unreadable_answer rule",
+                fiddle_runtime::agent::RETURNS
+            )),
+            "the same answer was returned to the model {} times before the refusal stood, and the \
+             refusal says so: {reason:?} of {answered:?}",
+            fiddle_runtime::agent::RETURNS
+        );
     }
+}
+
+#[tokio::test]
+async fn a_judge_that_answers_prose_is_returned_to_the_shape_and_answers() {
+    let (host, _g) = test_host();
+    let dir = tempfile::tempdir().expect("a directory for the transcript");
+    let transcripts = fiddle_runtime::agent::transcript::Transcripts::under(dir.path(), "prose");
+    let model = MockCompletionModel::new([
+        MockTurn::text(
+            "Everything checks out. The change renamed the metric and left the rest alone, \
+             matching exactly what the ticket's binding decision comments required.",
+        ),
+        MockTurn::text(A_VERDICT_THE_GATEWAY_ENVELOPED),
+    ]);
+
+    let verdict = judge_briefed(
+        model,
+        &redaction(),
+        host,
+        budget(),
+        judging(),
+        Some(&transcripts),
+    )
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "prose is not a verdict, and on 2026-09-04 one such answer ended a live run after the \
+             agent step had finished. It is returned to the model instead: {error}"
+        )
+    });
+
+    assert_eq!(verdict, Verdict::Accepted {});
+    let returned: Vec<serde_json::Value> = std::fs::read_to_string(transcripts.path())
+        .expect("the transcript is on disk")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("one JSON object"))
+        .filter(|record| record["record"] == fiddle_runtime::agent::transcript::RETURNED)
+        .collect();
+    assert_eq!(
+        returned.len(),
+        1,
+        "one prose answer is one return: {returned:?}"
+    );
+    assert_eq!(
+        returned[0]["rule"], "unreadable_answer",
+        "{:?}",
+        returned[0]
+    );
+    assert!(
+        returned[0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("the verdict did not match the schema:")),
+        "the record carries the refusal the model was shown: {:?}",
+        returned[0]
+    );
 }
 
 #[tokio::test]
@@ -1210,7 +1297,11 @@ async fn a_verdict_reads_in_each_shape_a_recorded_gateway_body_arrived_in() {
 async fn an_evaluation_that_answers_nothing_is_told_apart_from_one_that_answers_wrongly() {
     let (host, _g) = test_host();
     let unanswered = judge_briefed(
-        MockCompletionModel::new([MockTurn::text("   ")]),
+        MockCompletionModel::new(
+            (0..=fiddle_runtime::agent::RETURNS)
+                .map(|_| MockTurn::text("   "))
+                .collect::<Vec<_>>(),
+        ),
         &redaction(),
         host,
         budget(),
@@ -1221,10 +1312,17 @@ async fn an_evaluation_that_answers_nothing_is_told_apart_from_one_that_answers_
     let Err(AgentError::Protocol { reason }) = &unanswered else {
         panic!("blank text is not a verdict: {unanswered:?}");
     };
-    assert_eq!(
-        reason, "the model returned no final content at all",
+    assert!(
+        reason.starts_with("the model returned no final content at all"),
         "a blank answer is named as no answer, so the person reading the log does not go \
-         looking for a field in it"
+         looking for a field in it: {reason}"
+    );
+    assert!(
+        reason.contains(&format!(
+            "after {} of its turns were returned",
+            fiddle_runtime::agent::RETURNS
+        )),
+        "and a blank answer was returned before the refusal stood: {reason}"
     );
 }
 

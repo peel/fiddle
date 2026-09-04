@@ -285,10 +285,22 @@ async fn malformed_structured_output_fails_the_run() {
     let f = broken_fixture();
 
     let report = f
-        .run(vec![MockTurn::text("this is not the schema")], f.config())
+        .run(
+            (0..=fiddle_runtime::agent::RETURNS)
+                .map(|_| MockTurn::text("this is not the schema"))
+                .collect(),
+            f.config(),
+        )
         .await;
 
     assert_retryable_because(&report, "the report did not match the schema");
+    assert_retryable_because(
+        &report,
+        &format!(
+            "after {} of its turns were returned",
+            fiddle_runtime::agent::RETURNS
+        ),
+    );
     assert_earned_nothing(&f, &report);
 }
 
