@@ -59,6 +59,18 @@ const BRANCH_EFFECT: &str = "ensure_branch_published";
 
 const TRIGGER_LABEL_RULE: &str = "the trigger label is present";
 
+const A_REJECTED_SITE: &str = "`pkg/metrics/metrics.go:301` still defines MergeGraphSizeMax \
+                               unchanged, and `ServeGauges` at `metrics.go:41` still registers \
+                               it as a zero-initialized gauge";
+
+const A_SECOND_REJECTED_SITE: &str = "`pkg/service/batch_processor.go:717-718` shows only \
+                                      Option A's guard was added, not the Option B rename the \
+                                      final ticket comment asked for";
+
+const A_REJECTION_EXIT: i32 = 12;
+
+const COMMENT_EFFECT: &str = "jira.comment_added";
+
 const ISSUE_TYPE_RULE: &str = "the issue type is one the toil agent works";
 
 const UNWORKED_ISSUE_TYPE: &str = "Bug";
@@ -784,6 +796,25 @@ fn an_accepted_change() -> Vec<support::Reply> {
     an_accepted_change_writing(REPAIRED)
 }
 
+fn a_change_the_judge_rejects() -> Vec<support::Reply> {
+    vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::reports(serde_json::json!({
+            "verdict": "rejected",
+            "findings": [A_REJECTED_SITE, A_SECOND_REJECTED_SITE],
+        }))),
+    ]
+}
+
 fn an_accepted_change_writing(contents: &str) -> Vec<support::Reply> {
     vec![
         a_review_that_reads_a_change(),
@@ -808,6 +839,15 @@ impl ToilWorld {
             an_accepted_change()
                 .into_iter()
                 .chain(an_accepted_change())
+                .collect(),
+        )
+    }
+
+    pub fn start_with_a_judge_that_rejects() -> Self {
+        ToilWorld::serving(
+            a_change_the_judge_rejects()
+                .into_iter()
+                .chain(a_change_the_judge_rejects())
                 .collect(),
         )
     }
@@ -1144,6 +1184,25 @@ fn effects_of(payload: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
+fn evidence_of(payload: &serde_json::Value) -> Vec<String> {
+    payload["capability_executions"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .flat_map(|execution| {
+            execution["evidence"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|line| line.as_str())
+                .map(str::to_string)
+                .collect::<Vec<String>>()
+        })
+        .collect()
+}
+
 fn effect_named(payload: &serde_json::Value, kind: &str) -> String {
     let lines = effects_of(payload);
     let matched: Vec<&String> = lines
@@ -1163,6 +1222,27 @@ fn flattened(text: &str) -> String {
         .split_whitespace()
         .collect::<Vec<&str>>()
         .join(" ")
+}
+
+fn effect_id_of(evidence: &str) -> String {
+    let fields: Vec<&str> = evidence.split(':').collect();
+    assert!(
+        fields.len() > 4,
+        "an effect evidence line carries kind, id, outcome and external reference: {evidence}"
+    );
+    fields[2].to_string()
+}
+
+fn marker_carried_by(comment: &str) -> String {
+    comment
+        .split(MARKER)
+        .nth(1)
+        .map(|tail| {
+            tail.chars()
+                .take_while(|held| held.is_ascii_hexdigit())
+                .collect::<String>()
+        })
+        .unwrap_or_else(|| panic!("this comment carries no effect marker: {comment}"))
 }
 
 fn external_ref_of(evidence: &str) -> String {
@@ -2908,5 +2988,225 @@ fn the_same_tracker_read_that_refuses_succeeds_when_the_site_answers() {
         answering.jira().issue_read_requests() > 0,
         "and it read the ticket over the same route the refusing site refused: {:?}",
         answering.jira().request_lines()
+    );
+}
+
+#[test]
+fn a_rejected_run_says_so_on_the_ticket_it_came_from() {
+    let world = ToilWorld::start_with_a_judge_that_rejects();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        run.status.code(),
+        Some(A_REJECTION_EXIT),
+        "the row's own premise: the evaluation rejected the change, which this build \
+         reports as exit {A_REJECTION_EXIT}: {stderr}"
+    );
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "one comment request reached the tracker stub, so the ticket was written to: {:?}",
+        world.jira().request_lines()
+    );
+    let comment = world
+        .jira()
+        .last_comment_on(TICKET)
+        .expect("the rejection was published");
+
+    for finding in [A_REJECTED_SITE, A_SECOND_REJECTED_SITE] {
+        assert!(
+            comment.contains(finding),
+            "the comment on the ticket carries what the evaluation read, taken off the \
+             tracker stub and not off the run's own output: {comment}"
+        );
+    }
+    assert!(
+        comment.contains(MARKER),
+        "and it carries this build's effect marker, so a retry finds it: {comment}"
+    );
+    assert_eq!(
+        effect_id_of(&effect_named(&payload, COMMENT_EFFECT)),
+        marker_carried_by(&comment),
+        "the receipt the run reports names the identity the published comment carries, so \
+         the write went through the effect executor and not as a bare request: {payload}"
+    );
+
+    assert!(
+        comment.contains(&format!("fiddle took `{TICKET}` on")) && comment.contains("rejected"),
+        "a reader is told the ticket was taken on and the change was rejected: {comment}"
+    );
+    assert!(
+        comment.contains("no branch and no pull request"),
+        "and that nothing was left behind to review: {comment}"
+    );
+
+    let refused = ToilWorld::start();
+    refused
+        .jira()
+        .holds_a_ticket_without_the_trigger_label(TICKET);
+    refused.run_toil(REFERENCE);
+    let refusal = refused
+        .jira()
+        .last_comment_on(TICKET)
+        .expect("the eligibility refusal was published");
+    assert!(
+        refusal.contains("did not take") && !comment.contains("did not take"),
+        "the eligibility refusal says fiddle did not take the ticket on and the rejection \
+         does not, so the two cannot be read for each other: {refusal} / {comment}"
+    );
+    assert!(
+        !refusal.contains(&format!("fiddle took `{TICKET}` on")),
+        "and the sentence the rejection is read by is one the refusal never carries: {refusal}"
+    );
+
+    assert!(
+        world.github().branches().is_empty(),
+        "the comment says no branch was published, and none was, counted from the \
+         remote: {stderr}"
+    );
+    assert!(
+        world.github().pull_requests().is_empty(),
+        "and no pull request was opened, counted from the requests the forge stub \
+         received: {stderr}"
+    );
+    assert!(
+        world.jira().links_for(TICKET).is_empty(),
+        "and the one comment the ticket received is the rejection and not a link to a \
+         pull request: {comment}"
+    );
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "and the run recorded no completion, so the ticket is not accounted for: {payload}"
+    );
+}
+
+#[test]
+fn a_second_run_of_one_rejected_ticket_adds_no_second_comment() {
+    let world = ToilWorld::start_with_a_judge_that_rejects();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = world.run_toil(REFERENCE);
+    assert_eq!(
+        first.status.code(),
+        Some(A_REJECTION_EXIT),
+        "the row's own premise: the first run was rejected: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "and it told the ticket why once: {:?}",
+        world.jira().request_lines()
+    );
+    let told = world.jira().last_comment_on(TICKET);
+    let reads_after_one = world.jira().comment_reads();
+
+    let second = world.run_toil(REFERENCE);
+    let payload = payload_of(&second);
+    let stderr = String::from_utf8_lossy(&second.stderr).to_string();
+
+    assert_eq!(
+        payload["capability_executions"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default(),
+        1,
+        "the second run executed the document again, because a rejected run records no \
+         completion, so the count below is about the marker and not about a run that \
+         stopped before it: {payload}"
+    );
+    assert_eq!(
+        world.model_calls(),
+        8,
+        "and it paid for the whole route a second time: {payload}"
+    );
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "the second run posted no second rejection, counted from the requests the \
+         tracker stub received: {:?}",
+        world.jira().request_lines()
+    );
+    assert!(
+        world.jira().comment_reads() > reads_after_one,
+        "and it read the ticket's comments again, so the comment it did not write is one \
+         it looked for and found: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.jira().last_comment_on(TICKET),
+        told,
+        "and it left the rejection the first run published where the first run left \
+         it: {stderr}"
+    );
+    assert_eq!(
+        second.status.code(),
+        Some(A_REJECTION_EXIT),
+        "and it rejected the change a second time: {stderr}"
+    );
+}
+
+#[test]
+fn a_site_that_refuses_the_comment_still_rejects_the_change_and_says_the_ticket_was_not_told() {
+    let world = ToilWorld::start_with_a_judge_that_rejects();
+    world.jira().holds_eligible_ticket(TICKET);
+    world.jira().refuses_every_comment();
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+
+    assert_eq!(
+        world.jira().comment_posts(),
+        1,
+        "the row's own premise: the run asked the tracker to publish the rejection, so what \
+         follows is a comment the site answered and not a comment nobody sent: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        world.jira().last_comment_on(TICKET),
+        None,
+        "and the site kept none of it, so this ticket was never told: {:?}",
+        world.jira().request_lines()
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(A_REJECTION_EXIT),
+        "a change the evaluation rejected is still rejected when the ticket cannot be \
+         told: {stderr}"
+    );
+    let recorded = evidence_of(&payload);
+    assert!(
+        recorded
+            .iter()
+            .any(|line| line.starts_with("rejection_unpublished:") && line.contains(TICKET)),
+        "and the run's own record says the note reached no work item, so a reader of the \
+         record is not told a ticket was written to: {recorded:?}"
+    );
+    assert_eq!(
+        effects_of(&payload),
+        Vec::<String>::new(),
+        "and it earned no effect receipt, so the row above is not a committed write read \
+         the wrong way: {payload}"
+    );
+    assert!(
+        payload["outcome"]["rejected"]["findings"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|finding| finding.as_str())
+            .any(|finding| finding.contains(A_REJECTED_SITE)),
+        "the findings still reach the operator, which is the surface they reached before \
+         this build wrote them onto the ticket: {payload}"
+    );
+    assert!(
+        !stderr.contains(JIRA_SENTINEL) && !recorded.join(" ").contains(JIRA_SENTINEL),
+        "and neither surface carries the tracker credential: {stderr} / {recorded:?}"
     );
 }

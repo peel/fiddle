@@ -5,15 +5,16 @@ use crate::agent::{
     Verdict, JUDGE_PREAMBLE, PREAMBLE,
 };
 use crate::effect::{
-    registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, Recurrence,
-    StepOutputs, StepParams,
+    registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, IntegrationOperation,
+    Recurrence, StepOutputs, StepParams,
 };
 use crate::gateway::Redaction;
+use crate::jira::AddComment;
 use crate::toil::{Change, Eligible, Quoted, Scope};
 use crate::workspace::WorkspaceCommand;
 use fiddle_core::{
     correlation_key, CapabilityId, ChangeSetState, EffectName, EvidenceRef,
-    HumanDecisionRequirement, Published, WorkItemState,
+    HumanDecisionRequirement, ProposedEffect, Published, WorkItemState, JIRA_COMMENT_ADDED,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -273,6 +274,29 @@ pub fn without_waiting(error: EffectError) -> CapabilityError {
     }
 }
 
+const THE_NOTE_REACHED_NO_WORK_ITEM: &str = "rejection_unpublished";
+
+fn rejection_note(work_item: &str, findings: &[Published]) -> String {
+    let mut told = vec![
+        format!(
+            "fiddle took `{work_item}` on, changed the project for it, and then rejected its \
+             own change. This comment is the whole reason."
+        ),
+        "What the evaluation of that change found:".to_string(),
+    ];
+    told.extend(findings.iter().map(|finding| format!("- {finding}")));
+    told.push(
+        "The change reached no branch and no pull request, so there is nothing to review and \
+         this issue is where it was."
+            .to_string(),
+    );
+    told.push(format!(
+        "What would change that: run `{work_item}` again, or write onto it what the findings \
+         above show this run read the wrong way."
+    ));
+    told.join("\n")
+}
+
 fn evidence_of(receipt: &ErasedReceipt) -> EvidenceRef {
     let outcome = match receipt.outcome {
         EffectOutcome::Committed => "committed",
@@ -457,6 +481,52 @@ where
         })
     }
 
+    async fn tell_the_work_item(&self, findings: &[Published]) {
+        let Some(admitted) = self.qualification.as_ref() else {
+            return;
+        };
+        let recorded = match self.publish_rejection(admitted, findings).await {
+            Ok(receipt) => evidence_of(&receipt),
+            Err(why) => EvidenceRef(format!(
+                "{THE_NOTE_REACHED_NO_WORK_ITEM}:{}:{}",
+                admitted.work_item,
+                Published::of(why)
+            )),
+        };
+        self.receipts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(recorded);
+    }
+
+    async fn publish_rejection(
+        &self,
+        admitted: &Eligible,
+        findings: &[Published],
+    ) -> Result<ErasedReceipt, String> {
+        let comment = AddComment::new(
+            admitted.work_item.clone(),
+            &admitted.revision,
+            rejection_note(&admitted.work_item, findings),
+            self.executor.project(),
+            self.executor.invocation_ref(),
+        )
+        .map_err(|refused| refused.to_string())?;
+        let kind = comment.kind();
+        let proposed = ProposedEffect {
+            capability: self.executor.capability(),
+            kind: EffectName::shipped(JIRA_COMMENT_ADDED),
+            target: comment.target(),
+            payload: comment.payload(),
+        };
+        let receipt = self
+            .executor
+            .execute(proposed, comment)
+            .await
+            .map_err(|refused| refused.to_string())?;
+        Ok(ErasedReceipt::of(kind, receipt))
+    }
+
     async fn effect(
         &self,
         construct: Construct,
@@ -548,9 +618,11 @@ where
             }
         }
         match params.earned.verdict() {
-            Some(Verdict::Rejected { findings }) => Ok(Executed::Rejected {
-                findings: findings.iter().map(Published::of).collect(),
-            }),
+            Some(Verdict::Rejected { findings }) => {
+                let findings: Vec<Published> = findings.iter().map(Published::of).collect();
+                self.tell_the_work_item(&findings).await;
+                Ok(Executed::Rejected { findings })
+            }
             Some(Verdict::Accepted {}) | None => {
                 self.record_change_set(work_id)?;
                 Ok(Executed::Earned(EvidenceRef(format!(
