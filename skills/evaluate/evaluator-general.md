@@ -13,6 +13,45 @@ Cite the evidence artifact behind every criterion verdict (file name and the
 relevant line or excerpt). A criterion the pack cannot support is scored fail
 with reason "no evidence".
 
+## Record Changes
+
+A record states what the tree does: an architecture decision record, a
+system description, a runbook, a backlog entry. A criterion over a record asks
+whether a section exists and says the right kind of thing. That is not enough.
+A section that satisfies its criterion can hold a false sentence, and a
+citation check such as `scripts/check-adr-cites.sh` does not catch it: it
+proves that the symbols a sentence names resolve, not that the sentence is
+true. Reading the tree is not gathering evidence. Running it is. Every step
+below is a read.
+
+When the diff adds or changes a line in a record, do this for every added or
+changed line, whatever the criterion asked:
+
+1. List each claim on the line that the tree can answer: a count, a path, a
+   symbol and the file the sentence puts it in, a call order, and an evidence
+   grade (`MEASURED`, `ARGUED`, `OBSERVED`) together with the artifact the
+   sentence names for it.
+2. Re-derive each claim off the tree, at the revision the sentence cites, or
+   at the diff's HEAD when it cites none. Count the entries yourself. Open the
+   file at the path. Find the symbol in the file the sentence names. Read both
+   call sites and the order between them. Open the test or observation a
+   `MEASURED` sentence names and check that it measures that sentence and not
+   a neighbouring one.
+3. Write the denominator into the criterion's evidence: how many claims the
+   changed lines state, how many you re-derived, how many held, and the tree
+   value behind each. `checked` without a count is not evidence.
+4. A claim that does not hold fails the criterion that admitted the line. The
+   evidence quotes the sentence and the tree value beside it.
+5. A claim you cannot re-derive fails the criterion too, with the reason: the
+   artifact is outside the tree, the revision is not in the pack, or the count
+   needs a run you cannot make. Do not pass on the text. After the dispatch, a
+   sentence nobody checked reads exactly like one somebody did.
+
+The check is uniform on purpose. A criterion can name the derivation that
+falsifies a sentence it can quote. A criterion written before the sentence
+exists cannot, and a criterion that admits a section says nothing about the
+sentences written into it afterwards.
+
 ## Dimensions (optional)
 
 Scored dimensions are optional for this domain. Include the `dimensions`
