@@ -3,7 +3,10 @@ use crate::agent::transcript::{Record, Transcripts, RETURNED};
 use crate::capability::{breached, DeclarationBreach};
 use crate::gateway::Redaction;
 use crate::workspace::Workspace;
-use rig_agent::agent::hook::{AgentHook, HookContext, ModelTurnAction, ModelTurnFinished};
+use rig_agent::agent::hook::{
+    AgentHook, HookContext, InvalidToolCallAction, InvalidToolCallContext, ModelTurnAction,
+    ModelTurnFinished,
+};
 use rig_core::completion::message::AssistantContent;
 use rig_core::OneOrMany;
 use std::sync::{Arc, Mutex};
@@ -14,7 +17,40 @@ pub const ACCOUNTING: &str = "accounting";
 
 pub const DECLARATION: &str = "declaration";
 
+pub const UNOFFERED: &str = "unoffered_tool";
+
 const REFUSED: &str = "fiddle refused that report:";
+
+const NO_SUCH_TOOL: &str = "fiddle refused that call:";
+
+const ANSWER_AS_TEXT: &str = "Your answer is the text of your next message, and no tool carries \
+                              it.";
+
+pub fn unoffered_tool(tool: &str, offered: &[String]) -> String {
+    format!(
+        "the model called the tool {tool}, and this run offers {}",
+        offered.join(", ")
+    )
+}
+
+pub fn unoffered_tool_returned(tool: &str, offered: &[String]) -> String {
+    format!(
+        "{NO_SUCH_TOOL} this run offers no tool named {tool}. It offers {}. {ANSWER_AS_TEXT}",
+        offered.join(", ")
+    )
+}
+
+pub fn invented(tool: &str, offered: &[String], spent: &Spent) -> String {
+    let reason = unoffered_tool(tool, offered);
+    if spent.count == 0 {
+        return reason;
+    }
+    format!(
+        "{reason}, after {} of its turns were returned; the last return failed the {} rule",
+        spent.count,
+        spent.last.as_ref().map_or("none", |last| last.rule)
+    )
+}
 
 const ACCOUNT_FOR_IT: &str = "Continue the work, then send one report that accounts for every \
                               advisory this task showed you.";
@@ -239,6 +275,28 @@ impl AgentHook for ReturnHook {
             &failure.reason,
         );
         ModelTurnAction::retry_with_feedback(failure.sentence)
+    }
+
+    async fn on_invalid_tool_call(
+        &self,
+        ctx: &HookContext,
+        event: &InvalidToolCallContext,
+    ) -> Option<InvalidToolCallAction> {
+        let mut spent = self.locked();
+        if spent.count >= self.bound {
+            return None;
+        }
+        let reason = unoffered_tool(&event.tool_name, &event.available_tools);
+        spent.count += 1;
+        spent.last = Some(LastReturn {
+            rule: UNOFFERED,
+            reason: reason.clone(),
+        });
+        self.record(ctx.turn() as u64, spent.count, UNOFFERED, &reason);
+        Some(InvalidToolCallAction::retry(unoffered_tool_returned(
+            &event.tool_name,
+            &event.available_tools,
+        )))
     }
 }
 

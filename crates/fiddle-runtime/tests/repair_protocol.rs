@@ -259,16 +259,24 @@ async fn an_unregistered_tool_name_mutates_nothing() {
 
     let report = f
         .run(
-            vec![
-                MockTurn::tool_call("c1", "delete_everything", json!({"path": "/"})),
-                completion_claim(),
-            ],
+            (0..=fiddle_runtime::agent::RETURNS)
+                .map(|at| {
+                    MockTurn::tool_call(format!("c{at}"), "delete_everything", json!({"path": "/"}))
+                })
+                .collect(),
             f.config(),
         )
         .await;
 
     assert_retryable_because(&report, "the model called the tool delete_everything");
     assert_retryable_because(&report, "run_check");
+    assert_retryable_because(
+        &report,
+        &format!(
+            "after {} of its turns were returned",
+            fiddle_runtime::agent::RETURNS
+        ),
+    );
     assert_earned_nothing(&f, &report);
 }
 

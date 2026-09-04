@@ -685,7 +685,8 @@ impl CompletionModel for ObeysItsToolChoice {
                     .find_map(|message| match message {
                         rig_core::completion::Message::System { content } => Some(content.clone()),
                         _ => None,
-                    }),
+                    })
+                    .or_else(|| request.preamble.clone()),
             );
         let turn = {
             let mut seen = self
@@ -767,6 +768,175 @@ async fn the_evaluation_answers_inside_the_bound_the_document_gives_it() {
         vec![Some(ToolChoice::Auto)],
         "the evaluation is read-only, so `required` leaves it no move but to read again. \
          What it is sent, and how many times, is the whole of this lane"
+    );
+}
+
+const ANSWER_AS_TEXT: &str =
+    "Your answer is the text of your final message, and no tool carries it";
+
+#[tokio::test]
+async fn a_judge_that_names_its_verdict_as_a_tool_is_returned_to_the_text_and_answers() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("c1", "verdict", json!({})),
+        MockTurn::text(A_VERDICT_THE_GATEWAY_ENVELOPED),
+    ]);
+
+    let verdict = judge_briefed(model, &redaction(), host, budget(), judging(), None)
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "a call to a tool this run did not offer is returned to the model, not the \
+                 end of the attempt. On 2026-09-04 one such call, `verdict` with `{{}}`, ended \
+                 a live run after the agent step had finished. This one ended with: {error}"
+            )
+        });
+
+    assert_eq!(
+        verdict,
+        Verdict::Accepted {},
+        "the verdict that arrives is the one the model wrote as text on its next turn"
+    );
+}
+
+#[tokio::test]
+async fn a_judge_that_keeps_inventing_a_tool_ends_after_the_returns_and_its_arguments_are_never_read(
+) {
+    let (host, _g) = test_host();
+    let turns = fiddle_runtime::agent::RETURNS + 1;
+    let model = MockCompletionModel::new(
+        (0..turns)
+            .map(|at| {
+                MockTurn::tool_call(format!("c{at}"), "verdict", json!({"verdict": "accepted"}))
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    let refused = judge_briefed(model, &redaction(), host, budget(), judging(), None).await;
+
+    let Err(AgentError::Protocol { reason }) = &refused else {
+        panic!(
+            "a call named `verdict` carrying a valid verdict as its arguments is not a \
+             verdict, and a run that keeps making it ends: {refused:?}"
+        );
+    };
+    assert!(
+        reason.contains("the model called the tool verdict")
+            && reason.contains("list_files")
+            && reason.contains(&format!(
+                "after {} of its turns were returned",
+                fiddle_runtime::agent::RETURNS
+            ))
+            && reason.contains("unoffered_tool"),
+        "the reason names the tool, the tools this run offers, the returns spent and the rule \
+         the last one failed: {reason}"
+    );
+}
+
+#[tokio::test]
+async fn a_repair_that_names_its_report_as_a_tool_is_returned_to_the_text_and_reports() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("c1", "report", json!({})),
+        MockTurn::text(RECORDED_ENVELOPE),
+    ]);
+
+    let report = attempt(model, &redaction(), host, budget(), Direction::Fresh, None)
+        .await
+        .expect("the repair step is returned to the text the same way the evaluation is");
+
+    assert_eq!(report.changed_files, ["pkg/service/batch_processor.go"]);
+}
+
+#[tokio::test]
+async fn both_preambles_say_the_answer_is_the_text_and_no_tool_carries_it() {
+    let (host, _g) = test_host();
+    let judging_gateway = ObeysItsToolChoice::answering(A_VERDICT_THE_GATEWAY_ENVELOPED);
+    judge_briefed(
+        judging_gateway.clone(),
+        &redaction(),
+        host,
+        budget(),
+        Brief {
+            preamble: fiddle_runtime::agent::JUDGE_PREAMBLE,
+            task: "Judge this.",
+        },
+        None,
+    )
+    .await
+    .expect("the evaluation answers");
+    let (host, _g) = test_host();
+    let repairing_gateway = ObeysItsToolChoice::answering(RECORDED_ENVELOPE);
+    attempt(
+        repairing_gateway.clone(),
+        &redaction(),
+        host,
+        budget(),
+        Direction::Fresh,
+        None,
+    )
+    .await
+    .expect("the repair answers");
+
+    for (step, gateway) in [
+        ("evaluation", judging_gateway),
+        ("repair", repairing_gateway),
+    ] {
+        let preambles = gateway.preambles_it_was_sent();
+        let system = preambles
+            .first()
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| panic!("the {step} sends a system message"));
+        assert!(
+            system.contains(ANSWER_AS_TEXT),
+            "the {step}'s preamble, read off the request and not off the constant, has to say \
+             where the answer goes: {system}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_transcript_records_the_return_of_an_invented_tool_under_its_own_rule() {
+    let (host, _g) = test_host();
+    let dir = tempfile::tempdir().expect("a directory for the transcript");
+    let transcripts = fiddle_runtime::agent::transcript::Transcripts::under(dir.path(), "invented");
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("c1", "verdict", json!({})),
+        MockTurn::text(A_VERDICT_THE_GATEWAY_ENVELOPED),
+    ]);
+
+    judge_briefed(
+        model,
+        &redaction(),
+        host,
+        budget(),
+        judging(),
+        Some(&transcripts),
+    )
+    .await
+    .expect("the return lets the evaluation answer on its next turn");
+
+    let returned: Vec<serde_json::Value> = std::fs::read_to_string(transcripts.path())
+        .expect("the transcript is on disk")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("one JSON object"))
+        .filter(|record| record["record"] == fiddle_runtime::agent::transcript::RETURNED)
+        .collect();
+    assert_eq!(
+        returned.len(),
+        1,
+        "one invented call is one return, and the transcript holds exactly that many: \
+         {returned:?}"
+    );
+    assert_eq!(returned[0]["rule"], "unoffered_tool", "{:?}", returned[0]);
+    assert_eq!(returned[0]["returns"], 1, "{:?}", returned[0]);
+    assert!(
+        returned[0]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("verdict") && reason.contains("list_files")),
+        "the record names the tool the model called and the tools this run offers: {:?}",
+        returned[0]
     );
 }
 
