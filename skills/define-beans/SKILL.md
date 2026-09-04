@@ -89,6 +89,8 @@ Gate: an agent with zero context can implement this bean by reading only its bod
 
 The bean body should reference the plan path for additional context (`Plan: <path> Task N`) without depending on the plan to be implementable. The plan is supplementary; the bean is the contract.
 
+A criterion over a record (an architecture decision record, a system description, a runbook) states what the text must say. It does not carry the derivation that would falsify the text, because the text does not exist when the criterion is written. `skills/evaluate/evaluator-general.md`, under Record Changes, makes the evaluator re-derive every count, path, symbol, call order and evidence grade the new text states, whatever the criterion asked, and fail the criterion on one that does not hold or cannot be derived. Name the derivation in the criterion only when the criterion corrects a sentence it can quote.
+
 ## Shared Contracts (for parallel beans)
 
 When an epic has multiple features or tasks that will run in parallel worktrees and touch related code, define shared contracts in the **epic bean body** before creating children, so parallel workers cannot make incompatible implementation choices:

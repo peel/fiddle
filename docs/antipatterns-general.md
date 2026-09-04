@@ -80,3 +80,91 @@ is overshoot rather than a return of the original fault. Where a document sorts 
 by evidence class — measured, argued, inferred — a change to one claim must state which
 class it now belongs to and why, and the evaluator must check that grading rather than
 only that the text changed.
+
+## a-record-passes-on-its-shape-not-its-sentences (2026-09-04)
+
+**Pattern:** A criterion over a record asks whether a section exists and says the
+right kind of thing. The evaluator reads the section, finds that kind of thing,
+and passes. Nothing asks whether the sentences are true, and the citation check
+cannot: `scripts/check-adr-cites.sh` proves the symbols a sentence names resolve,
+not what the sentence says about them. A false count, path or call order then
+stands under a green gate until a holistic review re-derives it.
+
+**Example:** Two sentences from `fiddle-ihl1` in epic `fiddle-t1zi`, M5c, both
+admitted at `ce29b22` and both corrected by lane `fiddle-xwhz` at `2f2c8dc`. The
+bean's eval block held seven criteria and no thresholds, so it converged on
+criteria alone, and all seven passed.
+
+1. `docs/technical/RUNBOOKS.md`, in the toil section that satisfied
+   `an-operator-procedure-for-the-toil-route-exists`: "A ticket the route
+   completed carries the run's correlation marker" and "Nothing on an operator
+   surface clears a completion." The tree at that HEAD:
+   `WorkflowCapability::record_change_set` writes the marker to
+   `self.ports.stub_root.join(format!("changes/{work_id}.json"))`, at
+   `crates/fiddle-runtime/src/capability/workflow.rs:445`, so the ticket carries
+   nothing and the completion is a file under the deployment's `[stub] root`.
+   ADR 083 in the same tree says
+   `a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail`
+   "removes that record first, so the run works the ticket again". The criterion
+   listed what the section must name. The section named it.
+2. `docs/technical/decisions/083-toil-is-a-document-and-a-gate.md`, in the
+   paragraph that satisfied `the-agent-precondition-is-recorded-or-removed`:
+   "The thirteen rules are now applied in two halves. `toil::deterministic`
+   applies the nine that read the tracker's own fields and needs no model.
+   `toil::review_of` applies the three the ambiguity review decides". Nine plus
+   three is twelve. `RULES` in `crates/fiddle-runtime/src/toil/qualify.rs` is
+   `[&str; 13]`. `toil::deterministic` holds nine rules, `toil::review_of` holds
+   three, and `toil::recheck` applies the thirteenth, `TICKET_HELD_ITS_REVISION`,
+   which is in neither half. The criterion asked that the precondition be
+   recorded or removed. It was removed, and
+   `a_ticket_the_deterministic_rules_refuse_is_refused_on_a_deployment_that_configured_no_model`,
+   the test it asked for, exists.
+
+Every symbol in both sentences resolves. `2f2c8dc` records that "all three stood
+under a green `ADR CITES: 0 unresolved` and a green `TOIL GATE ORDER: ok`".
+
+The rule under Record Changes in `skills/evaluate/evaluator-general.md`, held
+against the three earlier instances of the same class:
+
+- `fiddle-eif4`, ADR 083. The clause "`toil::qualify` runs in
+  `crates/fiddle-cli/src/main.rs`, in `qualified`, before the document is
+  loaded" was written at `e22b212`, graded ARGUED and "read off the source at
+  `77b82f6`". At `77b82f6`, `main.rs` calls `selected_workflow` at line 1564 and
+  `qualified` at line 1571. Caught: a call order re-derived at the cited
+  revision is two line numbers. The correction at `6423bd9` kept "`RULES` holds
+  the thirteen rule names it applies" on the changed line, and `toil::recheck`
+  had applied the thirteenth since `33fdb4e`. Caught too: thirteen entries in
+  `RULES`, twelve applied by `toil::qualify`.
+- ADR 077, first correction: `fiddle-bsow` at `762def6` over `fiddle-lzl5` at
+  `ecde6a5`. The sentence "Jira Cloud answers 404 for a private issue read with a
+  bad credential ... so no issue read reaches `JiraError::Unauthorized` or
+  `JiraError::Forbidden`. `docs/technical/RUNBOOKS.md` records that behaviour"
+  states a site's behaviour, which no count, path, symbol or call order in the
+  tree can settle. Not caught by those four. Caught by the grade clause: the
+  sentence stands in a section sorted into measurements and arguments and names
+  its artifact, and `RUNBOOKS.md` at `ecde6a5` restates the same sentence and
+  names no request, no endpoint, no status code and no date. A restatement is
+  not a measurement.
+- ADR 077, second correction: `fiddle-2n67` at `c3aa659` over `fiddle-bsow` at
+  `762def6`. Not caught, and there was nothing to catch. `762def6` graded the
+  claim an argument, named the one observation behind it and the test that pins
+  the opposite, `a_refused_credential_and_a_missing_issue_do_not_read_alike`,
+  which drives the stub with 401, and each of those holds against the tree at
+  `762def6`. The re-grade came from six probes run on 2026-08-27, after admission
+  and outside the tree. The rule reads the tree at admission and cannot see a
+  probe that has not run. One clause in that text, "It is blocked", states a
+  tracker state. `.beans/` is ignored by git, so the rule refuses that clause
+  with the reason rather than passing it, and `fc53c42` later found the tracker
+  held no `blocked_by` edge.
+
+**Fix:** When a criterion admits a change to a record, re-derive every count,
+path, symbol, call order and evidence grade the new lines state, off the tree at
+the revision the sentence cites, and report the denominator in the evidence.
+`skills/evaluate/evaluator-general.md` carries the rule under Record Changes.
+Fail the criterion on a claim that does not hold, and fail it on a claim you
+cannot re-derive, with the reason. Put the derivation into the criterion only
+when the criterion corrects a sentence it can quote; a criterion written before
+the text exists cannot name a derivation for it, and both sentences above were
+of that kind. A citation check keeps a record's symbols current. It does not
+keep its sentences true, and a green citation line is not evidence that they
+are.
