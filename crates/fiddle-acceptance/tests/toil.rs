@@ -98,6 +98,72 @@ const THE_DESCRIPTIONS_CHOICE: &str = "pub fn last_index(len: usize) -> usize { 
 const NEITHER_TEXT_REACHED_THE_IMPLEMENTER: &str =
     "// neither the comment's decision nor the description's suggestion was in the prompt\n";
 
+const THE_DESCRIPTION_THAT_NAMES_NO_NEW_NAME: &str =
+    "Two ways to fix this. First, keep the old helper and guard its one caller. Second, rename \
+     the helper, which is the correct fix and for which nothing here gives a new name. \
+     Suggested: the first, as the immediate fix.";
+
+const A_DECISION_THE_TICKET_DID_NOT_SPECIFY: &str = "The second one. Renaming is what lasts.";
+
+const THE_QUESTION_THAT_STOPPED_IT: &str =
+    "The second option renames the helper and this ticket never says what the new name is.";
+
+const ISP_263_WEIGHS_A_AND_B: &str =
+    "The gauge merge_graph_size_max always reports 0. Option A, no downstream risk: guard the \
+     report site so the gauge is only set when the value is above zero. Option B, correct but \
+     involves a rename: emit as a Sample rather than a Gauge, and because the metric is already \
+     named merge_graph_size_max, emitting it as a sample would produce merge_graph_size_max_max, \
+     so the base name needs to change to merge_graph_size. The ServeGauges entry at \
+     metrics.go:41 must be removed in the same change, otherwise the old name keeps being \
+     zero-initialised at startup. Downstream consumers checked: no references to \
+     merge_graph_size_max in any .md, .json or .yaml in the repo, and neither the AWS Identity \
+     nor the GCP Identity dashboard queries it. The secondary TTLBufferEntriesMax finding is a \
+     separate pass. Suggested: A as the immediate fix, B as a follow-up.";
+
+const ISP_263_SUGGESTS_A: &str = "Suggested: A as the immediate fix, B as a follow-up.";
+
+const ISP_263_CHOOSES_OPTION_B: &str =
+    "Option B. More-reliable long-term. The bare metrics should be still type-compatible as \
+     described.";
+
+const OPTION_B_AS_THE_TICKET_SPECIFIES_IT: &str =
+    "pub const MERGE_GRAPH_SIZE: &str = \"merge_graph_size\";\n\
+     pub fn report(size: usize) { sample(MERGE_GRAPH_SIZE, size) }\n";
+
+const OPTION_A_A_RUN_SUBSTITUTED: &str =
+    "pub const MERGE_GRAPH_SIZE_MAX: &str = \"merge_graph_size_max\";\n\
+     pub fn report(size: usize) { if size > 0 { gauge(MERGE_GRAPH_SIZE_MAX, size) } }\n";
+
+const NEITHER_OPTION_REACHED_THE_IMPLEMENTER: &str =
+    "// neither option's own text was in the prompt\n";
+
+const THE_RUNS_OWN_ACCOUNT_OF_WHY_IT_BUILT_A: &str =
+    "Option B's exact shape (new field name, whether to keep old field, how consumers reference \
+     it) is not fully specified in the ticket, so implementing Option B correctly requires \
+     decisions not settled by the ticket (e.g., the exact new metric field name/type in the \
+     Metrics struct). To stay bounded and not guess a rename or type change across the metrics \
+     registration system, I implemented the safe, explicitly-described Option A guard.";
+
+const THE_OBJECTION_ISP_263_ANSWERS: &str =
+    "the exact new metric field name/type in the Metrics struct";
+
+const A_FINDING_THAT_NAMES_THE_SUBSTITUTION: &str =
+    "src/lib.rs still names merge_graph_size_max and still emits it as a gauge";
+
+const THE_EVALUATION_WAS_ASKED: &str = "judge one change against the ticket that asked for it";
+
+const THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY: &str =
+    "it names the option it wants and does not specify that option enough to build.";
+
+const THE_TASK_FORBIDS_THE_SUBSTITUTION: &str =
+    "Making the other change instead is the one response that is never open to you.";
+
+const THE_TASK_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY: &str =
+    "or it names the one it wants and does not give enough of it to build.";
+
+const THE_PREAMBLE_ADMITS_A_DECIDED_OPTION_CAN_BE_UNSPECIFIED: &str =
+    "Before you call a decided option underspecified";
+
 struct Posted {
     issue: String,
     body: String,
@@ -196,13 +262,35 @@ impl ToilJira {
             .description = format!("{DESCRIPTION} {THE_OPEN_QUESTION} {THE_SUGGESTION}");
     }
 
+    pub fn holds_a_ticket_whose_second_option_it_never_names(&self, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("the ticket was just written")
+            .description = THE_DESCRIPTION_THAT_NAMES_NO_NEW_NAME.to_string();
+    }
+
+    pub fn holds_the_description_isp_263_held(&self, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("the ticket was just written")
+            .description = ISP_263_WEIGHS_A_AND_B.to_string();
+    }
+
     pub fn is_commented_on_by(&self, author: &str) {
+        self.is_commented_on_by_saying(author, THE_DECISION);
+    }
+
+    pub fn is_commented_on_by_saying(&self, author: &str, said: &str) {
         self.held()
             .ticket
             .as_mut()
             .expect("a ticket this site holds is what carries the conversation")
             .conversation
-            .push((author.to_string(), THE_DECISION.to_string()));
+            .push((author.to_string(), said.to_string()));
     }
 
     pub fn offers_no_route_to_in_review(&self) {
@@ -738,6 +826,51 @@ fn a_review_that_reads_the_decision_a_comment_made() -> support::Reply {
     })))
 }
 
+fn a_review_that_reads(quoting: &str) -> support::Reply {
+    support::accepted(support::reports(serde_json::json!({
+        "verdict": "asks_for_a_change",
+        "quoting": quoting,
+        "certainty": 0.92,
+    })))
+}
+
+fn an_accepted_verdict() -> support::Reply {
+    support::accepted(support::reports(
+        serde_json::json!({ "verdict": "accepted" }),
+    ))
+}
+
+fn a_verdict_that_rejects(finding: &str) -> support::Reply {
+    support::accepted(support::reports(serde_json::json!({
+        "verdict": "rejected",
+        "findings": [finding],
+    })))
+}
+
+fn reading_the_file_before_it_answers() -> support::Reply {
+    support::accepted(support::calls(
+        "read_file",
+        serde_json::json!({ "path": "src/lib.rs" }),
+    ))
+}
+
+fn a_report_that_built_the_option_the_description_suggested() -> support::Reply {
+    support::accepted(support::reports(serde_json::json!({
+        "changed_files": ["src/lib.rs"],
+        "summary": THE_RUNS_OWN_ACCOUNT_OF_WHY_IT_BUILT_A,
+        "claimed_complete": true,
+    })))
+}
+
+fn a_report_that_changed_nothing_and_asked(question: &str) -> support::Reply {
+    support::accepted(support::reports(serde_json::json!({
+        "changed_files": [],
+        "summary": "the ticket names an option it does not specify, so this attempt wrote nothing",
+        "claimed_complete": false,
+        "stopped_by_this_question": question,
+    })))
+}
+
 fn writing(contents: &str) -> support::Reply {
     support::accepted(support::calls(
         "write_file",
@@ -871,6 +1004,69 @@ impl ToilWorld {
 
     pub fn start_letting_the_ticket_choose_the_change() -> Self {
         ToilWorld::built(a_change_the_ticket_chooses(), true)
+    }
+
+    pub fn start_over_a_decision_the_ticket_did_not_specify() -> Self {
+        ToilWorld::built(
+            vec![
+                Answering::Always(a_review_that_reads(A_DECISION_THE_TICKET_DID_NOT_SPECIFY)),
+                Answering::Always(reading_the_file_before_it_answers()),
+                support::on_reading(
+                    THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY,
+                    a_report_that_changed_nothing_and_asked(THE_QUESTION_THAT_STOPPED_IT),
+                    writing(THE_DESCRIPTIONS_CHOICE),
+                ),
+                Answering::Always(a_report_that_built_the_option_the_description_suggested()),
+                Answering::Always(an_accepted_verdict()),
+            ],
+            true,
+        )
+    }
+
+    pub fn start_letting_isp_263_choose_between_its_options() -> Self {
+        ToilWorld::built(
+            vec![
+                Answering::Always(a_review_that_reads(ISP_263_CHOOSES_OPTION_B)),
+                support::choosing(
+                    vec![
+                        (
+                            ISP_263_CHOOSES_OPTION_B,
+                            writing(OPTION_B_AS_THE_TICKET_SPECIFIES_IT),
+                        ),
+                        (ISP_263_SUGGESTS_A, writing(OPTION_A_A_RUN_SUBSTITUTED)),
+                    ],
+                    writing(NEITHER_OPTION_REACHED_THE_IMPLEMENTER),
+                ),
+                Answering::Always(support::accepted(support::reports(serde_json::json!({
+                    "changed_files": ["src/lib.rs"],
+                    "summary": "emitted the sample under the name the ticket named",
+                    "claimed_complete": true,
+                    "quoted_from_a_comment": ISP_263_CHOOSES_OPTION_B,
+                })))),
+                Answering::Always(an_accepted_verdict()),
+            ],
+            true,
+        )
+    }
+
+    pub fn start_over_a_run_that_substitutes_option_a() -> Self {
+        ToilWorld::built(
+            vec![
+                Answering::Always(a_review_that_reads(ISP_263_CHOOSES_OPTION_B)),
+                Answering::Always(writing(OPTION_A_A_RUN_SUBSTITUTED)),
+                Answering::Always(support::accepted(support::reports(serde_json::json!({
+                    "changed_files": ["src/lib.rs"],
+                    "summary": THE_RUNS_OWN_ACCOUNT_OF_WHY_IT_BUILT_A,
+                    "claimed_complete": true,
+                    "quoted_from_a_comment": ISP_263_CHOOSES_OPTION_B,
+                    "stopped_by_this_question": THE_OBJECTION_ISP_263_ANSWERS,
+                })))),
+                Answering::Always(a_verdict_that_rejects(
+                    A_FINDING_THAT_NAMES_THE_SUBSTITUTION,
+                )),
+            ],
+            true,
+        )
     }
 
     pub fn start_with_a_gateway_that_obeys_the_tool_choice_it_is_sent() -> Self {
@@ -1162,6 +1358,17 @@ fn payload_of(out: &std::process::Output) -> serde_json::Value {
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout}\nstderr = {stderr}"))
+}
+
+fn findings_of(payload: &serde_json::Value) -> Vec<String> {
+    payload["outcome"]["rejected"]["findings"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|finding| finding.as_str())
+        .map(str::to_string)
+        .collect()
 }
 
 fn effects_of(payload: &serde_json::Value) -> Vec<String> {
@@ -1687,6 +1894,240 @@ fn a_comment_decides_a_ticket_the_description_leaves_open_and_a_stranger_decides
         1,
         "and the refusal is published on the ticket, as every refusal is: {:?}",
         stranger.jira().request_lines()
+    );
+}
+
+#[test]
+fn a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation() {
+    let stopped = ToilWorld::start_over_a_decision_the_ticket_did_not_specify();
+    stopped.authorizes_the_account(OPERATOR_ACCOUNT);
+    stopped
+        .jira()
+        .holds_a_ticket_whose_second_option_it_never_names(TICKET);
+    stopped
+        .jira()
+        .is_commented_on_by_saying(OPERATOR_ACCOUNT, A_DECISION_THE_TICKET_DID_NOT_SPECIFY);
+
+    let run = stopped.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let told = stopped.model_prompts();
+    assert!(
+        told[1].contains(A_DECISION_THE_TICKET_DID_NOT_SPECIFY),
+        "the comment's decision reached the implementer, so what stopped this run is the \
+         ticket's silence about the option it chose and not a missing decision: {}",
+        told[1]
+    );
+    let answering = &told[2];
+    assert!(
+        answering.contains(THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY),
+        "the report schema tells the attempt that a ticket which names its option can still \
+         fail to specify that option, which is the case ISP-263 was and the case an earlier \
+         wording of this field excluded. This world serves the question-naming report only \
+         on reading that sentence and builds the option the description suggested without \
+         it, so a build whose schema narrows back to a ticket that never chose reds here and \
+         reds again at every row below: {answering}"
+    );
+    assert!(
+        answering.contains(THE_TASK_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY),
+        "the task the step carries names that same second case, in its own words rather than \
+         the schema's, so neither of these two rows can be satisfied by the other surface's \
+         sentence: {answering}"
+    );
+    assert!(
+        answering.contains(THE_TASK_FORBIDS_THE_SUBSTITUTION),
+        "and the task says the substitution is never open: {answering}"
+    );
+    assert!(
+        answering.contains(THE_PREAMBLE_ADMITS_A_DECIDED_OPTION_CAN_BE_UNSPECIFIED),
+        "and the preamble says the thing that can be underspecified is a decided option, so \
+         the three surfaces this one request carries name the same case rather than two of \
+         them naming a narrower one: {answering}"
+    );
+
+    let findings = findings_of(&payload);
+    assert_eq!(
+        findings.len(),
+        1,
+        "a run stopped by one question refuses with one finding: {payload}"
+    );
+    assert!(
+        findings[0].contains(THE_QUESTION_THAT_STOPPED_IT),
+        "and the finding carries the question the attempt named, word for word, because that \
+         sentence is the whole of what a person has to answer: {}",
+        findings[0]
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(12),
+        "and the run refused: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert!(
+        !told
+            .iter()
+            .any(|prompt| prompt.contains(THE_EVALUATION_WAS_ASKED)),
+        "the evaluation was never asked, so this refusal is the attempt's own question and \
+         not a verdict on an unchanged tree. This world scripts an accepting verdict as its \
+         third answer, so a build that ran the evaluation here would have been told the \
+         empty tree is fine. The lane below finds this same fragment in a prompt, so its \
+         absence here is the evaluation not running and not a fragment nothing carries: \
+         {told:?}"
+    );
+    assert_eq!(
+        stopped.model_calls(),
+        3,
+        "the review, the attempt's read, and the report it answered with. This world scripts \
+         two further answers — a report naming a changed file and an accepting verdict — \
+         which together carry a run to a published branch, so their staying unserved is the \
+         refusal happening rather than the script running out"
+    );
+
+    assert!(
+        stopped.github().branches().is_empty(),
+        "no branch was published: {payload}"
+    );
+    assert!(
+        stopped.github().pull_requests().is_empty(),
+        "and no pull request opened, so the run produced no work nobody asked for: {payload}"
+    );
+    assert!(
+        stopped.jira().links_for(TICKET).is_empty(),
+        "and the ticket carries no link: {:?}",
+        stopped.jira().request_lines()
+    );
+    assert_eq!(
+        stopped.jira().transition_requests(),
+        0,
+        "and the ticket was not moved: {:?}",
+        stopped.jira().request_lines()
+    );
+    assert!(
+        stopped.recorded_marker().is_none(),
+        "and the run recorded no completion, so the same ticket is worked again once a person \
+         answers the question in a comment: {payload}"
+    );
+}
+
+#[test]
+fn the_option_isp_263s_comment_chose_is_the_one_that_reaches_the_forge() {
+    let chosen = ToilWorld::start_letting_isp_263_choose_between_its_options();
+    chosen.authorizes_the_account(OPERATOR_ACCOUNT);
+    chosen.jira().holds_the_description_isp_263_held(TICKET);
+    chosen
+        .jira()
+        .is_commented_on_by_saying(OPERATOR_ACCOUNT, ISP_263_CHOOSES_OPTION_B);
+
+    let run = chosen.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "ISP-263's description weighs two options and suggests one, an authorized comment \
+         chooses the other, and the run takes the ticket on rather than refusing it: {payload}"
+    );
+
+    let told = chosen.model_prompts();
+    let implementer = &told[1];
+    assert!(
+        implementer.contains(ISP_263_SUGGESTS_A),
+        "the description's own suggestion reached the implementer, or this lane is not the \
+         contest it claims to be: {implementer}"
+    );
+    assert!(
+        implementer.contains(ISP_263_CHOOSES_OPTION_B),
+        "and so did the comment that overrides it: {implementer}"
+    );
+
+    assert_eq!(
+        chosen.github().pull_requests().len(),
+        1,
+        "the run produced the one pull request an eligible ticket produces: {payload}"
+    );
+    let branch = chosen.github().only_branch();
+    let written = chosen
+        .github()
+        .file_at(&chosen.github().head_of(&branch), "src/lib.rs");
+    assert_ne!(
+        written,
+        NEITHER_OPTION_REACHED_THE_IMPLEMENTER.trim_end(),
+        "the implementer was given neither option's text, so what it built rests on nothing \
+         this ticket says: {payload}"
+    );
+    assert_ne!(
+        written,
+        OPTION_A_A_RUN_SUBSTITUTED.trim_end(),
+        "and it is not Option A, which is the change the live run of 2026-09-04 made against \
+         this same text: {payload}"
+    );
+    assert_eq!(
+        written,
+        OPTION_B_AS_THE_TICKET_SPECIFIES_IT.trim_end(),
+        "the change that reached the forge is Option B, named by the comment and specified by \
+         the description down to the type, the new name and the registration to remove: \
+         {payload}"
+    );
+}
+
+#[test]
+fn a_run_that_builds_the_option_the_comment_refused_is_judged_however_it_explains_itself() {
+    let substituted = ToilWorld::start_over_a_run_that_substitutes_option_a();
+    substituted.authorizes_the_account(OPERATOR_ACCOUNT);
+    substituted
+        .jira()
+        .holds_the_description_isp_263_held(TICKET);
+    substituted
+        .jira()
+        .is_commented_on_by_saying(OPERATOR_ACCOUNT, ISP_263_CHOOSES_OPTION_B);
+
+    let run = substituted.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let told = substituted.model_prompts();
+    assert!(
+        told.iter()
+            .any(|prompt| prompt.contains(THE_EVALUATION_WAS_ASKED)),
+        "this attempt named a question and changed a file, so it is a substitution and not a \
+         decline, and the evaluation judged it. The lane above gives the same words over an \
+         unchanged tree and the evaluation is never asked, so the field is what an attempt \
+         says and the tree is what decides which route it takes: {told:?}"
+    );
+
+    let findings = findings_of(&payload);
+    assert_eq!(
+        findings,
+        vec![A_FINDING_THAT_NAMES_THE_SUBSTITUTION.to_string()],
+        "and the run refuses on what the evaluation read in the project: {payload}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|finding| finding.contains(THE_OBJECTION_ISP_263_ANSWERS)),
+        "and not on the objection the report raised, which ISP-263 answers in the sentence \
+         that names merge_graph_size and the type to emit it as: {findings:?}"
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(12),
+        "so the run does not report success: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    assert!(
+        substituted.github().pull_requests().is_empty(),
+        "no pull request carries Option A: {payload}"
+    );
+    assert!(
+        substituted.github().branches().is_empty(),
+        "and no branch does: {payload}"
+    );
+    assert!(
+        substituted.jira().links_for(TICKET).is_empty(),
+        "and the ticket carries no link to one: {:?}",
+        substituted.jira().request_lines()
+    );
+    assert!(
+        substituted.recorded_marker().is_none(),
+        "and the run recorded no completion, so a rerun works the ticket again: {payload}"
     );
 }
 

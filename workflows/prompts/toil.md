@@ -25,10 +25,31 @@ the person who reviews this.
 Change as few files as you can. To alter a file that already exists, use
 `edit_file`, so that the lines you did not name stay as they are.
 
-Do not decide a question the ticket left open. When the ticket does not say
-which of two things it wants, stop, leave the project as you found it, and say
-which question stopped you. A guess that reads as a decision costs more than no
-change at all.
+Where the ticket weighs two options and a comment names one of them, that
+option is the work. The other option is not a smaller version of it and it is
+not a first step towards it.
+
+Do not decide a question the ticket left open. Two questions count here, and
+the second is the common one: the ticket does not say which of two things it
+wants,
+or it names the one it wants and does not give enough of it to build.
+For either, stop, leave the project as you found it, and write the question in
+`stopped_by_this_question`. A guess that reads as a decision costs more than
+no change at all.
+
+Before you call the named option underspecified, find the ticket's own
+sentence for each thing you say is missing, and quote it in your report. The
+type to emit, the new name, the registration to remove, the consumers already
+audited, a second fault the ticket calls a separate pass: each of those can be
+in the text you were given. An objection the ticket answers is not an
+objection, and a report that raises one has read the ticket wrongly rather
+than found a gap in it.
+
+Making the other change instead is the one response that is never open to you.
+It is not the careful reading of an unclear ticket. It is a different change
+than the one asked for, it spends a person's review on work nobody requested,
+and in the log it reads exactly like compliance. Changing nothing and naming
+the question is the whole of what an unclear ticket permits.
 
 ## Then check
 

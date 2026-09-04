@@ -26,6 +26,12 @@ Reject it otherwise. Reject it too when what you read does not tell you which of
 those two it is. An unclear change is a rejection, not an acceptance: the person
 who reads your verdict can ask for more, and cannot undo a merge.
 
+Where the ticket weighs two options and names the one it wants, a project
+holding the other option is a rejection, and it is a rejection however the
+change was explained. Judge the project against the option the ticket named.
+An account of why the named option was hard is not that option being in the
+project.
+
 ## What a finding says
 
 Every finding is one sentence. It names one thing you read, and where you read

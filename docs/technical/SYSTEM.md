@@ -61,7 +61,7 @@ still open.
 | `Completed` | 0 | re-derivation reaches `Complete`, or `Execute` over a reference with no completion state (ADR 023) |
 | `Suspended` | 10 | a run that published a decision request and waits for the answer |
 | `Retryable` | 11 | an obstacle in front of the request |
-| `Rejected` | 12 | a workflow whose evaluation step answered `Rejected`, which stops the run before its later steps |
+| `Rejected` | 12 | a workflow whose evaluation step answered `Rejected`, or whose attempt changed nothing and named a question the ticket has to answer; either stops the run before its later steps (ADR 083) |
 | `Failed` | 20 | a conclusion about the request (ADR 016) |
 | — | 11 | the toil gate could not read the ticket, before a run begins |
 | — | 2 | usage or invalid input, before a run begins |
@@ -106,6 +106,16 @@ gateway stub serves. The rejecting run exits 12 and the accepting run exits 0, s
 build that exits 12 whatever the judge said reds. The row was unreachable from a
 binary until `fiddle-tikb` wired `WorkflowCapability` to the command line; it is
 reachable now.
+
+MEASURED through the binary: the row has a second route. An attempt that changed
+nothing and named a question in `stopped_by_this_question` refuses the run with
+that question, before the evaluation is asked, and `WorkflowCapability::declined`
+takes that route only over an unchanged workspace — an attempt that named a
+question and changed a file is judged instead.
+`a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation`
+and `a_run_that_builds_the_option_the_comment_refused_is_judged_however_it_explains_itself`
+in `crates/fiddle-acceptance/tests/toil.rs` drive the two, and ADR 083 records why
+the refusal reuses this row rather than suspending.
 
 ARGUED, read off `crates/fiddle-acceptance/tests/run_outcome.rs` at `77b82f6`: that
 file covers outcomes end to end by JSON key and process exit code across 12 tests

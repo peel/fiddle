@@ -1,8 +1,8 @@
 use super::commit;
 use super::{Capability, CapabilityError, Executed, ExecutionInput};
 use crate::agent::{
-    attempt_briefed, judge_briefed, AgentBudget, Brief, Declarations, Held, ToolHost, Transcripts,
-    Verdict, JUDGE_PREAMBLE, PREAMBLE,
+    attempt_briefed, judge_briefed, AgentBudget, Brief, Declarations, Held, RepairReport, ToolHost,
+    Transcripts, Verdict, JUDGE_PREAMBLE, PREAMBLE,
 };
 use crate::effect::{
     registry, Construct, EffectError, EffectOutcome, ErasedReceipt, Executor, IntegrationOperation,
@@ -265,6 +265,14 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
     }
 }
 
+pub const STOPPED_BY_A_QUESTION: &str =
+    "the attempt changed nothing and named a question the ticket has to answer before the \
+     change can be made";
+
+pub fn stopped_by(question: &str) -> String {
+    format!("{STOPPED_BY_A_QUESTION}: {question}")
+}
+
 pub fn without_waiting(error: EffectError) -> CapabilityError {
     match error.recurrence() {
         Recurrence::Awaiting => CapabilityError::WouldWait {
@@ -376,8 +384,8 @@ where
             .clone()
     }
 
-    async fn attempt(&self, task: &str, max_turns: usize) -> Result<(), CapabilityError> {
-        attempt_briefed(
+    async fn attempt(&self, task: &str, max_turns: usize) -> Result<RepairReport, CapabilityError> {
+        let report = attempt_briefed(
             self.ports.model.clone(),
             &self.ports.redaction,
             self.ports.host.clone(),
@@ -396,7 +404,17 @@ where
             self.ports.transcripts.as_ref(),
         )
         .await?;
-        Ok(())
+        Ok(report)
+    }
+
+    fn declined(&self, report: &RepairReport) -> Result<Option<Published>, CapabilityError> {
+        let Some(question) = report.question() else {
+            return Ok(None);
+        };
+        if !self.ports.host.workspace.changed_files()?.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Published::of(stopped_by(question))))
     }
 
     fn within_scope(&self) -> Result<(), CapabilityError> {
@@ -591,8 +609,14 @@ where
                 .push(params.earned.clone());
             match step {
                 Ready::Agent { task, max_turns } => {
-                    self.attempt(&task_carrying(task, quoted.as_ref()), *max_turns)
+                    let report = self
+                        .attempt(&task_carrying(task, quoted.as_ref()), *max_turns)
                         .await?;
+                    if let Some(finding) = self.declined(&report)? {
+                        return Ok(Executed::Rejected {
+                            findings: vec![finding],
+                        });
+                    }
                     self.within_scope()?
                 }
                 Ready::Evaluate { task, max_turns } => {
