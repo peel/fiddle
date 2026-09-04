@@ -1,3 +1,4 @@
+use crate::agent::unfenced;
 use crate::gateway::Redaction;
 use crate::toil::qualify::{AmbiguityReview, Judgement, Quoted, ReviewError, Verdict as Reviewed};
 use async_trait::async_trait;
@@ -5,10 +6,6 @@ use rig_agent::completion::Prompt;
 use rig_agent::AgentBuilder;
 use std::future::IntoFuture;
 use std::time::Duration;
-
-const FENCE: char = '`';
-
-const SHORTEST_FENCE: usize = 3;
 
 const PREAMBLE: &str = "\
 You are reading one tracker ticket and deciding which of two things it \
@@ -125,19 +122,6 @@ where
         let answered = answered.map_err(|error| ReviewError(self.reported(error.to_string())))?;
         read(&answered)
     }
-}
-
-fn unfenced(answered: &str) -> &str {
-    let body = answered.trim();
-    let opened = body.trim_start_matches(FENCE);
-    if body.len() - opened.len() < SHORTEST_FENCE {
-        return body;
-    }
-    let content = match opened.split_once('\n') {
-        Some((_language_tag, content)) => content,
-        None => opened,
-    };
-    content.trim().trim_end_matches(FENCE).trim()
 }
 
 fn read(answered: &str) -> Result<Judgement, ReviewError> {
