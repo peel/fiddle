@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::IntoFuture;
 use std::time::Duration;
 
-pub(crate) const PREAMBLE: &str = "\
+pub const PREAMBLE: &str = "\
 You are repairing one project. Use the tools this run offers you, and name only \
 paths inside the project.\n\
 \n\
@@ -60,7 +60,9 @@ for, and it reads in the log as compliance.\n\
 \n\
 Change as few files as you can. When you are done — or when you are certain you \
 cannot finish — reply with only the structured report. Report what you actually \
-changed, whether or not it worked.";
+changed, whether or not it worked. Your answer is the text of your final \
+message, and no tool carries it: a call to a tool this run did not offer is \
+refused and returned to you.";
 
 const TASK: &str = "Repair this project so that its check passes, then report what you did.";
 
@@ -584,6 +586,7 @@ where
         .prompt_typed::<Reported>(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
+        .max_invalid_tool_call_retries(RETURNS)
         .into_future();
 
     let Reported(report) = tokio::select! {
@@ -643,7 +646,7 @@ fn announced(
     );
 }
 
-pub(crate) const JUDGE_PREAMBLE: &str = "\
+pub const JUDGE_PREAMBLE: &str = "\
 You are reading one project to judge one change against the ticket that asked \
 for it. Use the tools this run offers you, and name only paths inside the \
 project.\n\
@@ -654,7 +657,8 @@ and you are not repairing it.\n\
 \n\
 Read before you judge. Find the files the change touched, read them, and read \
 what the ticket asked for. When you are done, reply with only the structured \
-verdict.\n\
+verdict. Your answer is the text of your final message, and no tool carries it: \
+a call to a tool this run did not offer is refused and returned to you.\n\
 \n\
 Where this run quotes a ticket for you, the quotation carries the ticket's \
 summary, then its description, then the comments on the issue oldest first. \
@@ -802,7 +806,12 @@ where
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
-    let agent = builder.build();
+    let held = Held {
+        shown: &[],
+        declarations: Declarations::Unchecked,
+    };
+    let returns = ReturnHook::holding(&held, RETURNS, redaction, transcripts);
+    let agent = builder.add_hook(returns.clone()).build();
 
     let mut bounded = host.clone();
     bounded.check.timeout = bounded.check.timeout.min(budget.tool_timeout);
@@ -814,6 +823,7 @@ where
         .prompt(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
+        .max_invalid_tool_call_retries(RETURNS)
         .into_future();
 
     let refused = |error: StructuredOutputError| {
@@ -821,7 +831,7 @@ where
             error,
             VERDICT,
             redaction,
-            &Spent::default(),
+            &returns.spent(),
             budget.max_tokens,
         )
     };
@@ -885,10 +895,7 @@ fn classify(
                 available_tools,
                 ..
             } => AgentError::Protocol {
-                reason: format!(
-                    "the model called the tool {tool_name}, and this run offers {}",
-                    available_tools.join(", ")
-                ),
+                reason: returns::invented(&tool_name, &available_tools, spent),
             },
             PromptError::CompletionError(completion)
                 if crate::agent::retry::empty_response(&completion).is_some() =>

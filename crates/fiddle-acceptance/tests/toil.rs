@@ -1111,6 +1111,28 @@ impl ToilWorld {
         ToilWorld::built(script, true)
     }
 
+    pub fn start_with_a_judge_that_names_its_verdict_as_a_tool_first() -> Self {
+        ToilWorld::built(
+            support::always(vec![
+                a_review_that_reads_a_change(),
+                support::accepted(support::calls(
+                    "write_file",
+                    serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+                )),
+                support::accepted(support::reports(serde_json::json!({
+                    "changed_files": ["src/lib.rs"],
+                    "summary": "corrected the off-by-one the ticket named",
+                    "claimed_complete": true,
+                }))),
+                support::accepted(support::calls("verdict", serde_json::json!({}))),
+                support::accepted(support::reports(serde_json::json!({
+                    "verdict": "accepted",
+                }))),
+            ]),
+            true,
+        )
+    }
+
     pub fn start_with_a_judge_that_reads_before_it_answers() -> Self {
         ToilWorld::built(
             support::always(an_accepted_change_whose_judge_reads_before_it_answers()),
@@ -1807,6 +1829,38 @@ fn every_model_step_answers_a_gateway_that_obeys_the_tool_choice_the_run_sends_i
         "the report and the verdict have to arrive as termination and not as a spent budget, \
          and this run made {} model calls: {payload}",
         bodies.len()
+    );
+}
+
+#[test]
+fn a_judge_that_names_its_verdict_as_a_tool_is_returned_and_the_run_completes() {
+    let world = ToilWorld::start_with_a_judge_that_names_its_verdict_as_a_tool_first();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let bodies = world.model_prompts();
+
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "on 2026-09-04 the evaluation answered a live run by calling a tool named `verdict` \
+         with `{{}}`, and that one call ended a run whose agent step had finished. The call is \
+         returned to the model and the run goes on to the verdict it writes next: {payload}"
+    );
+    assert_eq!(
+        bodies.len(),
+        5,
+        "the review, two agent turns, the invented call and the verdict: one request each, so \
+         the return cost one model call and not the run. {} requests: {payload}",
+        bodies.len()
+    );
+    assert!(
+        bodies[4].contains("this run offers no tool named verdict")
+            && bodies[4].contains("no tool carries it"),
+        "the fifth request carries the return as the model's own history, naming the tool it \
+         called and saying where the answer goes, read off the loopback socket: {}",
+        bodies[4]
     );
 }
 
