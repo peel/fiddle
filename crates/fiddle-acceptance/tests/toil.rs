@@ -1590,6 +1590,18 @@ fn combiners_at_the_top_of(named: &str, schema: &serde_json::Value) -> Vec<Strin
         .collect()
 }
 
+fn text_of(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect::<Vec<&str>>()
+            .join(""),
+        other => panic!("a message's content is text or parts of text: {other}"),
+    }
+}
+
 fn schemas_sent_in(body: &str) -> Vec<(String, serde_json::Value)> {
     let request: serde_json::Value =
         serde_json::from_str(body).unwrap_or_else(|why| panic!("a request body is JSON: {why}"));
@@ -1662,12 +1674,46 @@ fn no_schema_a_toil_run_sends_carries_a_combiner_at_the_top_of_itself() {
         sent > 0,
         "no request carried a schema at all, so an assertion over their shapes proved nothing"
     );
+
+    let judged: Vec<&String> = bodies
+        .iter()
+        .filter(|body| body.contains(THE_EVALUATION_WAS_ASKED))
+        .collect();
+    assert!(
+        judged.len() >= 2,
+        "the judge reads before it answers, so at least two requests carry its brief, and the \
+         assertions below are about {} of them: {payload}",
+        judged.len()
+    );
+    for body in &judged {
+        let request: serde_json::Value = serde_json::from_str(body)
+            .unwrap_or_else(|why| panic!("a request body is JSON: {why}"));
+        assert!(
+            request.get("response_format").is_none(),
+            "the evaluation asks for its verdict in the prompt and asks the provider for no \
+             structured output, so no turn of it carries a `response_format`. This one does, \
+             read off the loopback socket through the shipped binary: {body}"
+        );
+        let system = request["messages"]
+            .as_array()
+            .and_then(|messages| messages.iter().find(|message| message["role"] == "system"))
+            .map(|message| text_of(&message["content"]))
+            .unwrap_or_else(|| {
+                panic!("the evaluation's request opens with a system message: {body}")
+            });
+        assert!(
+            system.contains(r#""enum":["accepted","rejected"]"#),
+            "the verdict's two words travel in the system message, so the model is asked for the \
+             shape this build reads and not left to guess it: {system}"
+        );
+    }
+
     assert_eq!(
-        structured, 2,
-        "the implementer's report and the judge's verdict are the two structured-output \
-         schemas a toil run sends, and this run sent {structured} of them. A judge that \
-         answers on its first turn is never sent one, so this lane would pass over a \
-         verdict schema no gateway accepts: {payload}"
+        structured, 1,
+        "the implementer's report is the one structured-output schema a toil run sends, and \
+         this run sent {structured}. The judge's verdict travels in its preamble, which the \
+         loop above holds, so a second one here is a schema that went back onto the wire: \
+         {payload}"
     );
     assert!(
         refused.is_empty(),
