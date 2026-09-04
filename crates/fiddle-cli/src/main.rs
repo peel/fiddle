@@ -20,7 +20,7 @@ use fiddle_runtime::human::interpret::InterpretationBounds;
 use fiddle_runtime::human::DecisionChannel;
 use fiddle_runtime::jira::{AddComment, MarkedComment};
 use fiddle_runtime::ports::{ChangePort, WorkItemPort};
-use fiddle_runtime::toil::{Eligible, Refusal, Source, TicketFacts};
+use fiddle_runtime::toil::{Eligible, Quoted, Refusal, Source, TicketFacts};
 use fiddle_runtime::{
     Addressed, AgentBudget, AttemptContext, AttemptTrace, Capability, ConfiguredNames,
     DeclaredCommand, Extend, FixtureRepair, GatewayError, GhCli, GitCli, JiraError, JiraHttp,
@@ -616,6 +616,28 @@ async fn observe(
     .await)
 }
 
+const THE_TICKET_TEXT_THE_RULE_READ: &str = "The text on this issue that the rule read:";
+
+const THE_MESSAGE_THE_MODEL_HOST_REPORTED: &str = "The message the model host reported:";
+
+fn announcement_for(source: Source) -> &'static str {
+    match source {
+        Source::Ticket => THE_TICKET_TEXT_THE_RULE_READ,
+        Source::ModelHost => THE_MESSAGE_THE_MODEL_HOST_REPORTED,
+    }
+}
+
+fn announcing(quoted: &Quoted) -> String {
+    format!("{} {}", announcement_for(quoted.source()), quoted.text())
+}
+
+fn quoted_from(refusal: &Refusal, source: Source) -> Option<&Quoted> {
+    refusal
+        .quoted
+        .as_ref()
+        .filter(|quoted| quoted.source() == source)
+}
+
 fn rule_that_failed(rule: &str) -> String {
     format!("The rule that failed: {rule}")
 }
@@ -629,12 +651,16 @@ fn would_change_that(remedy: &str) -> String {
 }
 
 fn not_work_this_build_takes_on(refusal: &Refusal) -> String {
-    format!(
+    let stated = format!(
         "`{}` is not work this build takes on. {}. {}",
         refusal.work_item,
         rule_that_failed(refusal.failed_rule),
         what_the_gate_found(&refusal.found),
-    )
+    );
+    match quoted_from(refusal, Source::ModelHost) {
+        Some(quoted) => format!("{stated}. {}", announcing(quoted)),
+        None => stated,
+    }
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -750,6 +776,7 @@ async fn qualified(
                     max_tokens: agent.max_tokens,
                     deadline: agent.deadline.as_duration(),
                 },
+                gateway.redaction,
             );
             fiddle_runtime::toil::review_of(reached, &review).await
         }
@@ -828,15 +855,8 @@ fn refusal_note(refusal: &Refusal) -> String {
         what_the_gate_found(&refusal.found),
         would_change_that(&refusal.remedy),
     ];
-    if let Some(quoted) = refusal
-        .quoted
-        .as_ref()
-        .filter(|quoted| quoted.source() == Source::Ticket)
-    {
-        told.push(format!(
-            "The text on this issue that the rule read: {}",
-            quoted.text()
-        ));
+    if let Some(quoted) = quoted_from(refusal, Source::Ticket) {
+        told.push(announcing(quoted));
     }
     told.join("\n")
 }
@@ -2824,6 +2844,79 @@ mod tests {
             InvocationScheme::ALL.len(),
             "the row above passes by matching every scheme this build has, so a help \
              text that names four of five must red: {help}"
+        );
+    }
+
+    #[test]
+    fn neither_surface_announces_a_quotation_it_does_not_print() {
+        let announcements = [Source::Ticket, Source::ModelHost].map(announcement_for);
+        let cases = [
+            (
+                "a refusal resting on the ticket",
+                fiddle_runtime::toil::Quoted::of(TICKET_PROSE),
+                TICKET_PROSE,
+                announcement_for(Source::Ticket),
+            ),
+            (
+                "a refusal resting on what the model host said",
+                fiddle_runtime::toil::Quoted::reported_by_the_model_host(HOST_PROSE),
+                HOST_PROSE,
+                announcement_for(Source::ModelHost),
+            ),
+        ];
+        let mut printing = 0;
+        for (named, quoted, prose, belongs_to) in cases {
+            let refusal = a_refusal_quoting(quoted);
+            for (surface, rendered) in [
+                ("the comment on the ticket", refusal_note(&refusal)),
+                (
+                    "the operator's line",
+                    not_work_this_build_takes_on(&refusal),
+                ),
+            ] {
+                let announced: Vec<&str> = announcements
+                    .into_iter()
+                    .filter(|announcement| rendered.contains(announcement))
+                    .collect();
+                let prints = rendered.contains(prose);
+                assert_eq!(
+                    !announced.is_empty(),
+                    prints,
+                    "{named}: {surface} announces a quotation exactly when it prints one, and                      it announced {announced:?}: {rendered}"
+                );
+                assert!(
+                    announced.iter().all(|announcement| *announcement == belongs_to),
+                    "{named}: {surface} announced {announced:?}, which names a source this                      refusal does not rest on: {rendered}"
+                );
+                assert!(
+                    rendered.contains(&what_the_gate_found(&refusal.found)),
+                    "{named}: {surface} still says what the gate found, so the line above is                      one announcement withheld and not an empty surface: {rendered}"
+                );
+                printing += prints as usize;
+            }
+        }
+        assert_eq!(
+            printing, 2,
+            "each of the two quotations reaches exactly one of the two surfaces, or the              equality above holds over surfaces that print nothing at all"
+        );
+    }
+
+    #[test]
+    fn the_operators_line_carries_the_message_the_ticket_is_not_told() {
+        let refusal = a_refusal_quoting(fiddle_runtime::toil::Quoted::reported_by_the_model_host(
+            HOST_PROSE,
+        ));
+
+        let printed = not_work_this_build_takes_on(&refusal);
+        let published = refusal_note(&refusal);
+
+        assert!(
+            printed.contains(HOST_PROSE),
+            "the operator asked for this run and can act on what its model host said: {printed}"
+        );
+        assert!(
+            !published.contains(HOST_PROSE),
+            "and the issue is told the rule and not the host's message, which is the              divergence this build chose: {published}"
         );
     }
 

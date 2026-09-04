@@ -891,6 +891,33 @@ async fn the_gate_asks_no_model_about_a_ticket_a_measured_rule_already_refused()
     }
 }
 
+const ANNOUNCES_A_QUOTATION: &str = "quoted below";
+
+#[tokio::test]
+async fn no_refusal_sentence_announces_a_quotation_the_surface_it_reaches_may_not_carry() {
+    let mut quoting = 0;
+    let rows = pairs();
+    for pair in &rows {
+        let refusal = refusal_of(pair).await;
+        assert!(
+            !refusal.found.contains(ANNOUNCES_A_QUOTATION)
+                && !refusal.remedy.contains(ANNOUNCES_A_QUOTATION),
+            "{}: a refusal sentence reaches surfaces that each decide for themselves which \
+             quotation they carry, so the sentence must promise none of them: {} / {}",
+            pair.named_fault,
+            refusal.found,
+            refusal.remedy
+        );
+        quoting += refusal.quoted.is_some() as usize;
+    }
+    assert!(
+        quoting >= 4,
+        "the rows above have to include refusals that carry a quotation, or the check ran \
+         over refusals with nothing to promise: {quoting} of {} carried one",
+        rows.len()
+    );
+}
+
 #[tokio::test]
 async fn ticket_text_reaches_a_refusal_only_inside_a_fence() {
     for pair in pairs() {
@@ -2327,6 +2354,7 @@ fn gateway_answering(answered: &str) -> ModelReview<MockCompletionModel> {
             max_tokens: 512,
             deadline: Duration::from_secs(30),
         },
+        fiddle_runtime::Redaction::unknown(),
     )
 }
 
