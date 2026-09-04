@@ -225,8 +225,7 @@ fn the_transcript_carries_the_model_response_and_not_the_credential() {
 
     let brief = &records[0];
     assert_eq!(
-        brief["tool_choice"],
-        "auto",
+        brief["tool_choice"], "auto",
         "the repair step permits an answer, because no output tool is advertised and the \
          report can only be the assistant's final text: {brief}"
     );
