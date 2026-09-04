@@ -808,11 +808,11 @@ async fn the_stub_obeys_the_tool_choice_it_is_sent() {
 }
 
 #[tokio::test]
-async fn the_repair_step_still_obliges_a_tool_call_and_a_gateway_that_obeys_leaves_it_no_answer() {
+async fn the_repair_step_answers_a_gateway_that_obeys_the_tool_choice_it_is_sent() {
     let (host, _g) = test_host();
     let gateway = ObeysItsToolChoice::answering(RECORDED_ENVELOPE);
 
-    let unanswered = attempt(
+    let report = attempt(
         gateway.clone(),
         &redaction(),
         host,
@@ -820,21 +820,34 @@ async fn the_repair_step_still_obliges_a_tool_call_and_a_gateway_that_obeys_leav
         Direction::Fresh,
         None,
     )
-    .await;
+    .await
+    .unwrap_or_else(|error| {
+        panic!(
+            "the repair step has to answer against a gateway that obeys the tool choice fiddle \
+             sends. `prompt_typed` pins `OutputMode::Native`, so no output tool is offered and \
+             the report can only be the assistant's final text, which `required` forbade. On \
+             2026-09-04 a gateway that obeyed it spent 24 and then 120 turns reading and wrote \
+             nothing. This run spent {} of 4 turns: {error}",
+            gateway.calls()
+        )
+    });
 
+    assert_eq!(
+        report.changed_files,
+        ["pkg/service/batch_processor.go"],
+        "the answer that arrives is the recorded report, envelope and all"
+    );
     assert!(
-        matches!(unanswered, Err(AgentError::Bounded { .. })),
-        "this lane pins a defect rather than a fix. `prompt_typed` pins `OutputMode::Native`, so \
-         no output tool is offered and the answer can only be the assistant's final text, which \
-         `required` forbids. The repair step survives in production because the recorded gateway \
-         returned `stop` with text anyway, not because fiddle offered it a way to answer. It \
-         returned {unanswered:?}"
+        gateway.calls() < 4,
+        "the fix has to show as termination and not as a larger budget, and this run took all \
+         4 turns the lane allows"
     );
     assert_eq!(
         gateway.choices_it_was_sent(),
-        vec![Some(ToolChoice::Required); 4],
-        "and it is `required` on every turn, so the repair step's escape is the gateway's \
-         leniency and not this build's design"
+        vec![Some(ToolChoice::Auto)],
+        "the repair step permits an answer on every turn it sends, so a gateway that obeys the \
+         choice has a way to hand back the report. What it is sent, and how many times, is the \
+         whole of this lane"
     );
 }
 

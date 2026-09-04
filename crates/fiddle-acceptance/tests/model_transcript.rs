@@ -224,7 +224,28 @@ fn the_transcript_carries_the_model_response_and_not_the_credential() {
     }
 
     let brief = &records[0];
-    assert_eq!(brief["tool_choice"], "required", "{brief}");
+    assert_eq!(
+        brief["tool_choice"], "auto",
+        "the repair step permits an answer, because no output tool is advertised and the \
+         report can only be the assistant's final text: {brief}"
+    );
+    let bodies = gateway.request_bodies();
+    assert!(
+        !bodies.is_empty()
+            && bodies
+                .iter()
+                .all(|body| body.contains("\"tool_choice\":\"auto\"")),
+        "the word the transcript records is the choice the shipped binary put on the wire, \
+         read off the loopback socket and not off the builder. {} requests: {bodies:?}",
+        bodies.len()
+    );
+    assert!(
+        bodies
+            .iter()
+            .all(|body| !body.contains("\"tool_choice\":\"required\"")),
+        "and no request of the repair step obliges a call, which on 2026-09-04 left a live run \
+         reading for 120 turns with nothing to hand back: {bodies:?}"
+    );
     assert_eq!(brief["max_turns"], 4, "{brief}");
     assert!(
         brief["tools"].as_str().unwrap().contains("read_file"),
