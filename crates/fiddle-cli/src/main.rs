@@ -2864,9 +2864,9 @@ mod tests {
                 announcement_for(Source::ModelHost),
             ),
         ];
-        let mut printing = 0;
         for (named, quoted, prose, belongs_to) in cases {
             let refusal = a_refusal_quoting(quoted);
+            let mut printed_by: Vec<&str> = Vec::new();
             for (surface, rendered) in [
                 ("the comment on the ticket", refusal_note(&refusal)),
                 (
@@ -2882,23 +2882,32 @@ mod tests {
                 assert_eq!(
                     !announced.is_empty(),
                     prints,
-                    "{named}: {surface} announces a quotation exactly when it prints one, and                      it announced {announced:?}: {rendered}"
+                    "{named}: {surface} announces a quotation exactly when it prints one, \
+                     and it announced {announced:?}: {rendered}"
                 );
                 assert!(
-                    announced.iter().all(|announcement| *announcement == belongs_to),
-                    "{named}: {surface} announced {announced:?}, which names a source this                      refusal does not rest on: {rendered}"
+                    announced
+                        .iter()
+                        .all(|announcement| *announcement == belongs_to),
+                    "{named}: {surface} announced {announced:?}, which names a source this \
+                     refusal does not rest on: {rendered}"
                 );
                 assert!(
                     rendered.contains(&what_the_gate_found(&refusal.found)),
-                    "{named}: {surface} still says what the gate found, so the line above is                      one announcement withheld and not an empty surface: {rendered}"
+                    "{named}: {surface} still says what the gate found, so the line above \
+                     is one announcement withheld and not an empty surface: {rendered}"
                 );
-                printing += prints as usize;
+                if prints {
+                    printed_by.push(surface);
+                }
             }
+            assert_eq!(
+                printed_by.len(),
+                1,
+                "{named}: one of the two surfaces prints this quotation and the other does \
+                 not, and these printed it: {printed_by:?}"
+            );
         }
-        assert_eq!(
-            printing, 2,
-            "each of the two quotations reaches exactly one of the two surfaces, or the              equality above holds over surfaces that print nothing at all"
-        );
     }
 
     #[test]
@@ -2916,7 +2925,8 @@ mod tests {
         );
         assert!(
             !published.contains(HOST_PROSE),
-            "and the issue is told the rule and not the host's message, which is the              divergence this build chose: {published}"
+            "and the issue is told the rule and not the host's message, which is the \
+             divergence this build chose: {published}"
         );
     }
 

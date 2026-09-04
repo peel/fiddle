@@ -903,7 +903,7 @@ async fn no_refusal_sentence_announces_a_quotation_the_surface_it_reaches_may_no
             !refusal.found.contains(ANNOUNCES_A_QUOTATION)
                 && !refusal.remedy.contains(ANNOUNCES_A_QUOTATION),
             "{}: a refusal sentence reaches surfaces that each decide for themselves which \
-             quotation they carry, so the sentence must promise none of them: {} / {}",
+             quotation they carry, so no sentence says `{ANNOUNCES_A_QUOTATION}`: {} / {}",
             pair.named_fault,
             refusal.found,
             refusal.remedy
