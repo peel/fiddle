@@ -1140,6 +1140,7 @@ mod body {
                         note: "Upgraded jwt/v4 from v4.5.0 to v4.5.2.".to_string(),
                     }],
                     quoted_from_a_comment: None,
+                    stopped_by_this_question: None,
                 },
                 changed: changed
                     .iter()

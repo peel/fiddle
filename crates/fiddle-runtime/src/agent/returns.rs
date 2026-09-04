@@ -267,6 +267,7 @@ mod tests {
                 })
                 .collect(),
             quoted_from_a_comment: None,
+            stopped_by_this_question: None,
         }
     }
 
