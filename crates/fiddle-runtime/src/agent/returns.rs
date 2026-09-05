@@ -1,4 +1,4 @@
-use super::{accounting, RepairReport};
+use super::{accounting, judged, reported, RepairReport, StructuredOutputError};
 use crate::agent::transcript::{Record, Transcripts, RETURNED};
 use crate::capability::{breached, DeclarationBreach};
 use crate::gateway::Redaction;
@@ -41,15 +41,7 @@ pub fn unoffered_tool_returned(tool: &str, offered: &[String]) -> String {
 }
 
 pub fn invented(tool: &str, offered: &[String], spent: &Spent) -> String {
-    let reason = unoffered_tool(tool, offered);
-    if spent.count == 0 {
-        return reason;
-    }
-    format!(
-        "{reason}, after {} of its turns were returned; the last return failed the {} rule",
-        spent.count,
-        spent.last.as_ref().map_or("none", |last| last.rule)
-    )
+    after_returns(unoffered_tool(tool, offered), spent)
 }
 
 const ACCOUNT_FOR_IT: &str = "Continue the work, then send one report that accounts for every \
@@ -128,6 +120,75 @@ pub struct Held<'a> {
     pub declarations: Declarations,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Answer {
+    Report,
+    Verdict,
+}
+
+pub const UNREADABLE: &str = "unreadable_answer";
+
+const NOT_AN_ANSWER: &str = "fiddle refused that answer:";
+
+const ONE_VERDICT_OBJECT: &str = "Send one JSON object and nothing else, with `verdict` set to \
+                                  `accepted`, or to `rejected` with at least one sentence in \
+                                  `findings`.";
+
+const ONE_REPORT_OBJECT: &str = "Send one JSON object and nothing else, with `changed_files`, \
+                                 `summary` and `claimed_complete`.";
+
+pub fn unreadable(answer: Answer, refusal: &str) -> String {
+    let ask = match answer {
+        Answer::Verdict => ONE_VERDICT_OBJECT,
+        Answer::Report => ONE_REPORT_OBJECT,
+    };
+    format!("{NOT_AN_ANSWER} {refusal}. {ask}")
+}
+
+pub fn after_returns(reason: String, spent: &Spent) -> String {
+    let Some(last) = &spent.last else {
+        return reason;
+    };
+    format!(
+        "{reason}, after {} of its turns were returned; the last return failed the {} rule",
+        spent.count, last.rule
+    )
+}
+
+fn text_of(content: &OneOrMany<AssistantContent>) -> String {
+    content
+        .iter()
+        .filter_map(|block| match block {
+            AssistantContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn report_refusal(error: StructuredOutputError) -> String {
+    match error {
+        StructuredOutputError::DeserializationError(source) => {
+            format!("the report did not match the schema: {source}")
+        }
+        StructuredOutputError::EmptyResponse => {
+            "the model returned no final content at all".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
+fn verdict_refusal(error: StructuredOutputError) -> String {
+    match error {
+        StructuredOutputError::DeserializationError(source) => {
+            format!("the verdict did not match the schema: {source}")
+        }
+        StructuredOutputError::EmptyResponse => {
+            "the model returned no final content at all".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
 struct Refusal {
     rule: &'static str,
     reason: String,
@@ -161,6 +222,7 @@ pub fn exhausted(max_turns: usize, spent: &Spent) -> String {
 
 #[derive(Clone)]
 pub struct ReturnHook {
+    answer: Answer,
     shown: Arc<Vec<String>>,
     declarations: Declarations,
     bound: usize,
@@ -177,6 +239,7 @@ impl ReturnHook {
         transcripts: Option<&Transcripts>,
     ) -> Self {
         ReturnHook {
+            answer: Answer::Report,
             shown: Arc::new(held.shown.iter().map(|cve| cve.to_string()).collect()),
             declarations: held.declarations.clone(),
             bound,
@@ -184,6 +247,31 @@ impl ReturnHook {
             transcripts: transcripts.cloned(),
             redaction: redaction.clone(),
         }
+    }
+
+    pub fn judging(bound: usize, redaction: &Redaction, transcripts: Option<&Transcripts>) -> Self {
+        ReturnHook {
+            answer: Answer::Verdict,
+            shown: Arc::new(Vec::new()),
+            declarations: Declarations::Unchecked,
+            bound,
+            spent: Arc::new(Mutex::new(Spent::default())),
+            transcripts: transcripts.cloned(),
+            redaction: redaction.clone(),
+        }
+    }
+
+    fn unreadable_failure(&self, content: &OneOrMany<AssistantContent>) -> Option<Refusal> {
+        let text = text_of(content);
+        let refusal = match self.answer {
+            Answer::Verdict => verdict_refusal(judged(&text).err()?),
+            Answer::Report => report_refusal(reported(&text).err()?),
+        };
+        Some(Refusal {
+            rule: UNREADABLE,
+            sentence: unreadable(self.answer, &refusal),
+            reason: refusal,
+        })
     }
 
     pub fn spent(&self) -> Spent {
@@ -229,6 +317,12 @@ impl ReturnHook {
     }
 
     fn failure(&self, content: &OneOrMany<AssistantContent>) -> Option<Refusal> {
+        if let Some(unreadable) = self.unreadable_failure(content) {
+            return Some(unreadable);
+        }
+        if self.answer == Answer::Verdict {
+            return None;
+        }
         let report = report_in(content)?;
         if let Some(reason) = self.accounting_failure(&report) {
             let sentence = returned_to_the_model(&reason);
@@ -387,12 +481,23 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_that_is_not_a_report_carries_no_failure() {
+    fn a_turn_that_is_not_a_report_is_returned_and_a_report_that_accounts_is_not() {
         let hook = shown_only(&[SHOWN]);
 
+        let prose = hook
+            .failure(&text("I will look at go.mod next"))
+            .expect("prose is not a report, and the model is told so rather than left to guess");
+        assert_eq!(prose.rule, UNREADABLE);
         assert!(
-            hook.failure(&text("I will look at go.mod next")).is_none(),
-            "prose is not a report, and rig already re-prompts for one"
+            prose
+                .reason
+                .starts_with("the report did not match the schema:")
+                && prose
+                    .sentence
+                    .contains("Send one JSON object and nothing else"),
+            "the return quotes the refusal and asks for the shape: {} / {}",
+            prose.reason,
+            prose.sentence
         );
         assert!(
             hook.failure(&text(&report(&[SHOWN]))).is_none(),

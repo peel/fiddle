@@ -18,7 +18,7 @@ pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
 use rig_agent::agent::{NoToolConfig, OutputMode, WithBuilderTools};
-use rig_agent::completion::{Prompt, PromptError, StructuredOutputError, TypedPrompt};
+use rig_agent::completion::{Prompt, PromptError, StructuredOutputError};
 use rig_agent::tool::{Tool, ToolContext};
 use rig_agent::AgentBuilder;
 use std::collections::{BTreeMap, BTreeSet};
@@ -583,22 +583,32 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<Reported>(brief.task.to_string())
+        .prompt(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .max_invalid_tool_call_retries(RETURNS)
         .into_future();
 
-    let Reported(report) = tokio::select! {
+    let refused = |error: StructuredOutputError| {
+        classify(
+            error,
+            REPORT,
+            redaction,
+            &returns.spent(),
+            budget.max_tokens,
+        )
+    };
+    let answered = tokio::select! {
         biased;
         _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
         result = run => result.map_err(|error| {
-            classify(error, REPORT, redaction, &returns.spent(), budget.max_tokens)
+            refused(StructuredOutputError::PromptError(Box::new(error)))
         })?,
     };
+    let Reported(report) = reported(&answered).map_err(refused)?;
 
     let changed = host
         .workspace
@@ -755,6 +765,14 @@ fn judged(answered: &str) -> Result<Judged, StructuredOutputError> {
         .map_err(StructuredOutputError::DeserializationError)
 }
 
+fn reported(answered: &str) -> Result<Reported, StructuredOutputError> {
+    if answered.trim().is_empty() {
+        return Err(StructuredOutputError::EmptyResponse);
+    }
+    serde_json::from_str::<Reported>(unfenced(answered))
+        .map_err(StructuredOutputError::DeserializationError)
+}
+
 impl<'de> serde::Deserialize<'de> for Judged {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -806,11 +824,7 @@ where
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
-    let held = Held {
-        shown: &[],
-        declarations: Declarations::Unchecked,
-    };
-    let returns = ReturnHook::holding(&held, RETURNS, redaction, transcripts);
+    let returns = ReturnHook::judging(RETURNS, redaction, transcripts);
     let agent = builder.add_hook(returns.clone()).build();
 
     let mut bounded = host.clone();
@@ -880,10 +894,16 @@ fn classify(
 ) -> AgentError {
     match error {
         StructuredOutputError::DeserializationError(source) => AgentError::Protocol {
-            reason: format!("the {asked_for} did not match the schema: {source}"),
+            reason: returns::after_returns(
+                format!("the {asked_for} did not match the schema: {source}"),
+                spent,
+            ),
         },
         StructuredOutputError::EmptyResponse => AgentError::Protocol {
-            reason: "the model returned no final content at all".to_string(),
+            reason: returns::after_returns(
+                "the model returned no final content at all".to_string(),
+                spent,
+            ),
         },
         StructuredOutputError::PromptError(prompt) => match *prompt {
             PromptError::MaxTurnsError { max_turns, .. } => AgentError::Bounded {
@@ -2159,11 +2179,12 @@ mod tests {
             assert_eq!(
                 offer.tool_choice(),
                 rig_core::completion::message::ToolChoice::Auto,
-                "neither offer advertises an output tool: the repair drives `prompt_typed`, \
-                 which pins `Native`, and the evaluation drives `prompt` under `Prompted`, \
-                 which puts the schema in the preamble. On both the answer is the assistant's \
-                 final text and `required` forbids it. The agreement is deliberate: `{:?}` \
-                 obliged a call once, and a gateway that obeyed spent every turn reading",
+                "neither offer advertises an output tool: both drive the untyped `prompt`, the \
+                 repair under `Native` with the schema on the wire and the evaluation under \
+                 `Prompted` with the schema in the preamble. On both the answer is the \
+                 assistant's final text, read by `reported` or `judged`, and `required` \
+                 forbids it. The agreement is deliberate: `{:?}` obliged a call once, and a \
+                 gateway that obeyed spent every turn reading",
                 offer
             );
             assert_eq!(
