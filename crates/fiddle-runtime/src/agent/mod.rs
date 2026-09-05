@@ -2179,11 +2179,12 @@ mod tests {
             assert_eq!(
                 offer.tool_choice(),
                 rig_core::completion::message::ToolChoice::Auto,
-                "neither offer advertises an output tool: the repair drives `prompt_typed`, \
-                 which pins `Native`, and the evaluation drives `prompt` under `Prompted`, \
-                 which puts the schema in the preamble. On both the answer is the assistant's \
-                 final text and `required` forbids it. The agreement is deliberate: `{:?}` \
-                 obliged a call once, and a gateway that obeyed spent every turn reading",
+                "neither offer advertises an output tool: both drive the untyped `prompt`, the \
+                 repair under `Native` with the schema on the wire and the evaluation under \
+                 `Prompted` with the schema in the preamble. On both the answer is the \
+                 assistant's final text, read by `reported` or `judged`, and `required` \
+                 forbids it. The agreement is deliberate: `{:?}` obliged a call once, and a \
+                 gateway that obeyed spent every turn reading",
                 offer
             );
             assert_eq!(

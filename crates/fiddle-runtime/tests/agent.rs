@@ -639,9 +639,10 @@ async fn no_tool_schema_this_build_sends_carries_a_top_level_combiner() {
         assert_eq!(
             named, expected,
             "{offered} is sent its own tools and no others. No synthetic output tool is among \
-             them: the repairer's `prompt_typed` pins `OutputMode::Native`, and the judge's \
-             `OutputMode::Prompted` advertises none. A count-only assertion here would pass \
-             whether or not one arrived"
+             them: the repairer's `OutputMode::Native` puts the schema on the wire as \
+             `response_format`, the judge's `OutputMode::Prompted` puts it in the preamble, \
+             and neither advertises a tool. A count-only assertion here would pass whether or \
+             not one arrived"
         );
         let offenders = combiners_at_the_top_of(&schemas);
         assert!(
@@ -1046,10 +1047,10 @@ async fn the_repair_step_answers_a_gateway_that_obeys_the_tool_choice_it_is_sent
     .unwrap_or_else(|error| {
         panic!(
             "the repair step has to answer against a gateway that obeys the tool choice fiddle \
-             sends. `prompt_typed` pins `OutputMode::Native`, so no output tool is offered and \
-             the report can only be the assistant's final text, which `required` forbade. On \
-             2026-09-04 a gateway that obeyed it spent 24 and then 120 turns reading and wrote \
-             nothing. This run spent {} of 4 turns: {error}",
+             sends. No output tool is offered on either path, so the report can only be the \
+             assistant's final text, which `required` forbade. On 2026-09-04 a gateway that \
+             obeyed it spent 24 and then 120 turns reading and wrote nothing. This run spent \
+             {} of 4 turns: {error}",
             gateway.calls()
         )
     });
