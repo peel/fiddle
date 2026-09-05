@@ -18,7 +18,7 @@ pub use transcript::{TranscriptHook, TranscriptModel, Transcripts};
 use crate::gateway::Redaction;
 use crate::workspace::{declared, DeclaredCommand};
 use rig_agent::agent::{NoToolConfig, OutputMode, WithBuilderTools};
-use rig_agent::completion::{Prompt, PromptError, StructuredOutputError, TypedPrompt};
+use rig_agent::completion::{Prompt, PromptError, StructuredOutputError};
 use rig_agent::tool::{Tool, ToolContext};
 use rig_agent::AgentBuilder;
 use std::collections::{BTreeMap, BTreeSet};
@@ -583,22 +583,32 @@ where
     ctx.insert(bounded);
 
     let run = agent
-        .prompt_typed::<Reported>(brief.task.to_string())
+        .prompt(brief.task.to_string())
         .tool_context(ctx)
         .max_turns(budget.max_turns)
         .max_invalid_tool_call_retries(RETURNS)
         .into_future();
 
-    let Reported(report) = tokio::select! {
+    let refused = |error: StructuredOutputError| {
+        classify(
+            error,
+            REPORT,
+            redaction,
+            &returns.spent(),
+            budget.max_tokens,
+        )
+    };
+    let answered = tokio::select! {
         biased;
         _ = host.cancel.cancelled() => return Err(AgentError::Cancelled),
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
         result = run => result.map_err(|error| {
-            classify(error, REPORT, redaction, &returns.spent(), budget.max_tokens)
+            refused(StructuredOutputError::PromptError(Box::new(error)))
         })?,
     };
+    let Reported(report) = reported(&answered).map_err(refused)?;
 
     let changed = host
         .workspace
@@ -752,6 +762,14 @@ fn judged(answered: &str) -> Result<Judged, StructuredOutputError> {
         return Err(StructuredOutputError::EmptyResponse);
     }
     serde_json::from_str::<Judged>(unfenced(answered))
+        .map_err(StructuredOutputError::DeserializationError)
+}
+
+fn reported(answered: &str) -> Result<Reported, StructuredOutputError> {
+    if answered.trim().is_empty() {
+        return Err(StructuredOutputError::EmptyResponse);
+    }
+    serde_json::from_str::<Reported>(unfenced(answered))
         .map_err(StructuredOutputError::DeserializationError)
 }
 

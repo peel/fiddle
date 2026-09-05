@@ -1,4 +1,4 @@
-use super::{accounting, judged, unfenced, RepairReport, Reported, StructuredOutputError};
+use super::{accounting, judged, reported, RepairReport, StructuredOutputError};
 use crate::agent::transcript::{Record, Transcripts, RETURNED};
 use crate::capability::{breached, DeclarationBreach};
 use crate::gateway::Redaction;
@@ -165,6 +165,18 @@ fn text_of(content: &OneOrMany<AssistantContent>) -> String {
         .collect()
 }
 
+fn report_refusal(error: StructuredOutputError) -> String {
+    match error {
+        StructuredOutputError::DeserializationError(source) => {
+            format!("the report did not match the schema: {source}")
+        }
+        StructuredOutputError::EmptyResponse => {
+            "the model returned no final content at all".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
 fn verdict_refusal(error: StructuredOutputError) -> String {
     match error {
         StructuredOutputError::DeserializationError(source) => {
@@ -253,14 +265,7 @@ impl ReturnHook {
         let text = text_of(content);
         let refusal = match self.answer {
             Answer::Verdict => verdict_refusal(judged(&text).err()?),
-            Answer::Report => {
-                if text.trim().is_empty() {
-                    "the model returned no final content at all".to_string()
-                } else {
-                    let source = serde_json::from_str::<Reported>(unfenced(&text)).err()?;
-                    format!("the report did not match the schema: {source}")
-                }
-            }
+            Answer::Report => report_refusal(reported(&text).err()?),
         };
         Some(Refusal {
             rule: UNREADABLE,

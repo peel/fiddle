@@ -313,6 +313,39 @@ async fn malformed_structured_output_is_a_protocol_error_not_a_default() {
 }
 
 #[tokio::test]
+async fn a_report_beside_prose_is_refused_on_every_turn_and_never_read_off_the_front() {
+    let (host, _g) = test_host();
+    let beside_prose = format!(
+        "Here is my report, with the check passing:\n{RECORDED_ENVELOPE}\nLet me know if you \
+         need anything else."
+    );
+    let model = MockCompletionModel::new(
+        (0..=fiddle_runtime::agent::RETURNS)
+            .map(|_| MockTurn::text(&beside_prose))
+            .collect::<Vec<_>>(),
+    );
+
+    let refused = attempt(model, &redaction(), host, budget(), Direction::Fresh, None).await;
+
+    let Err(AgentError::Protocol { reason }) = &refused else {
+        panic!(
+            "a report beside prose is not a report. A reader that finds the first value it can \
+             parse in the text is choosing among candidates, which is the line the fifth \
+             wrapping shape drew, and rig's typed fallback does exactly that. It returned: \
+             {refused:?}"
+        );
+    };
+    assert!(
+        reason.starts_with("the report did not match the schema:")
+            && reason.contains(&format!(
+                "after {} of its turns were returned",
+                fiddle_runtime::agent::RETURNS
+            )),
+        "the same answer was returned twice and then refused, and the refusal says so: {reason}"
+    );
+}
+
+#[tokio::test]
 async fn a_repair_that_answers_prose_is_returned_to_the_shape_and_reports() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([
