@@ -1,28 +1,11 @@
 {
   "providers": {
-    "codex": {
-      "command": "codex exec",
-      "flags": "-s read-only",
-      "extract": "codex-last-message",
-      "schema_roles": {
-        "evaluator": "evaluator",
-        "holistic-reviewer": "holistic"
-      }
-    },
     "phases": {
-      "discover": [
-        "codex"
-      ],
-      "define": [
-        "codex"
-      ],
+      "discover": [],
+      "define": [],
       "develop": [],
-      "develop_holistic": [
-        "codex"
-      ],
-      "deliver": [
-        "codex"
-      ]
+      "develop_holistic": [],
+      "deliver": []
     },
     "timeout": {
       "attended": 120,
@@ -36,8 +19,7 @@
       "general": {
         "template": "evaluator-general",
         "providers": [
-          "claude",
-          "codex"
+          "claude"
         ],
         "calibration": "docs/evaluator-calibration-general.md",
         "antipatterns": "docs/antipatterns-general.md"
@@ -45,8 +27,7 @@
       "infrastructure": {
         "template": "evaluator-infrastructure",
         "providers": [
-          "claude",
-          "codex"
+          "claude"
         ]
       }
     },
