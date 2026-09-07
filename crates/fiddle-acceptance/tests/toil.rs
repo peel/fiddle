@@ -801,7 +801,49 @@ pub struct ToilWorld {
 
 const REPAIRED: &str = support::REPAIRED_FIXTURE;
 
-const THE_EVALUATIONS_DOCUMENTED_BOUND: usize = 12;
+const THE_EVALUATIONS_DOCUMENTED_BOUND: usize = 60;
+
+const THE_AGENTS_DOCUMENTED_BOUND: usize = 160;
+
+const THE_SHIPPED_DOCUMENT: &str = include_str!("../../../workflows/toil.toml");
+
+fn documented_turns(kind: &str) -> Vec<usize> {
+    THE_SHIPPED_DOCUMENT
+        .split("[[steps]]")
+        .skip(1)
+        .filter(|step| {
+            step.lines()
+                .any(|line| line.trim() == format!("kind = \"{kind}\""))
+        })
+        .filter_map(|step| {
+            step.lines()
+                .find_map(|line| line.trim().strip_prefix("max_turns = "))
+                .map(|turns| {
+                    turns
+                        .trim()
+                        .parse::<usize>()
+                        .expect("max_turns is a number")
+                })
+        })
+        .collect()
+}
+
+#[test]
+fn the_bounds_the_lanes_mirror_are_the_documents() {
+    assert_eq!(
+        documented_turns("agent"),
+        vec![THE_AGENTS_DOCUMENTED_BOUND],
+        "the shipped document gives its one agent step the turns this constant names. On \
+         2026-09-05 the shipped 24 was raised to 160 on the evidence of three live agent steps \
+         that took 96, 61 and 111 turns after two exhausted 24 and 120 with zero writes"
+    );
+    assert_eq!(
+        documented_turns("evaluate"),
+        vec![THE_EVALUATIONS_DOCUMENTED_BOUND],
+        "and its one evaluation step the turns this constant names; the shipped 12 was raised \
+         to 60 on three live evaluations that took 14, 29 and 24 turns"
+    );
+}
 
 const A_REQUEST_THAT_OBLIGES_A_TOOL_CALL: &str = "\"tool_choice\":\"required\"";
 
