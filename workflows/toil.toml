@@ -13,7 +13,7 @@ stage = "toil"
 [[steps]]
 kind = "agent"
 prompt = "toil.md"
-max_turns = 24
+max_turns = 160
 
 # The shared change_evaluate. It reads the project and answers a typed verdict.
 # A rejection stops every step below and the run reports a refusal, which is the
@@ -21,7 +21,7 @@ max_turns = 24
 [[steps]]
 kind = "evaluate"
 prompt = "change_evaluate.md"
-max_turns = 12
+max_turns = 60
 
 [[steps]]
 kind = "commit"

@@ -786,7 +786,31 @@ fn bounded_at(max_turns: usize) -> AgentBudget {
     }
 }
 
-const THE_DOCUMENTS_BOUND: usize = 12;
+const THE_DOCUMENTS_BOUND: usize = 60;
+
+const THE_SHIPPED_DOCUMENT: &str = include_str!("../../../workflows/toil.toml");
+
+#[test]
+fn the_evaluations_bound_the_lane_mirrors_is_the_documents() {
+    let document: fiddle_runtime::capability::WorkflowFile =
+        toml::from_str(THE_SHIPPED_DOCUMENT).expect("the shipped document parses");
+    let evaluations: Vec<u32> = document
+        .steps
+        .iter()
+        .filter_map(|step| match step {
+            fiddle_runtime::capability::Step::Evaluate { max_turns, .. } => Some(*max_turns),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        evaluations,
+        vec![THE_DOCUMENTS_BOUND as u32],
+        "the lanes above bound the evaluation at the number the shipped document gives it, and \
+         the two moved apart. On 2026-09-05 the shipped 12 was raised to 60 on the evidence of \
+         three live evaluations that took 14, 29 and 24 turns; a lane still saying 12 would be \
+         measuring a document nobody ships"
+    );
+}
 
 #[tokio::test]
 async fn the_evaluation_answers_inside_the_bound_the_document_gives_it() {
