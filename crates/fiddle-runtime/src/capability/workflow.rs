@@ -407,6 +407,19 @@ where
         Ok(report)
     }
 
+    fn work_log(&self) -> Option<crate::toil::WorkLog> {
+        self.ports
+            .transcripts
+            .as_ref()
+            .and_then(|transcripts| crate::toil::of_transcript(transcripts.path()))
+            .or_else(|| crate::toil::of_receipts(&self.ports.host.receipts()))
+    }
+
+    fn body_carrying_the_log(&self) -> Option<String> {
+        let body = self.params.body.as_deref()?;
+        Some(crate::toil::body_carrying(body, self.work_log().as_ref()))
+    }
+
     fn declined(&self, report: &RepairReport) -> Result<Option<Published>, CapabilityError> {
         let Some(question) = report.question() else {
             return Ok(None);
@@ -602,6 +615,12 @@ where
             ..self.params.clone()
         }
         .observing(work_item);
+        if let Some(work_item) = work_item {
+            params.title = Some(crate::toil::pull_request_title(
+                &work_item.id,
+                work_item.summary.as_deref(),
+            ));
+        }
         for step in &self.steps {
             self.entered
                 .lock()
@@ -634,6 +653,7 @@ where
                     reaching,
                 } => {
                     params.reaching = reaching.clone();
+                    params.body = self.body_carrying_the_log();
                     self.effect(*construct, &mut params).await?
                 }
             }

@@ -21,8 +21,8 @@ const UNREACHABLE: &str = "http://127.0.0.1:9";
 
 const ATTEMPT: &str = "<attempt>";
 
-const CENSUS: [&str; 42] = [
-    "a sweep files a ticket / run cve --json / nothing on stderr",
+const CENSUS: [&str; 43] = [
+    "a sweep files a ticket / run cve --json / a diagnostic on stderr",
     "a sweep files a ticket / run cve --json / the file `reports/cve/<attempt>/report.json`",
     "a sweep files a ticket / run cve --json / the file `reports/filings.json`",
     "a sweep files a ticket / run cve --json / the file `reports/findings.json`",
@@ -30,6 +30,7 @@ const CENSUS: [&str; 42] = [
     "a sweep files a ticket / run cve --json / the file `reports/rescan/scan.json`",
     "a sweep files a ticket / run cve --json / the file `reports/scan/child.json`",
     "a sweep files a ticket / run cve --json / the file `reports/scan/scan.json`",
+    "a sweep files a ticket / run cve --json / the file `reports/transcript/cve-<attempt>.jsonl`",
     "a sweep files a ticket / run cve --json / the file `reports/verdicts.json`",
     "a sweep files a ticket / run cve --json / what it printed on stdout",
     "half a credential / inspect --json / a diagnostic on stderr",
@@ -777,12 +778,7 @@ fn files_under(prefix: &str, root: &Path, relative_to: &Path) -> Vec<Surface> {
                 .strip_prefix(relative_to)
                 .unwrap_or(&path)
                 .components()
-                .map(
-                    |part| match is_attempt_id(part.as_os_str().to_string_lossy().as_ref()) {
-                        true => ATTEMPT.to_string(),
-                        false => part.as_os_str().to_string_lossy().into_owned(),
-                    },
-                )
+                .map(|part| normalised(part.as_os_str().to_string_lossy().as_ref()))
                 .collect::<Vec<_>>()
                 .join("/");
             let bytes = std::fs::read(&path)
@@ -795,6 +791,25 @@ fn files_under(prefix: &str, root: &Path, relative_to: &Path) -> Vec<Surface> {
             }
         })
         .collect()
+}
+
+fn normalised(part: &str) -> String {
+    if is_attempt_id(part) {
+        return ATTEMPT.to_string();
+    }
+    part.split('.')
+        .map(|segment| {
+            segment
+                .split('-')
+                .map(|token| match is_attempt_id(token) {
+                    true => ATTEMPT,
+                    false => token,
+                })
+                .collect::<Vec<_>>()
+                .join("-")
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn is_attempt_id(segment: &str) -> bool {

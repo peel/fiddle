@@ -16,13 +16,15 @@ pub const SWITCH: &str = "FIDDLE_TRANSCRIPT";
 
 pub const ON: &str = "1";
 
+pub const OFF: &str = "0";
+
 pub const DIRECTORY: &str = "transcript";
 
 pub const FIELD_LIMIT: usize = 16_384;
 
 pub const FILE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 
-const WITHHELD: &str = "fiddle holds no credential to redact, so it withholds this text";
+pub const WITHHELD: &str = "fiddle holds no credential to redact, so it withholds this text";
 
 pub const ELAPSED: &str = "elapsed_ms";
 
@@ -34,8 +36,8 @@ pub fn cut_note() -> String {
 
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "{SWITCH} accepts only {ON}, and this run set it to {given:?}; unset it to \
-     record no transcript"
+    "{SWITCH} accepts {ON} or {OFF}, and this run set it to {given:?}; unset it to \
+     record a transcript, or set it to {OFF} to record none"
 )]
 pub struct SwitchUnknown {
     pub given: String,
@@ -43,8 +45,8 @@ pub struct SwitchUnknown {
 
 pub fn requested(value: Option<&str>) -> Result<bool, SwitchUnknown> {
     match value.map(str::trim) {
-        None | Some("") => Ok(false),
-        Some(ON) => Ok(true),
+        None | Some("") | Some(ON) => Ok(true),
+        Some(OFF) => Ok(false),
         Some(given) => Err(SwitchUnknown {
             given: given.to_string(),
         }),
@@ -458,19 +460,32 @@ mod tests {
     const SECRET: &str = "sk-transcript-must-not-appear-4d10";
 
     #[test]
-    fn an_unset_switch_is_off_and_an_unknown_value_is_refused() {
-        assert!(!requested(None).unwrap(), "an unset switch records nothing");
-        assert!(!requested(Some("")).unwrap(), "an empty switch is unset");
-        assert!(!requested(Some("   ")).unwrap(), "so is a switch of spaces");
+    fn an_unset_switch_records_and_only_the_off_value_declines() {
+        assert!(
+            requested(None).unwrap(),
+            "an unset switch records a transcript: a run nobody thought to instrument is \
+             exactly the run whose transcript is wanted afterwards"
+        );
+        assert!(requested(Some("")).unwrap(), "an empty switch is unset");
+        assert!(requested(Some("   ")).unwrap(), "so is a switch of spaces");
         assert!(
             requested(Some(ON)).unwrap(),
-            "{ON} is the one value that is on"
+            "{ON} says on, and says what the default already does"
+        );
+        assert!(
+            !requested(Some(OFF)).unwrap(),
+            "{OFF} is the one value that declines the recording"
         );
 
-        let refused = requested(Some("true")).expect_err("only 1 turns it on");
+        let refused = requested(Some("true")).expect_err("only 1 and 0 are values here");
         assert!(
             refused.to_string().contains("true") && refused.to_string().contains(SWITCH),
             "the refusal must name the variable and the value: {refused}"
+        );
+        assert!(
+            requested(Some("false")).is_err(),
+            "a value that reads like off is refused rather than taken as off, so a typo \
+             cannot quietly stop the recording"
         );
     }
 

@@ -822,10 +822,17 @@ fn a_second_process_reads_the_reply_the_first_asked_for() {
          to be about: {held:?}"
     );
     assert_eq!(
-        held.len(),
+        held.iter().filter(|path| path.ends_with(".jsonl")).count(),
         1,
-        "and that bundle is the whole durable trace a suspended run leaves under this \
-         world's root: {held:?}"
+        "and it recorded one transcript, which every run does since ADR 052 was \
+         reversed on 2026-09-08: {held:?}"
+    );
+    assert_eq!(
+        held.len(),
+        2,
+        "and that bundle beside that transcript is the whole durable trace a suspended \
+         run leaves under this world's root, so a third surface reds this row rather \
+         than joining the tree unnoticed: {held:?}"
     );
     world.delete_local_records();
     assert_eq!(

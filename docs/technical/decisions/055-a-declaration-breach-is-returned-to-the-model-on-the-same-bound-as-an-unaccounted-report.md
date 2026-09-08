@@ -58,7 +58,7 @@ A report wrong in both directions gets the first sentence. The undone work is th
 
 ADR 026's rule is exactly as strict, and the post-run check in `GroupMigration::migrate` is still what ends the attempt when the bound is spent. `MigrationAttempt::undeclared` and `GroupStatus::of` are untouched, so an attempt whose declaration is still wrong on the third report is still published as a draft for a person to judge.
 
-ADR 052's rules hold: `Redaction` is the one path to the transcript, the file is off unless `FIDDLE_TRANSCRIPT=1`, and both bounds are unmoved. ADR 053's accounting behaviour and its bound of two hold. ADR 054's retry is a different layer and is unaffected.
+ADR 052's rules hold: `Redaction` is the one path to the transcript and both bounds are unmoved. The default inverted on 2026-09-08 and ADR 052 records it: the file is written unless `FIDDLE_TRANSCRIPT=0`. ADR 053's accounting behaviour and its bound of two hold. ADR 054's retry is a different layer and is unaffected.
 
 ## Consequences
 

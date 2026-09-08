@@ -155,10 +155,11 @@ wrong turn.
 `max_tokens` and `deadline_ms`, so the first record of the file states every bound
 the attempt holds.
 
-**ADR 052's rules are unchanged.** `Redaction` is the one path to the file, the
-reason is text that passes through it, and the transcript is off unless
-`FIDDLE_TRANSCRIPT=1`. Both records are short, and an attempt writes at most three
-of them, so neither bound moves.
+**ADR 052's rules are unchanged.** `Redaction` is the one path to the file and the
+reason is text that passes through it. The transcript's default inverted on
+2026-09-08 and ADR 052 records it: it is written unless `FIDDLE_TRANSCRIPT=0`.
+Both records are short, and an attempt writes at most three of them, so neither
+bound moves.
 
 ## What ADR 052 said, and what is true now
 

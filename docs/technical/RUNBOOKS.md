@@ -833,7 +833,7 @@ gh api repos/peel/fiddle-effects-acceptance/branches --jq '.[].name' | grep '^fi
 document that loaded yesterday fails today. Delete the key. The table admits
 `image`, `severities` and `max_findings` and nothing else.
 
-**A run exits 2 naming `FIDDLE_TRANSCRIPT`.** The variable accepts only `1`.
+**A run exits 2 naming `FIDDLE_TRANSCRIPT`.** The variable accepts `1` and `0` and nothing else. Unset it to record a transcript, which is the default since 2026-09-08; set it to `0` to record none. A value that reads like off, `false` among them, still exits 2 rather than being taken as off.
 Unset it to record nothing.
 
 **The Jira lane says `the site holds no issue KEY` for an issue you can open in a

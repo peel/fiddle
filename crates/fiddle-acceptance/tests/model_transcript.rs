@@ -13,6 +13,8 @@ const REDACTED: &str = "[redacted]";
 
 const SWITCH: &str = "FIDDLE_TRANSCRIPT";
 
+const OFF: &str = "0";
+
 const ON: &str = "1";
 
 const TRANSCRIPT_DIR: &str = "transcript";
@@ -131,7 +133,7 @@ fn the_switch_off_writes_no_transcript_and_says_nothing() {
     let gateway = StubGateway::serving(a_repair_that_quotes(SENTINEL));
     let s = scenario(&gateway);
 
-    let ran = repair(&s, None);
+    let ran = repair(&s, Some(OFF));
 
     assert_eq!(
         ran.status,
@@ -148,6 +150,41 @@ fn the_switch_off_writes_no_transcript_and_says_nothing() {
     assert!(
         !ran.stderr.contains("transcript") && !ran.stdout.contains("transcript"),
         "a run that wrote no transcript must not mention one: stdout = {} stderr = {}",
+        ran.stdout,
+        ran.stderr
+    );
+}
+
+#[test]
+fn an_unset_switch_writes_the_transcript_the_way_the_on_value_does() {
+    let gateway = StubGateway::serving(a_repair_that_quotes(SENTINEL));
+    let s = scenario(&gateway);
+
+    let ran = repair(&s, None);
+
+    assert_eq!(
+        ran.status,
+        Some(0),
+        "the repair must complete: stdout = {} stderr = {}",
+        ran.stdout,
+        ran.stderr
+    );
+    assert_eq!(
+        transcripts(&s).len(),
+        1,
+        "an unset switch records a transcript since ADR 052 was reversed: a run nobody \
+         thought to instrument is the run whose transcript is wanted afterwards"
+    );
+    assert!(
+        ran.stderr.contains("transcript"),
+        "and the run says it wrote one: stdout = {} stderr = {}",
+        ran.stdout,
+        ran.stderr
+    );
+    assert!(
+        !ran.stdout.contains(SENTINEL) && !ran.stderr.contains(SENTINEL),
+        "the credential reaches no surface of a run that was never asked to record: \
+         stdout = {} stderr = {}",
         ran.stdout,
         ran.stderr
     );

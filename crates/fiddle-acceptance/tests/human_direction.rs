@@ -730,14 +730,27 @@ fn a_suspension_leaks_the_credential_on_no_surface_a_reader_reaches() {
         out.stdout
     );
 
-    assert_eq!(
-        out.stderr.len(),
-        0,
-        "a suspended run writes no diagnostic, so the search below is over nothing: \
-         {}",
+    assert!(
+        out.stderr.contains("transcript"),
+        "since ADR 052 was reversed a run records a transcript and says so, so a \
+         suspended run's stderr carries that notice and the search below is over \
+         something rather than over nothing: {}",
         out.stderr
     );
-    assert!(!out.stderr.contains(SENTINEL));
+    assert!(
+        out.stderr
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .all(|line| line.contains("transcript")),
+        "and it carries that notice and nothing else, so a diagnostic this build \
+         starts writing cannot join stderr unsearched: {}",
+        out.stderr
+    );
+    assert!(
+        !out.stderr.contains(SENTINEL),
+        "the credential reached stderr: {}",
+        out.stderr
+    );
 
     let published = world.all_published_bytes();
     assert!(

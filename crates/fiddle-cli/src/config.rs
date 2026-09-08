@@ -368,6 +368,12 @@ pub struct GitHub {
 
     pub token: EnvRef,
 
+    #[serde(
+        default = "default_branch_prefix",
+        deserialize_with = "reference_prefix"
+    )]
+    pub branch_prefix: String,
+
     #[serde(default = "default_gh")]
     pub cli: ProgramRef,
 
@@ -909,6 +915,20 @@ fn default_max_files_changed() -> usize {
 
 fn default_max_diff_lines() -> usize {
     500
+}
+
+fn default_branch_prefix() -> String {
+    fiddle_runtime::toil::DEFAULT_BRANCH_PREFIX.to_string()
+}
+
+fn reference_prefix<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    let prefix = String::deserialize(deserializer)?;
+    match fiddle_runtime::toil::prefix_is_a_ref(&prefix) {
+        true => Ok(prefix),
+        false => Err(serde::de::Error::custom(
+            fiddle_runtime::toil::BRANCH_PREFIX_MUST_BE_A_REF,
+        )),
+    }
 }
 
 fn default_toil_trigger() -> String {
@@ -2739,6 +2759,81 @@ token = { env = "JIRA_API_TOKEN" }
             toml::from_str::<Config>(&format!("{TOILING}{NAMING_BOTH}")).is_ok(),
             "and the documented spelling is accepted, so this case cannot be \
              passing because every toil table is refused"
+        );
+    }
+
+    fn prefix_of(text: &str) -> String {
+        toml::from_str::<Config>(text)
+            .expect("a document this build reads")
+            .github
+            .expect("this document names a github table")
+            .branch_prefix
+    }
+
+    #[test]
+    fn an_absent_branch_prefix_resolves_to_the_documented_default() {
+        assert_eq!(
+            prefix_of(TOILING),
+            "fiddle",
+            "a github table that names no branch prefix resolves to the documented \
+             `fiddle`, which is the namespace the testbed cleanup and the \
+             effects-repository residue invariants read"
+        );
+        assert_eq!(
+            fiddle_runtime::toil::branch(&prefix_of(TOILING), "ISP-263"),
+            "fiddle/ISP-263",
+            "and the default carries through to the branch a toil run publishes"
+        );
+    }
+
+    #[test]
+    fn the_branch_prefix_the_document_names_reaches_the_branch() {
+        let prefix = prefix_of(&TOILING.replace(
+            "base = \"main\"",
+            "base = \"main\"\nbranch_prefix = \"toil\"",
+        ));
+        assert_eq!(prefix, "toil");
+        assert_eq!(
+            fiddle_runtime::toil::branch(&prefix, "ISP-263"),
+            "toil/ISP-263",
+            "the prefix the document names reaches the branch, so an operator who wants \
+             toil branches outside `fiddle/` can say so"
+        );
+    }
+
+    #[test]
+    fn a_branch_prefix_git_would_refuse_is_refused_by_the_document() {
+        for bad in [
+            "fiddle//toil",
+            "/fiddle",
+            "fiddle/",
+            "fid dle",
+            "fiddle:toil",
+            "",
+        ] {
+            let text = TOILING.replace(
+                "base = \"main\"",
+                &format!("base = \"main\"\nbranch_prefix = \"{bad}\""),
+            );
+            let message = toml::from_str::<Config>(&text)
+                .err()
+                .map(|e| e.message().to_string())
+                .unwrap_or_else(|| {
+                    panic!("{bad:?} cannot be part of a ref, so the document must refuse it")
+                });
+            assert!(
+                message.contains("git ref"),
+                "the refusal must say why the prefix cannot be used, got {message}"
+            );
+        }
+        assert_eq!(
+            prefix_of(&TOILING.replace(
+                "base = \"main\"",
+                "base = \"main\"\nbranch_prefix = \"fiddle/toil\"",
+            )),
+            "fiddle/toil",
+            "and a multi-segment prefix is accepted, so this case cannot be passing \
+             because every prefix is refused"
         );
     }
 

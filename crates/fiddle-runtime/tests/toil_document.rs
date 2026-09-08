@@ -764,6 +764,15 @@ impl World {
         self.ports_running(model, appending("agent"))
     }
 
+    fn ports_recording<M>(&self, model: M, transcript: &Path) -> WorkflowPorts<M> {
+        WorkflowPorts {
+            transcripts: Some(fiddle_runtime::agent::transcript::Transcripts::writing_to(
+                transcript.to_path_buf(),
+            )),
+            ..self.ports_running(model, appending("agent"))
+        }
+    }
+
     fn ports_running<M>(&self, model: M, check: WorkspaceCommand) -> WorkflowPorts<M> {
         WorkflowPorts {
             model,
@@ -839,6 +848,38 @@ impl World {
         files
             .iter()
             .filter_map(|file| std::fs::read_to_string(file).ok())
+            .collect()
+    }
+
+    fn forge_bodies(&self) -> Vec<String> {
+        self.forge_requests()
+            .iter()
+            .filter_map(|request| {
+                serde_json::from_str::<serde_json::Value>(request)
+                    .ok()?
+                    .get("body")?
+                    .as_str()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())?
+                    .get("body")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    fn forge_titles(&self) -> Vec<String> {
+        self.forge_requests()
+            .iter()
+            .filter_map(|request| {
+                serde_json::from_str::<serde_json::Value>(request)
+                    .ok()?
+                    .get("body")?
+                    .as_str()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(body).ok())?
+                    .get("title")?
+                    .as_str()
+                    .map(str::to_string)
+            })
             .collect()
     }
 
@@ -957,6 +998,13 @@ fn observed_issue(status: &str) -> WorkItemState {
     }
 }
 
+fn titled_issue(status: &str, summary: &str) -> WorkItemState {
+    WorkItemState {
+        summary: Some(summary.to_string()),
+        ..observed_issue(status)
+    }
+}
+
 fn described_issue(status: &str, description: &str) -> WorkItemState {
     WorkItemState {
         description: Some(description.to_string()),
@@ -1056,6 +1104,36 @@ where
     M: CompletionModel + 'static,
 {
     ran_document(world, toil(), model, params, observed).await
+}
+
+async fn ran_with<M>(
+    world: &World,
+    ports: WorkflowPorts<M>,
+    params: StepParams,
+    observed: Option<&WorkItemState>,
+) -> Result<Executed, CapabilityError>
+where
+    M: CompletionModel + 'static,
+{
+    let ctx = world.context();
+    let deployment = allowing();
+    let capability = WorkflowCapability::new(
+        WORKFLOW,
+        STAGE,
+        toil(),
+        executor(world, &ctx, &deployment),
+        params,
+        ports,
+    )
+    .expect("this build admits the shipped toil document");
+    capability
+        .execute(ExecutionInput::observed(
+            grant(),
+            "fiddle-demo",
+            INVOCATION_REF,
+            observed,
+        ))
+        .await
 }
 
 async fn ran_document<M>(
@@ -1755,6 +1833,111 @@ async fn a_rejected_evaluation_stops_the_toil_run_before_any_effect() {
         accepted.calls() > 0,
         "an accepted evaluation reaches the forge, so the zero count above counts something \
          that moves"
+    );
+}
+
+#[tokio::test]
+async fn the_pull_request_body_carries_the_log_of_the_work_the_agent_did() {
+    let world = world_holding(ISSUE).await;
+    let transcript = world.dir.path().join("recorded.jsonl");
+    let thrashing = MockCompletionModel::new([
+        MockTurn::tool_call("c1", "run_check", json!({})),
+        MockTurn::tool_call("c2", "run_check", json!({})),
+        MockTurn::tool_call("c3", "run_check", json!({})),
+        MockTurn::text(
+            json!({"changed_files": ["src/lib.rs"], "summary": "made the change",
+                   "claimed_complete": true})
+            .to_string(),
+        ),
+        MockTurn::text(json!({"verdict": "accepted"}).to_string()),
+    ]);
+
+    let earned = ran_with(
+        &world,
+        world.ports_recording(thrashing, &transcript),
+        params(),
+        Some(&observed_issue(READY)),
+    )
+    .await
+    .expect("the shipped toil document runs to an end through the pull request step");
+    assert!(matches!(earned, Executed::Earned(_)), "{earned:?}");
+
+    let recorded = std::fs::read_to_string(&transcript).expect("the run recorded a transcript");
+    assert_eq!(
+        recorded
+            .lines()
+            .filter(|line| line.contains(r#""record":"tool""#))
+            .count(),
+        3,
+        "the premise of this case: the run made three tool calls and recorded each"
+    );
+
+    let bodies = world.forge_bodies();
+    let carried = bodies
+        .iter()
+        .find(|body| body.contains("<details><summary>Log</summary>"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the pull request body must carry the log block, and the forge was sent {bodies:?}"
+            )
+        });
+    assert!(
+        carried.starts_with("opened by fiddle"),
+        "the log is attached to the body the run already wrote, not instead of it: {carried}"
+    );
+    assert!(
+        carried.contains("from the transcript"),
+        "the log must say which source it was built from: {carried}"
+    );
+    assert!(
+        carried.contains("| run_check | 3 | 1 | 2 |"),
+        "the log names the calls, the distinct ones and the repeats: {carried}"
+    );
+    assert!(
+        carried.contains("| 3 | run_check |"),
+        "and the call the run repeated is listed with its count, which is the whole \
+         reason this block exists: {carried}"
+    );
+    assert!(
+        !carried.contains("FIDDLE_TRANSCRIPT"),
+        "a log built from a transcript must not tell the reader to switch on the \
+         transcript: {carried}"
+    );
+}
+
+#[tokio::test]
+async fn the_pull_request_title_carries_the_ticket_and_the_title_the_run_observed() {
+    let world = world_holding(ISSUE).await;
+    let summary = "Raise the merge graph limit";
+    let carried = params()
+        .title
+        .expect("the step parameters carry a title before the run observes anything");
+
+    let earned = ran(
+        &world,
+        accepting(),
+        params(),
+        Some(&titled_issue(READY, summary)),
+    )
+    .await
+    .expect("the shipped toil document runs to an end through the pull request step");
+    assert!(
+        matches!(earned, Executed::Earned(_)),
+        "an accepted change earns the run: {earned:?}"
+    );
+
+    let titles = world.forge_titles();
+    let expected = format!("[{ISSUE}] {summary}");
+    assert!(
+        titles.contains(&expected),
+        "the pull request the run opened must be titled {expected:?}, and the forge was asked \
+         for {titles:?}"
+    );
+    assert!(
+        !titles.contains(&carried),
+        "the title the step parameters carried before the observation, {carried:?}, must not \
+         reach the forge: the observed ticket names the pull request, not the invocation. \
+         The forge was asked for {titles:?}"
     );
 }
 

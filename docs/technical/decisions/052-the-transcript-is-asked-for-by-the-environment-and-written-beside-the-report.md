@@ -1,7 +1,7 @@
 # 052 — The transcript is asked for by the environment, and written beside the report
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/agent/transcript.rs, Transcripts, TranscriptHook, Record, Wrote, transcript::SWITCH, transcript::requested, transcript::FIELD_LIMIT, transcript::FILE_LIMIT_BYTES, Redaction::redacted, Redacted, agent::attempt_briefed, agent::offered, render::transcript_note, crates/fiddle-acceptance/tests/model_transcript.rs, the_switch_off_writes_no_transcript_and_says_nothing, the_switch_on_writes_the_transcript_and_says_it_did, the_transcript_carries_the_model_response_and_not_the_credential, no_host_fact_reaches_the_transcript, a_switch_value_the_run_cannot_read_is_refused_before_any_work, transcript::ELAPSED, transcript::TOOK, transcript::FINISH, transcript::finish_reason, TranscriptModel, TranscriptHook::took, State::elapsed, every_record_carries_an_elapsed_value_that_never_decreases, the_finish_reason_of_every_response_reaches_the_transcript, a_tool_record_says_how_long_the_tool_took, a_finish_reason_is_read_from_the_response_the_provider_returned
+Cites: crates/fiddle-runtime/src/agent/transcript.rs, Transcripts, TranscriptHook, Record, Wrote, transcript::SWITCH, transcript::requested, transcript::FIELD_LIMIT, transcript::FILE_LIMIT_BYTES, Redaction::redacted, Redacted, agent::attempt_briefed, agent::offered, render::transcript_note, crates/fiddle-acceptance/tests/model_transcript.rs, the_switch_off_writes_no_transcript_and_says_nothing, the_switch_on_writes_the_transcript_and_says_it_did, the_transcript_carries_the_model_response_and_not_the_credential, no_host_fact_reaches_the_transcript, a_switch_value_the_run_cannot_read_is_refused_before_any_work, transcript::ELAPSED, transcript::TOOK, transcript::FINISH, transcript::finish_reason, TranscriptModel, TranscriptHook::took, State::elapsed, every_record_carries_an_elapsed_value_that_never_decreases, the_finish_reason_of_every_response_reaches_the_transcript, a_tool_record_says_how_long_the_tool_took, a_finish_reason_is_read_from_the_response_the_provider_returned, requested, OFF, WITHHELD, Redaction, CENSUS, normalised, is_attempt_id, no_surface_a_reader_sees_carries_the_jira_credential, a_suspension_leaks_the_credential_on_no_surface_a_reader_reaches, a_second_process_reads_the_reply_the_first_asked_for, the_switch_off_writes_no_transcript_and_says_nothing, an_unset_switch_writes_the_transcript_the_way_the_on_value_does, an_unset_switch_records_and_only_the_off_value_declines, crates/fiddle-acceptance/tests/jira_credential.rs
 
 ## Context
 
@@ -13,7 +13,7 @@ A probe cannot reach this shape. The request that fails is fiddle's own: six too
 
 ## Decision
 
-`FIDDLE_TRANSCRIPT=1` records what the model was sent and what it returned. Any other non-empty value refuses the run. An unset or empty variable records nothing.
+`FIDDLE_TRANSCRIPT` records what the model was sent and what it returned. An unset or empty variable records the transcript, and so does `1`. Only `0` declines it. Any other non-empty value refuses the run. REVERSED on 2026-09-08; the section at the end of this record carries the reversal and the reason.
 
 The transcript is written to `<report.dir>/transcript/<slug>-<token>.jsonl`. One JSON object per line. Every line is flushed as it is written.
 
@@ -114,3 +114,77 @@ The hook events carry canonical content, usage and a message id, and no finish r
 **Rig exposes no retry, and none is invented.** `AgentRun` increments `current_turn` before every model call, so a `ModelTurnAction::Retry` is sent under the next turn number and two `sent` records cannot share one. `HookContext` carries a run id, a turn, a streaming flag, an agent name and a scratchpad; `CompletionCall` carries the prompt, the history length and the turn. Nothing in either says that a request is a second attempt at an earlier turn. fiddle installs no hook that retries a turn, so no run it makes retries one today. An invented field is worse than a missing one, so the field is not added.
 
 **The bound and the redaction are unchanged.** Time and a reason add tens of bytes to a line and repeat nothing. `elapsed_ms` and `duration_ms` are numbers, so no new text reaches the file and `Record::rendered` is still the one redaction path. `TranscriptModel` reads one field of the raw response and records no other part of it.
+
+## REVERSED on 2026-09-08: the transcript is recorded unless it is declined
+
+`requested` now answers `true` for an unset variable, an empty one and `1`, and
+`false` only for `0`. Every other non-empty value still exits 2.
+
+**What forced it.** A toil run's pull request body carries a log of the work the
+agent did, so a reader can see how the run reached its result. `WorkLog` is built
+from the transcript when one exists and from `ToolReceipts` when one does not, and
+`ToolReceipt` holds a tool name, one of four outcome words and a duration and no
+arguments. So a receipts-only log can say a run made 143 `search_files` calls and
+cannot say that 46 of them repeated a query already answered or that 62 matched
+nothing. That second sentence is the one worth reading, and only `args` carries it.
+
+**Why a default and not a flag on the command line.** The runs worth inspecting are
+the ones nobody expected to inspect. A switch that must be set in advance is set
+after the surprising run, which is too late; the transcript cannot be recorded
+retrospectively.
+
+**What this does not change.** `Redaction` is still the one path to the file, and
+it still fails closed: `Redaction::redacted` answers `None` when the run holds no
+credential, and `safe` then writes `WITHHELD` in place of every text field. So
+default-on adds no path by which a credential reaches the file. `FIELD_LIMIT` and
+`FILE_LIMIT_BYTES` are unmoved, so one run writes at most 8 MB.
+
+A transcript whose text is withheld names no tool, and `of_transcript` refuses such
+a file rather than summarising it. Rendering it would print the withholding notice
+in the column where a tool name belongs, which is an answer in the shape of a
+complete one.
+
+**What it costs, and this is not solved.** Nothing prunes
+`{report_dir}/transcript/`. `Cleanup::Always` governs the workspace and not the
+report directory, so transcripts accumulate at up to 8 MB each for the life of a
+deployment. Under the previous default that cost was chosen per run; it is now
+standing. Recorded here deliberately rather than fixed: retention is `fiddle-yv24`.
+
+**A value that reads like off is still refused.** `FIDDLE_TRANSCRIPT=false` exits 2
+and names the value. Reading `false` as `0` would let a typo stop a recording that
+the operator believed was running, which is the failure this switch was strict
+about before the default moved and stays strict about after.
+
+### The transcript is now a swept surface, and four lanes said so
+
+Flipping the default made every run write a file that had been written only when
+asked, and four acceptance lanes reddened. None of them was a stale expectation.
+
+`no_surface_a_reader_sees_carries_the_jira_credential` pins the set of surfaces it
+sweeps for the Jira credential, for the stated reason that a surface this build
+starts writing cannot join the tree unsearched. It reddened, which is the lane
+working. `reports/transcript/cve-<attempt>.jsonl` is now in `CENSUS` and the sweep
+runs over it. The census normaliser had to learn an attempt id inside a filename,
+because it replaced whole path components only and a transcript is named
+`{slug}-{attempt}.jsonl`.
+
+This matters more than a list entry. `Redaction` holds one credential, the model
+gateway's. It does not hold the Jira credential, the forge token or anything else,
+so nothing in `Record::rendered` removes those from a transcript. What keeps them
+out is that they do not appear in what the model was sent or returned, and the
+sweep is the thing that checks it. Before this reversal that check ran over a file
+most runs did not write.
+
+`a_suspension_leaks_the_credential_on_no_surface_a_reader_reaches` asserted a
+suspended run's stderr was empty, and said the emptiness was why the credential
+search below was safe. A run now says it wrote a transcript, so stderr carries that
+notice. The row asserts instead that stderr carries the notice and nothing else and
+does not carry the credential, so the search is over something rather than over
+nothing, and an unaccounted diagnostic still reds it.
+
+`a_second_process_reads_the_reply_the_first_asked_for` pinned a suspended run's
+durable trace at one file and now pins the bundle beside one transcript, so a third
+surface still reds it. `the_switch_off_writes_no_transcript_and_says_nothing` now
+sets `0` rather than unsetting the variable, and
+`an_unset_switch_writes_the_transcript_the_way_the_on_value_does` holds the new
+default from the command line.

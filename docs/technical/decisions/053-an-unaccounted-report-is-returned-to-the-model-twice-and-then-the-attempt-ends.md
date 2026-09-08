@@ -75,7 +75,7 @@ Each return writes one `returned` record: the turn it refused, which return it w
 
 The turn numbers show the return without the record. `AgentRun` increments its turn before every model call. So a returned turn 3 is followed by turn 4, and two `sent` records never share one number. ADR 052 said no run fiddle makes retries a turn; one does now, and the `returned` record is what says so.
 
-Nothing in ADR 052 changes. `Redaction` is the one path to the file, and the reason is text that passes through it. The record adds three numbers and one short reason to a run, so neither bound moves. The transcript is still off unless `FIDDLE_TRANSCRIPT=1`.
+Nothing in ADR 052 changes. `Redaction` is the one path to the file, and the reason is text that passes through it. The record adds three numbers and one short reason to a run, so neither bound moves. The transcript's default inverted on 2026-09-08 and ADR 052 records it: it is written unless `FIDDLE_TRANSCRIPT=0`.
 
 ## Consequences
 

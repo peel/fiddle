@@ -307,7 +307,7 @@ struct JiraUnusable(JiraError, String);
 #[error(transparent)]
 #[diagnostic(
     code(fiddle::transcript::switch_unknown),
-    help("export FIDDLE_TRANSCRIPT=1 to record the transcript, or unset it")
+    help("unset FIDDLE_TRANSCRIPT to record the transcript, or export FIDDLE_TRANSCRIPT=0 to record none")
 )]
 struct TranscriptSwitchUnknown(transcript::SwitchUnknown);
 
@@ -1452,12 +1452,15 @@ fn build_capability<'a>(
                 StepParams {
                     repo: Some(github.repo.to_string()),
                     head_owner: Some(github.repo.owner.clone()),
-                    branch: Some(fiddle_runtime::branch_name(
-                        &config.project.name,
-                        &reference.as_str(),
+                    branch: Some(fiddle_runtime::toil::branch(
+                        &github.branch_prefix,
+                        reference.value(),
                     )),
                     base: Some(github.base.clone()),
-                    title: Some(format!("{}: {}", config.project.name, reference.as_str())),
+                    title: Some(fiddle_runtime::toil::pull_request_title(
+                        reference.value(),
+                        None,
+                    )),
                     body: Some(format!(
                         "Opened by fiddle for {} in project {}.\n\n\
                          The steps this run took are the steps {} names, in the \
