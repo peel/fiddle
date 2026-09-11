@@ -89,6 +89,8 @@ struct ListedAnnotation {
 
 pub const CHANGES_REQUESTED: &str = "CHANGES_REQUESTED";
 
+pub const APPROVED: &str = "APPROVED";
+
 pub async fn read_reviews(
     gh: &GhCli,
     repo: &str,

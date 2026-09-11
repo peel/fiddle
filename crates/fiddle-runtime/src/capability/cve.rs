@@ -238,6 +238,32 @@ pub fn entitled(author_association: &str) -> bool {
     ENTITLED.contains(&author_association.to_ascii_uppercase().as_str())
 }
 
+pub fn cited(login: &str, citing: &[String]) -> bool {
+    let base = login.strip_suffix("[bot]").unwrap_or(login);
+    if base.is_empty() {
+        return false;
+    }
+    let named = base.to_ascii_lowercase();
+    citing.iter().any(|text| names_the_account(text, &named))
+}
+
+fn names_the_account(text: &str, named: &str) -> bool {
+    let spoken = text.to_ascii_lowercase();
+    let bytes = spoken.as_bytes();
+    spoken.match_indices(named).any(|(at, _)| {
+        let opens = at == 0 || !bytes[at - 1].is_ascii_alphanumeric();
+        let ends = at + named.len();
+        let closes = ends >= bytes.len() || !bytes[ends].is_ascii_alphanumeric();
+        opens && closes
+    })
+}
+
+pub fn steers(review: &crate::github::Reviewed, head: &str) -> bool {
+    !review.state.eq_ignore_ascii_case(crate::github::APPROVED)
+        && entitled(&review.author_association)
+        && review.commit_id == head
+}
+
 impl HumanSaid {
     pub fn quotes(said: &[HumanSaid], sentence: &str) -> bool {
         let wanted = squeezed(sentence);

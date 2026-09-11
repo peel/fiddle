@@ -298,12 +298,25 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
-        let mut said = self.conversation(&approved).await?;
-        said.extend(self.conversation(&unproved).await?);
         let (mut asked, reviewed) = self.reviews(&approved).await?;
-        said.extend(reviewed);
         let (also_asked, also_reviewed) = self.reviews(&unproved).await?;
         asked.extend(also_asked);
+
+        let citing: Vec<String> = asked
+            .iter()
+            .map(|it| it.body.clone())
+            .chain(
+                reviewed
+                    .iter()
+                    .chain(also_reviewed.iter())
+                    .filter(|it| it.entitled)
+                    .map(|it| it.body.clone()),
+            )
+            .collect();
+
+        let mut said = self.conversation(&approved, &citing).await?;
+        said.extend(self.conversation(&unproved, &citing).await?);
+        said.extend(reviewed);
         said.extend(also_reviewed);
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
@@ -585,17 +598,9 @@ where
             .into_iter()
             .filter(|it| !it.body.trim().is_empty())
             .collect();
-        let asks = |it: &crate::github::Reviewed| {
-            it.state
-                .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED)
-        };
         let asked = spoken
             .iter()
-            .filter(|it| {
-                asks(it)
-                    && crate::capability::entitled(&it.author_association)
-                    && it.commit_id == head
-            })
+            .filter(|it| crate::capability::steers(it, &head))
             .map(|it| ChangesRequested {
                 author: it.author.login.clone(),
                 body: it.body.clone(),
@@ -603,7 +608,7 @@ where
             .collect();
         let said = spoken
             .iter()
-            .filter(|it| !asks(it))
+            .filter(|it| !crate::capability::steers(it, &head))
             .map(|it| HumanSaid {
                 author: it.author.login.clone(),
                 body: it.body.clone(),
@@ -616,6 +621,7 @@ where
     pub async fn conversation(
         &self,
         approved: &Approved,
+        reviewed: &[String],
     ) -> Result<Vec<HumanSaid>, CapabilityError> {
         let Some(number) = approved.reused() else {
             return Ok(Vec::new());
@@ -633,15 +639,26 @@ where
         )
         .await;
         match read {
-            Ok(conversation) => Ok(conversation
-                .into_iter()
-                .filter(|it| !it.is_bot)
-                .map(|it| HumanSaid {
-                    author: it.author.login,
-                    entitled: crate::capability::entitled(&it.author_association),
-                    body: it.body,
-                })
-                .collect()),
+            Ok(conversation) => {
+                let mut citing: Vec<String> = reviewed.to_vec();
+                citing.extend(
+                    conversation
+                        .iter()
+                        .filter(|it| {
+                            !it.is_bot && crate::capability::entitled(&it.author_association)
+                        })
+                        .map(|it| it.body.clone()),
+                );
+                Ok(conversation
+                    .into_iter()
+                    .filter(|it| !it.is_bot || crate::capability::cited(&it.author.login, &citing))
+                    .map(|it| HumanSaid {
+                        author: it.author.login,
+                        entitled: crate::capability::entitled(&it.author_association),
+                        body: it.body,
+                    })
+                    .collect())
+            }
             Err(_) => Ok(Vec::new()),
         }
     }

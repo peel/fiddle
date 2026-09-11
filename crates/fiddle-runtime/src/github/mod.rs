@@ -13,7 +13,7 @@ pub use checks::{
 pub use cli::{GhCli, GhError, GhResponse};
 pub use comments::{
     read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated,
-    HumanResponse, Reviewed, CHANGES_REQUESTED,
+    HumanResponse, Reviewed, APPROVED, CHANGES_REQUESTED,
 };
 pub use pulls::{
     find_labelled_pull_request, pull_request_body_target, pull_request_target,

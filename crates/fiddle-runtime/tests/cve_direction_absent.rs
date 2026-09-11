@@ -249,7 +249,7 @@ async fn ask(ctx: &EffectContext, approved: &Approved) -> Asked {
     );
     Asked {
         reviews: capability.reviews(approved).await,
-        conversation: capability.conversation(approved).await,
+        conversation: capability.conversation(approved, &[]).await,
     }
 }
 

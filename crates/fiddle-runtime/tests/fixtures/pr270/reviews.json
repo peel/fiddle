@@ -1,0 +1,42 @@
+[
+  {
+    "id": 5178568036,
+    "node_id": "PRR_kwDOMNXzI88AAAABNKqtZA",
+    "user": {
+      "login": "spenes",
+      "id": 88285759,
+      "node_id": "MDQ6VXNlcjg4Mjg1NzU5",
+      "avatar_url": "https://avatars.githubusercontent.com/u/88285759?u=7cc4dbde1f97f7c55a86858874efc2ebac7ad37f&v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/spenes",
+      "html_url": "https://github.com/spenes",
+      "followers_url": "https://api.github.com/users/spenes/followers",
+      "following_url": "https://api.github.com/users/spenes/following{/other_user}",
+      "gists_url": "https://api.github.com/users/spenes/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/spenes/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/spenes/subscriptions",
+      "organizations_url": "https://api.github.com/users/spenes/orgs",
+      "repos_url": "https://api.github.com/users/spenes/repos",
+      "events_url": "https://api.github.com/users/spenes/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/spenes/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "Commit message and PR description is missing.\n\nClaude's comment 1 and 2 seems legit ones. Should we do them ?",
+    "state": "COMMENTED",
+    "html_url": "https://github.com/snowplow-incubator/snowplow-identities/pull/270#pullrequestreview-5178568036",
+    "pull_request_url": "https://api.github.com/repos/snowplow-incubator/snowplow-identities/pulls/270",
+    "author_association": "MEMBER",
+    "_links": {
+      "html": {
+        "href": "https://github.com/snowplow-incubator/snowplow-identities/pull/270#pullrequestreview-5178568036"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/snowplow-incubator/snowplow-identities/pulls/270"
+      }
+    },
+    "submitted_at": "2026-09-11T12:22:55Z",
+    "commit_id": "3acb655c27844efd9bbeb7f91691b2c6b71ce4ea"
+  }
+]
