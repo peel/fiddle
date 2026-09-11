@@ -98,13 +98,15 @@ pub enum Executed {
     Earned(EvidenceRef),
 
     Rejected { findings: Vec<Published> },
+
+    Settled { reason: Published },
 }
 
 impl Executed {
     pub fn earned(&self) -> Option<&EvidenceRef> {
         match self {
             Executed::Earned(evidence) => Some(evidence),
-            Executed::Rejected { .. } => None,
+            Executed::Rejected { .. } | Executed::Settled { .. } => None,
         }
     }
 }

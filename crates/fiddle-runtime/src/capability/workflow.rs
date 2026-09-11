@@ -272,6 +272,20 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
     }
 }
 
+enum Steered {
+    NothingPublishedYet,
+    By(String),
+    Settled { repo: String, pr: u64 },
+}
+
+pub const NOTHING_ASKED_FOR: &str =
+    "a pull request is already open for this work and nobody has asked for anything on it, \
+     so there is nothing to change";
+
+pub fn nothing_asked_for(repo: &str, pr: u64) -> String {
+    format!("{NOTHING_ASKED_FOR}: {repo}#{pr}")
+}
+
 pub const STOPPED_BY_A_QUESTION: &str =
     "the attempt changed nothing and named a question the ticket has to answer before the \
      change can be made";
@@ -486,7 +500,7 @@ where
         }
     }
 
-    async fn steer(&self) -> Result<Option<String>, CapabilityError> {
+    async fn steer(&self) -> Result<Steered, CapabilityError> {
         let (Some(repo), Some(head_owner), Some(branch), Some(base)) = (
             self.params.repo.as_deref(),
             self.params.head_owner.as_deref(),
@@ -510,7 +524,7 @@ where
             Err(unreadable) => return Err(CapabilityError::Forge(unreadable)),
         };
         let Some(open) = open else {
-            return Ok(None);
+            return Ok(Steered::NothingPublishedYet);
         };
 
         let reviews = crate::github::read_reviews(
@@ -532,10 +546,15 @@ where
         .await
         .map_err(CapabilityError::Forge)?;
 
-        Ok(
-            crate::capability::Direction::read_from(reviews, conversation, &open.head_sha)
-                .rendered(),
-        )
+        let direction =
+            crate::capability::Direction::read_from(reviews, conversation, &open.head_sha);
+        Ok(match direction.rendered() {
+            Some(task) => Steered::By(task),
+            None => Steered::Settled {
+                repo: repo.to_string(),
+                pr: open.number,
+            },
+        })
     }
 
     async fn commit(&self, params: &mut StepParams) -> Result<(), CapabilityError> {
@@ -687,7 +706,15 @@ where
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(params.earned.clone());
             match step {
-                Ready::Steer => steered = self.steer().await?,
+                Ready::Steer => match self.steer().await? {
+                    Steered::NothingPublishedYet => steered = None,
+                    Steered::By(task) => steered = Some(task),
+                    Steered::Settled { repo, pr } => {
+                        return Ok(Executed::Settled {
+                            reason: Published::of(nothing_asked_for(&repo, pr)),
+                        })
+                    }
+                },
                 Ready::Agent { task, max_turns } => {
                     let report = self
                         .attempt(

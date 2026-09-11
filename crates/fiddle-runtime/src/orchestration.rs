@@ -262,6 +262,24 @@ pub async fn run(ctx: &RunContext<'_>) -> RunReport {
                 evidence_failure: None,
             }
         }
+        Ok(Executed::Settled { reason }) => {
+            ctx.journal.record_effect(capability_id, "settled", &[]);
+            let observed = ctx.capability.receipts();
+            RunReport {
+                outcome: RunOutcome::Completed,
+                next_action: NextAction::Complete,
+                executions: vec![execution(capability_id, "completed", observed.clone())],
+                progress: vec![progress(
+                    capability_id,
+                    ctx.capability.stage(),
+                    "completed",
+                    reason,
+                    observed,
+                )],
+                observations: with_publication(view, ctx.capability),
+                evidence_failure: None,
+            }
+        }
         Ok(Executed::Rejected { findings }) => {
             ctx.journal.record_effect(capability_id, "rejected", &[]);
             let observed = ctx.capability.receipts();

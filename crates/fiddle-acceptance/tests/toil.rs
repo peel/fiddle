@@ -2586,6 +2586,9 @@ fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_ta
          request on it: {first}"
     );
 
+    world
+        .github()
+        .a_member_reviewed(&published, A_MEMBER_REVIEW_OF_270);
     world.forgets_that_the_work_was_completed();
     assert_eq!(
         world.recorded_marker(),
@@ -2693,6 +2696,9 @@ fn a_rerun_whose_tree_changed_publishes_the_commit_that_tree_makes() {
     );
 
     world.github().delete_branch(&branch);
+    world
+        .github()
+        .a_member_reviewed(&published, A_MEMBER_REVIEW_OF_270);
     world.forgets_that_the_work_was_completed();
 
     let rerun = world.run_toil(REFERENCE);
@@ -2736,6 +2742,9 @@ fn a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_publis
          request on it: {first}"
     );
 
+    world
+        .github()
+        .a_member_reviewed(&published, A_MEMBER_REVIEW_OF_270);
     world.forgets_that_the_work_was_completed();
 
     let rerun = world.run_toil(REFERENCE);
@@ -3977,6 +3986,68 @@ fn a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agen
     assert!(
         carrying("A person reviewed this pull request and asked for changes") > 0,
         "the review reaches the agent framed as work to do and not as chatter"
+    );
+}
+
+#[test]
+fn a_rerun_over_a_pull_request_nobody_reviewed_runs_no_agent_and_reports_completion() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(an_accepted_change())
+            .chain(an_accepted_change())
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: a pull request is open for this ticket: {first}"
+    );
+    let after_one = world.model_calls();
+    let published = world.github().head_of(&world.github().only_branch());
+
+    world.forgets_that_the_work_was_completed();
+    let rerun = world.run_toil(REFERENCE);
+    let second = payload_of(&rerun);
+
+    assert_eq!(
+        second["outcome"], "completed",
+        "a rerun with nothing asked of it completes rather than failing: {second}"
+    );
+    assert_eq!(
+        world.model_calls() - after_one,
+        1,
+        "and it pays for its eligibility review alone; the agent, the report and the \
+         evaluation are never reached, so a runner triggered on every event does not \
+         redo the change: {second}"
+    );
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "no second pull request: {second}"
+    );
+    assert_eq!(
+        world.github().head_of(&world.github().only_branch()),
+        published,
+        "and the branch still points at what the first run published"
+    );
+
+    assert_eq!(
+        world.recorded_marker(),
+        None,
+        "a settled run earns no change, so it records no completion; the next run reads \
+         the forge again rather than a local memory of this one"
+    );
+
+    assert!(
+        !world.model_prompts().is_empty(),
+        "and this world can still reach the gateway, so the count above is a run that \
+         chose not to spend rather than a run that could not; \
+         `a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief` \
+         is the counter-case where the same rerun does pay for the agent"
     );
 }
 
