@@ -238,6 +238,86 @@ pub fn entitled(author_association: &str) -> bool {
     ENTITLED.contains(&author_association.to_ascii_uppercase().as_str())
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Direction {
+    pub asked: Vec<ChangesRequested>,
+    pub said: Vec<HumanSaid>,
+}
+
+impl Direction {
+    pub fn read_from(
+        reviews: Vec<crate::github::Reviewed>,
+        conversation: Vec<crate::github::HumanResponse>,
+        head: &str,
+    ) -> Self {
+        let spoken: Vec<_> = reviews
+            .into_iter()
+            .filter(|it| !it.body.trim().is_empty())
+            .collect();
+        let asked: Vec<ChangesRequested> = spoken
+            .iter()
+            .filter(|it| steers(it, head))
+            .map(|it| ChangesRequested {
+                author: it.author.login.clone(),
+                body: it.body.clone(),
+            })
+            .collect();
+        let mut said: Vec<HumanSaid> = spoken
+            .iter()
+            .filter(|it| !steers(it, head))
+            .map(|it| HumanSaid {
+                author: it.author.login.clone(),
+                body: it.body.clone(),
+                entitled: entitled(&it.author_association),
+            })
+            .collect();
+
+        let mut citing: Vec<String> = asked.iter().map(|it| it.body.clone()).collect();
+        citing.extend(
+            said.iter()
+                .filter(|it| it.entitled)
+                .map(|it| it.body.clone()),
+        );
+        citing.extend(
+            conversation
+                .iter()
+                .filter(|it| !it.is_bot && entitled(&it.author_association))
+                .map(|it| it.body.clone()),
+        );
+
+        said.extend(
+            conversation
+                .into_iter()
+                .filter(|it| !it.is_bot || cited(&it.author.login, &citing))
+                .map(|it| HumanSaid {
+                    author: it.author.login,
+                    entitled: entitled(&it.author_association),
+                    body: it.body,
+                }),
+        );
+
+        Direction { asked, said }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.asked.is_empty() && self.said.is_empty()
+    }
+
+    pub fn rendered(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut sections = Vec::new();
+        if !self.asked.is_empty() {
+            sections.push(review_task(&self.asked));
+        }
+        if !self.said.is_empty() {
+            sections.push(conversation_task(&self.said));
+        }
+        Some(sections.join("\n\n"))
+    }
+}
+
 pub fn cited(login: &str, citing: &[String]) -> bool {
     let base = login.strip_suffix("[bot]").unwrap_or(login);
     if base.is_empty() {

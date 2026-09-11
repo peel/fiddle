@@ -45,6 +45,7 @@ pub enum Step {
         reaching: Option<String>,
     },
     Commit {},
+    Steer {},
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -173,6 +174,7 @@ enum Ready {
         reaching: Option<String>,
     },
     Commit,
+    Steer,
 }
 
 pub struct WorkflowCapability<'a, M> {
@@ -219,11 +221,15 @@ fn quoted_ticket(admitted: Option<&Eligible>, work_item: Option<&WorkItemState>)
     }
 }
 
-fn task_carrying(task: &str, quoted: Option<&String>) -> String {
-    match quoted {
-        Some(quoted) => format!("{task}\n\n{quoted}"),
-        None => task.to_string(),
+fn task_carrying(task: &str, quoted: Option<&String>, steered: Option<&String>) -> String {
+    let mut sections = vec![task.to_string()];
+    if let Some(quoted) = quoted {
+        sections.push(quoted.clone());
     }
+    if let Some(steered) = steered {
+        sections.push(steered.clone());
+    }
+    sections.join("\n\n")
 }
 
 fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
@@ -248,6 +254,7 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
             },
         }),
         Step::Commit {} => Ok(Ready::Commit),
+        Step::Steer {} => Ok(Ready::Steer),
         Step::Effect { name, reaching } => {
             let descriptor = registry::describe(name)
                 .ok_or_else(|| WorkflowRefusal::Unperformable { name: name.clone() })?;
@@ -479,6 +486,58 @@ where
         }
     }
 
+    async fn steer(&self) -> Result<Option<String>, CapabilityError> {
+        let (Some(repo), Some(head_owner), Some(branch), Some(base)) = (
+            self.params.repo.as_deref(),
+            self.params.head_owner.as_deref(),
+            self.params.branch.as_deref(),
+            self.params.base.as_deref(),
+        ) else {
+            return Err(CapabilityError::Unsteerable {
+                reason: "the run names no repository, owner, branch and base, so the pull \
+                         request its direction would be read from cannot be addressed"
+                    .to_string(),
+            });
+        };
+
+        let gh = self.executor.gh().map_err(CapabilityError::Forge)?;
+        let cancel = self.executor.cancel();
+
+        let found =
+            crate::github::open_pull_request_on(gh, repo, head_owner, branch, base, cancel).await;
+        let open = match found {
+            Ok(open) => open,
+            Err(unreadable) => return Err(CapabilityError::Forge(unreadable)),
+        };
+        let Some(open) = open else {
+            return Ok(None);
+        };
+
+        let reviews = crate::github::read_reviews(
+            gh,
+            repo,
+            open.number,
+            crate::human::CONVERSATION_PAGES,
+            cancel,
+        )
+        .await
+        .map_err(CapabilityError::Forge)?;
+        let conversation = crate::github::read_conversation(
+            gh,
+            repo,
+            open.number,
+            crate::human::CONVERSATION_PAGES,
+            cancel,
+        )
+        .await
+        .map_err(CapabilityError::Forge)?;
+
+        Ok(
+            crate::capability::Direction::read_from(reviews, conversation, &open.head_sha)
+                .rendered(),
+        )
+    }
+
     async fn commit(&self, params: &mut StepParams) -> Result<(), CapabilityError> {
         let workspace = Arc::clone(&self.ports.host.workspace);
         let changed = workspace.changed_files()?;
@@ -610,6 +669,7 @@ where
             });
         }
         let quoted = quoted_ticket(self.qualification.as_ref(), work_item);
+        let mut steered: Option<String> = None;
         let mut params = StepParams {
             earned: StepOutputs::default(),
             ..self.params.clone()
@@ -627,9 +687,13 @@ where
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(params.earned.clone());
             match step {
+                Ready::Steer => steered = self.steer().await?,
                 Ready::Agent { task, max_turns } => {
                     let report = self
-                        .attempt(&task_carrying(task, quoted.as_ref()), *max_turns)
+                        .attempt(
+                            &task_carrying(task, quoted.as_ref(), steered.as_ref()),
+                            *max_turns,
+                        )
                         .await?;
                     if let Some(finding) = self.declined(&report)? {
                         return Ok(Executed::Rejected {
@@ -640,7 +704,7 @@ where
                 }
                 Ready::Evaluate { task, max_turns } => {
                     self.evaluate(
-                        &task_carrying(task, quoted.as_ref()),
+                        &task_carrying(task, quoted.as_ref(), steered.as_ref()),
                         *max_turns,
                         &mut params,
                     )

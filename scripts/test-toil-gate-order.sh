@@ -345,7 +345,7 @@ echo "and the real tree passes"
 OUT=$("$SCRIPT_DIR/check-toil-gate-order.sh" --root "$SCRIPT_DIR/.." 2>&1); RC=$?
 assert_exit "this repository's own document and four records agree" 0 "$RC"
 assert_contains "and the pass names the ordering it compared" "TOIL GATE ORDER: ok" "$OUT"
-assert_contains "and it names this document's own denominators" "names 7 steps and 4 effect steps" "$OUT"
+assert_contains "and it names this document's own denominators" "names 8 steps and 4 effect steps" "$OUT"
 
 echo
 echo "  $PASS passed, $FAIL failed"

@@ -1238,6 +1238,10 @@ impl ToilWorld {
         let stub = scenario.dir().join("gh-stub");
         std::fs::create_dir_all(stub.join("script")).unwrap();
         std::fs::create_dir_all(stub.join("config")).unwrap();
+        for collection in ["reviews", "issue-comments"] {
+            std::fs::create_dir_all(stub.join(collection)).unwrap();
+            std::fs::write(stub.join(collection).join("page-1.json"), "[]").unwrap();
+        }
 
         let remote = stub.join("remote.git");
         std::fs::create_dir_all(&remote).unwrap();

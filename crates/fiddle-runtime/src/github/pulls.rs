@@ -612,3 +612,77 @@ mod tests {
         assert_eq!(encode("-._~AZaz09"), "-._~AZaz09");
     }
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SteerablePullRequest {
+    pub number: u64,
+    pub head_sha: String,
+}
+
+pub async fn open_pull_request_on(
+    gh: &GhCli,
+    repo: &str,
+    head_owner: &str,
+    head: &str,
+    base: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<SteerablePullRequest>, GhError> {
+    let path = format!(
+        "/repos/{repo}/pulls?head={}&base={}&state=open",
+        encode(&format!("{head_owner}:{head}")),
+        encode(base),
+    );
+    let response = gh.api("GET", &path, None, cancel).await?;
+    let listed = response.body.as_array().ok_or_else(|| {
+        GhError::Malformed(format!(
+            "{path} answered {} with something that is not a list",
+            response.status
+        ))
+    })?;
+    let Some(first) = listed.first() else {
+        return Ok(None);
+    };
+    let number = first["number"].as_u64().ok_or_else(|| {
+        GhError::Malformed(format!("{path} answered a pull request with no number"))
+    })?;
+    let Some(head_sha) = first["head"]["sha"].as_str() else {
+        return Ok(None);
+    };
+    Ok(Some(SteerablePullRequest {
+        number,
+        head_sha: head_sha.to_string(),
+    }))
+}
+
+#[cfg(test)]
+mod steerable {
+    use super::*;
+
+    fn listed(value: serde_json::Value) -> Option<SteerablePullRequest> {
+        let first = value.as_array().unwrap().first().unwrap().clone();
+        let number = first["number"].as_u64()?;
+        let head_sha = first["head"]["sha"].as_str()?;
+        Some(SteerablePullRequest {
+            number,
+            head_sha: head_sha.to_string(),
+        })
+    }
+
+    #[test]
+    fn a_pull_request_whose_head_is_gone_steers_nothing_rather_than_failing_the_run() {
+        assert_eq!(
+            listed(serde_json::json!([{"number": 7, "head": {"sha": null}}])),
+            None,
+            "no head means no review on it can be shown current, so there is no direction \
+             to read and the run proceeds as it did before any steering step existed"
+        );
+        assert_eq!(
+            listed(serde_json::json!([{"number": 7, "head": {"sha": "abc"}}])),
+            Some(SteerablePullRequest {
+                number: 7,
+                head_sha: "abc".to_string(),
+            }),
+            "and a head that is there is read, so the case above is not the only answer"
+        );
+    }
+}

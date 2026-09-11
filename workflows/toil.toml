@@ -8,6 +8,16 @@ stage = "toil"
 # the workflow runs. A run that reaches these steps has already been qualified,
 # so nothing here decides whether the run should have started.
 
+# Read the direction a person left on the pull request this ticket already has,
+# when it has one. A review that is not an approval, from somebody the project
+# entitles, written against the head the pull request now carries, is what the
+# agent below is asked to act on. A bot the reviewer names by account is read
+# with it, because a reviewer who writes "Claude's comment 1 and 2" is pointing
+# at something the run has to be able to see. A ticket with no open pull request
+# steers nothing and the step passes through.
+[[steps]]
+kind = "steer"
+
 # quickfix_change. The agent makes the bounded change the ticket asked for and
 # runs the check this project declares, through the `run_check` tool.
 [[steps]]

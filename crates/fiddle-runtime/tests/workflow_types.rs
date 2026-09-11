@@ -21,6 +21,7 @@ fn canonical() -> Workflow {
                 timeout_secs: 30,
             },
             Step::Commit {},
+            Step::Steer {},
             Step::Effect {
                 name: EffectName::parse("ensure_pull_request").unwrap(),
                 reaching: None,
@@ -129,16 +130,40 @@ fn the_rust_constructor_refuses_what_the_file_path_refuses() {
 }
 
 #[test]
-fn a_step_is_one_of_exactly_five_kinds() {
+fn a_step_is_one_of_exactly_six_kinds() {
     let named = |step: &Step| match step {
         Step::Agent { .. } => "agent",
         Step::Evaluate { .. } => "evaluate",
         Step::Check { .. } => "check",
         Step::Commit {} => "commit",
+        Step::Steer {} => "steer",
         Step::Effect { .. } => "effect",
     };
     let kinds: Vec<&str> = canonical().to_file().steps.iter().map(named).collect();
-    assert_eq!(kinds, ["agent", "evaluate", "check", "commit", "effect"]);
+    assert_eq!(
+        kinds,
+        ["agent", "evaluate", "check", "commit", "steer", "effect"]
+    );
+}
+
+#[test]
+fn a_steer_step_is_spelt_by_its_kind_alone_and_carries_no_other_field() {
+    assert_eq!(
+        read("version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"steer\"\n")
+            .expect("a steer step needs no field beside its kind")
+            .steps(),
+        [Step::Steer {}]
+    );
+    assert_eq!(
+        read(
+            "version = 1\nname = \"t\"\nstage = \"t\"\n\n[[steps]]\nkind = \"steer\"\n\
+             pull_request = 7\n"
+        )
+        .unwrap_err(),
+        Refused::Reading,
+        "a document that names the pull request to read is a document that pins one run's \
+         number, and the step finds the open pull request for its own branch instead"
+    );
 }
 
 #[test]

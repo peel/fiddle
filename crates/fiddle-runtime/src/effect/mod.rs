@@ -651,6 +651,14 @@ impl<'a> Executor<'a> {
         self.ctx.git_client()
     }
 
+    pub fn gh(&self) -> Result<&GhCli, GhError> {
+        self.ctx.gh_client()
+    }
+
+    pub fn cancel(&self) -> &CancellationToken {
+        &self.ctx.cancel
+    }
+
     pub async fn observe_checks(
         &self,
         repo: &str,

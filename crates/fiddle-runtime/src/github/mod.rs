@@ -16,9 +16,9 @@ pub use comments::{
     HumanResponse, Reviewed, APPROVED, CHANGES_REQUESTED,
 };
 pub use pulls::{
-    find_labelled_pull_request, pull_request_body_target, pull_request_target,
-    read_pull_request_body, EnsurePullRequest, EnsurePullRequestBody, PullRequest, PullRequestBody,
-    SharedPullRequest,
+    find_labelled_pull_request, open_pull_request_on, pull_request_body_target,
+    pull_request_target, read_pull_request_body, EnsurePullRequest, EnsurePullRequestBody,
+    PullRequest, PullRequestBody, SharedPullRequest, SteerablePullRequest,
 };
 pub use ready::{pull_request_ready_target, EnsurePullRequestReady, ReadyPullRequest};
 pub use refs::{branch_name, branch_target, BranchRef, EnsureBranchPublished};

@@ -9,8 +9,8 @@ pub mod workflow;
 
 pub use cve::{
     breached, cited, entitled, land, steers, undeclared, ChangesRequested, DeclarationBreach,
-    FailedCheck, Followed, Git, GroupMigration, GroupStatus, HumanSaid, InRepository, InWorktree,
-    Landed, MigrationAttempt, MigrationConfig, NeedsWork, Unproved,
+    Direction, FailedCheck, Followed, Git, GroupMigration, GroupStatus, HumanSaid, InRepository,
+    InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork, Unproved,
 };
 pub use mitigate::{CveMitigate, MitigateConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
@@ -140,6 +140,9 @@ pub trait Capability: Send + Sync {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CapabilityError {
+    #[error("the direction on the pull request could not be read: {reason}")]
+    Unsteerable { reason: String },
+
     #[error("capability `{requested}` was asked to run under a grant for `{granted}`")]
     NotAuthorised {
         granted: CapabilityId,
@@ -254,6 +257,7 @@ impl CapabilityError {
             | CapabilityError::Agent(_) => Recurrence::Correctable,
 
             CapabilityError::NotAuthorised { .. }
+            | CapabilityError::Unsteerable { .. }
             | CapabilityError::Misbound { .. }
             | CapabilityError::Output(_)
             | CapabilityError::OutOfScope(_)

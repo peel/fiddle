@@ -151,6 +151,7 @@ fn spelled(step: &Step) -> String {
         }
         Step::Check { program, .. } => format!("check:{program}"),
         Step::Commit {} => "commit".to_string(),
+        Step::Steer {} => "steer".to_string(),
         Step::Effect {
             name,
             reaching: None,
@@ -168,6 +169,7 @@ fn named(workflow: &Workflow) -> Vec<String> {
 
 fn required_sequence() -> Vec<String> {
     vec![
+        "steer".to_string(),
         format!("agent:{TOIL_PROMPT} in {CHANGE_TURNS} turns"),
         format!("evaluate:{CHANGE_EVALUATE} in {EVALUATE_TURNS} turns"),
         "commit".to_string(),
@@ -834,6 +836,28 @@ impl World {
         self.forge_requests().len()
     }
 
+    fn writes(&self) -> usize {
+        self.forge_requests()
+            .iter()
+            .filter(|request| {
+                let Ok(recorded) = serde_json::from_str::<serde_json::Value>(request) else {
+                    return true;
+                };
+                let argv: Vec<&str> = recorded["argv"]
+                    .as_array()
+                    .map(|it| it.iter().filter_map(|arg| arg.as_str()).collect())
+                    .unwrap_or_default();
+                let method = argv
+                    .iter()
+                    .position(|arg| *arg == "--method")
+                    .and_then(|at| argv.get(at + 1))
+                    .copied()
+                    .unwrap_or("GET");
+                !method.eq_ignore_ascii_case("GET")
+            })
+            .count()
+    }
+
     fn forge_requests(&self) -> Vec<String> {
         let dir = self.dir.path().join("requests");
         let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
@@ -1274,8 +1298,14 @@ fn no_step_in_the_document_stands_for_the_eligibility_gate() {
     }
     assert_eq!(
         spelled(&toil().steps()[0]),
+        "steer",
+        "the first step reads the direction a person left, which a run that should not have \
+         started would still read and still be refused by the gate outside the document"
+    );
+    assert_eq!(
+        spelled(&toil().steps()[1]),
         format!("agent:{TOIL_PROMPT} in {CHANGE_TURNS} turns"),
-        "the first step makes the change, so nothing inside the document decides whether \
+        "and the second makes the change, so nothing inside the document decides whether \
          this run should have started"
     );
 }
@@ -1721,7 +1751,7 @@ async fn a_run_that_opens_a_pull_request_reaches_in_review_and_a_run_that_opens_
         "a rejected evaluation reports a refusal: {concluded:?}"
     );
     assert_eq!(
-        rejected.calls(),
+        rejected.writes(),
         0,
         "the row's own premise: this run opened no pull request"
     );
@@ -1811,9 +1841,9 @@ async fn a_rejected_evaluation_stops_the_toil_run_before_any_effect() {
         "the three effect steps after the evaluation ran"
     );
     assert_eq!(
-        refused.calls(),
+        refused.writes(),
         0,
-        "a rejected toil change reached the forge"
+        "a rejected toil change wrote to the forge"
     );
 
     let accepted = world();
@@ -2042,7 +2072,11 @@ async fn a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishe
         Vec::new(),
         "the branch step was refused before it was built, so no effect was proposed"
     );
-    assert_eq!(world.calls(), 0, "and no request reached the forge");
+    assert_eq!(
+        world.writes(),
+        0,
+        "and no request wrote to the forge; the steering step reads it and writes nothing"
+    );
 }
 
 #[tokio::test]
@@ -2529,7 +2563,7 @@ async fn a_change_beyond_the_bounds_stops_before_any_effect_and_each_bound_bites
             "an oversized change reached an effect step"
         );
         assert_eq!(
-            world.calls(),
+            world.writes(),
             0,
             "an oversized change opened a pull request"
         );

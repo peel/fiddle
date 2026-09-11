@@ -1,4 +1,4 @@
-use fiddle_runtime::capability::{cited, entitled, steers};
+use fiddle_runtime::capability::{cited, entitled, steers, Direction};
 use fiddle_runtime::github::{
     read_conversation, read_reviews, GhCli, HumanResponse, Reviewed, CHANGES_REQUESTED,
 };
@@ -214,4 +214,40 @@ async fn the_substance_of_270_needs_both_reads_and_neither_alone_carries_it() {
         "the other ask is only in the conversation, named by reference from the review"
     );
     assert!(findings.body.contains("Merge-free batches"));
+}
+
+#[tokio::test]
+async fn the_direction_270_carries_reaches_an_agent_task_naming_both_asks() {
+    let direction = Direction::read_from(reviews_of_270().await, conversation_of_270().await, HEAD);
+
+    assert_eq!(
+        direction.asked.len(),
+        1,
+        "the one review steers, so the run has work rather than only context"
+    );
+    assert_eq!(direction.asked[0].author, "spenes");
+
+    let task = direction
+        .rendered()
+        .expect("a pull request carrying direction renders a task");
+
+    assert!(
+        task.contains("Commit message and PR description is missing"),
+        "the ask that lives only in the review reaches the agent"
+    );
+    assert!(
+        task.contains("Merge-free batches record a `0` sample"),
+        "and the ask that lives only in the conversation reaches it too, so neither read is lost"
+    );
+    assert!(
+        task.contains("spenes"),
+        "the person who asked is named, so the agent is not told to follow an anonymous voice"
+    );
+
+    let quiet = Direction::read_from(Vec::new(), Vec::new(), HEAD);
+    assert!(
+        quiet.rendered().is_none(),
+        "a pull request nobody wrote on steers nothing, so the rule is not rendering a task \
+         for every run"
+    );
 }

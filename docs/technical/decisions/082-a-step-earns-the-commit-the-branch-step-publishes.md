@@ -56,7 +56,7 @@ A guard that refuses to overwrite a branch it does not recognise is the behaviou
 
 ## Consequences
 
-The shipped `workflows/toil.toml` names seven steps: agent, evaluate, commit, and the four effect steps `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`. `the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work` runs that document against a bare remote and compares the pushed object name with the workspace head. It is not compared with a step parameter.
+The shipped `workflows/toil.toml` names eight steps: steer, agent, evaluate, commit, and the four effect steps `ensure_branch_published`, `ensure_pull_request`, `jira.pull_request_linked` and `jira.issue_transitioned`. `the_branch_step_publishes_the_commit_the_commit_step_made_from_the_agents_work` runs that document against a bare remote and compares the pushed object name with the workspace head. It is not compared with a step parameter.
 
 `no_step_earns_the_commit_the_branch_step_publishes` held the gap as a negative assertion. Two positive tests replace it. `a_run_whose_agent_wrote_nothing_refuses_at_the_branch_step_and_publishes_no_sha` holds the other direction: the run refuses, the workspace head does not move, and the remote holds no branch.
 
