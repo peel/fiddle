@@ -783,6 +783,38 @@ impl ToilForge {
         support::git_says(&self.remote, &["log", "-1", "--format=%cI%n%aI", commit])
     }
 
+    fn a_member_reviewed(&self, commit: &str, body: &str) {
+        let review = serde_json::json!([{
+            "user": { "login": "spenes", "id": 88_285_759, "type": "User" },
+            "author_association": "MEMBER",
+            "state": "COMMENTED",
+            "commit_id": commit,
+            "body": body,
+        }]);
+        std::fs::write(
+            self.stub.join("reviews").join("page-1.json"),
+            review.to_string(),
+        )
+        .unwrap();
+    }
+
+    fn a_bot_commented(&self, body: &str) {
+        let conversation = serde_json::json!([{
+            "id": 5_634_162_958u64,
+            "body": body,
+            "created_at": "2026-09-11T12:05:40Z",
+            "updated_at": "2026-09-11T12:05:40Z",
+            "author_association": "NONE",
+            "user": { "login": "claude[bot]", "id": 1, "type": "Bot" },
+            "performed_via_github_app": { "slug": "claude" },
+        }]);
+        std::fs::write(
+            self.stub.join("issue-comments").join("page-1.json"),
+            conversation.to_string(),
+        )
+        .unwrap();
+    }
+
     fn delete_branch(&self, branch: &str) {
         support::git(
             &self.remote,
@@ -3887,5 +3919,96 @@ fn a_site_that_refuses_the_comment_still_rejects_the_change_and_says_the_ticket_
     assert!(
         !stderr.contains(JIRA_SENTINEL) && !recorded.join(" ").contains(JIRA_SENTINEL),
         "and neither surface carries the tracker credential: {stderr} / {recorded:?}"
+    );
+}
+
+const A_MEMBER_REVIEW_OF_270: &str = "Commit message and PR description is missing.\n\n\
+     Claude's comment 1 and 2 seems legit ones. Should we do them ?";
+
+const THE_BOT_FINDINGS_OF_270: &str = "### Review\n\n\
+     #### 1. Merge-free batches record a `0` sample, flattening the mean\n\n\
+     `ctx.maxGraphSize` is only ever written inside `planMergeOrDowngrade`.\n\n\
+     #### 2. `Sampled` has no constructor, so both wiring sites hand-roll the same closure\n\n\
+     Adding `Sampler(name string) Sampled` keeps the new type consistent.";
+
+#[test]
+fn a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run opened the pull request a person then \
+         reviewed: {first}"
+    );
+
+    world
+        .github()
+        .a_member_reviewed(&published, A_MEMBER_REVIEW_OF_270);
+    world.github().a_bot_commented(THE_BOT_FINDINGS_OF_270);
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let second = payload_of(&world.run_toil(REFERENCE));
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    assert!(
+        !briefs.is_empty(),
+        "the rerun reached the gateway, so there is a brief to read: {second}"
+    );
+
+    let carrying = |text: &str| briefs.iter().filter(|brief| brief.contains(text)).count();
+
+    assert!(
+        carrying("Commit message and PR description is missing") > 0,
+        "the ask that lives only in the review reached the agent: {briefs:?}"
+    );
+    assert!(
+        carrying("Merge-free batches record a `0` sample") > 0,
+        "and the ask that lives only in the bot comment the reviewer named reached it too"
+    );
+    assert!(
+        carrying("spenes") > 0,
+        "and the person who asked is named, so the agent is not following an anonymous voice"
+    );
+    assert!(
+        carrying("A person reviewed this pull request and asked for changes") > 0,
+        "the review reaches the agent framed as work to do and not as chatter"
+    );
+}
+
+#[test]
+fn a_rerun_over_a_pull_request_nobody_reviewed_carries_no_direction() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let first = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: a pull request exists for the steering step to read: {first}"
+    );
+
+    world.forgets_that_the_work_was_completed();
+    let before = world.model_prompts().len();
+    world.run_toil(REFERENCE);
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+
+    assert!(!briefs.is_empty(), "the rerun reached the gateway");
+    assert_eq!(
+        briefs
+            .iter()
+            .filter(|brief| {
+                brief.contains("A person reviewed this pull request and asked for changes")
+                    || brief
+                        .contains("People have written on the pull request this run is adding to")
+            })
+            .count(),
+        0,
+        "a pull request nobody wrote on puts neither direction frame in the brief, so the \
+         row above is not passing on text every run carries: {briefs:?}"
     );
 }
