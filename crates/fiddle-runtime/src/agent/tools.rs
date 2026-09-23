@@ -24,6 +24,17 @@ impl ToolHost {
             .map_err(|_| ToolError::NoHostContext)
     }
 
+    fn answered_nothing_before(&self, tool: &str, args: &str) -> bool {
+        self.receipts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .calls
+            .iter()
+            .any(|call| {
+                call.found_nothing && call.tool == tool && call.args.as_deref() == Some(args)
+            })
+    }
+
     fn guard(&self) -> Result<(), ToolError> {
         if self.cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -37,10 +48,23 @@ impl ToolHost {
         started: Instant,
         result: Result<T, ToolError>,
     ) -> Result<T, ToolError> {
+        self.recorded_over(tool, None, false, started, result)
+    }
+
+    fn recorded_over<T>(
+        &self,
+        tool: &'static str,
+        args: Option<String>,
+        found_nothing: bool,
+        started: Instant,
+        result: Result<T, ToolError>,
+    ) -> Result<T, ToolError> {
         let receipt = ToolReceipt {
             tool: tool.to_string(),
             outcome: outcome_of(&result),
             duration_ms: started.elapsed().as_millis() as u64,
+            args,
+            found_nothing,
         };
         self.receipts
             .lock()
@@ -587,6 +611,19 @@ impl Tool for SearchFiles {
     async fn call(&self, ctx: &mut ToolContext, args: SearchFilesArgs) -> Result<Found, ToolError> {
         let host = ToolHost::from_context(ctx)?;
         let started = Instant::now();
+        let asked = searched_for(&args);
+        if host.answered_nothing_before(Self::NAME, &asked) {
+            return host.recorded_over(
+                Self::NAME,
+                Some(asked.clone()),
+                true,
+                started,
+                Ok(Found {
+                    matches: Vec::new(),
+                    withheld: Some(already_searched(&args)),
+                }),
+            );
+        }
         let result = async {
             host.guard()?;
             if args.text.is_empty() {
@@ -649,12 +686,33 @@ impl Tool for SearchFiles {
             Ok(Found { matches, withheld })
         }
         .await;
-        host.recorded(Self::NAME, started, result)
+        let found_nothing = matches!(&result, Ok(found) if found.matches.is_empty());
+        host.recorded_over(Self::NAME, Some(asked), found_nothing, started, result)
     }
 
     fn map_error(&self, error: Self::Error) -> ToolExecutionError {
         error.into_execution_error()
     }
+}
+
+fn searched_for(args: &SearchFilesArgs) -> String {
+    match &args.path {
+        Some(path) => format!("{}\u{0}{path}", args.text),
+        None => args.text.clone(),
+    }
+}
+
+fn already_searched(args: &SearchFilesArgs) -> String {
+    let where_it_looked = match &args.path {
+        Some(path) => format!(" under {path}"),
+        None => String::new(),
+    };
+    format!(
+        "this search already ran{where_it_looked} and no line held {:?}, so it was not run \
+         again. Searching it a third time answers the same. Look for a different name, or \
+         read a file the earlier searches named.",
+        args.text
+    )
 }
 
 fn bounded_line(line: &str) -> String {
@@ -2344,6 +2402,99 @@ mod searching {
         );
         assert!(found.matches[0].text.contains("v4.5.0"));
         assert_eq!(found.withheld, None);
+    }
+
+    #[tokio::test]
+    async fn a_search_that_already_answered_nothing_is_not_run_again() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let first = SearchFiles
+            .call(&mut ctx, looking_for("MergeGraphSizeMax", None))
+            .await
+            .expect("a search that matches nothing is not a failure");
+        assert!(first.matches.is_empty());
+
+        let again = SearchFiles
+            .call(&mut ctx, looking_for("MergeGraphSizeMax", None))
+            .await
+            .expect("a repeated search is answered rather than refused");
+
+        assert!(again.matches.is_empty());
+        assert!(
+            again
+                .withheld
+                .as_deref()
+                .is_some_and(|it| it.contains("already ran")),
+            "the repeat says it is a repeat, so the model is told why a third try answers \
+             the same: {again:?}"
+        );
+
+        let searched: Vec<&ToolReceipt> = host
+            .receipts()
+            .calls
+            .iter()
+            .filter(|call| call.tool == "search_files")
+            .cloned()
+            .collect::<Vec<_>>()
+            .leak()
+            .iter()
+            .collect();
+        assert_eq!(
+            searched.len(),
+            2,
+            "both calls are recorded, so a repeat is visible rather than hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_different_searches_both_run_although_neither_matched() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        for text in ["MergeGraphSizeMax", "merge_graph_size_max"] {
+            let found = SearchFiles
+                .call(&mut ctx, looking_for(text, None))
+                .await
+                .expect("a search that matches nothing is not a failure");
+            assert!(
+                found
+                    .withheld
+                    .as_deref()
+                    .is_some_and(|it| it.contains("nothing matched")),
+                "each distinct text is searched on its own, so the rule is not collapsing \
+                 every empty search into one: {found:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_search_that_matched_is_run_again_because_the_tree_can_change() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host.clone());
+
+        let first = SearchFiles
+            .call(&mut ctx, looking_for("pub fn f", None))
+            .await
+            .expect("a search that matches is not a failure");
+        assert!(
+            !first.matches.is_empty(),
+            "the row's own premise: this text is in the fixture"
+        );
+
+        let again = SearchFiles
+            .call(&mut ctx, looking_for("pub fn f", None))
+            .await
+            .expect("a search that matched before is run again");
+        assert_eq!(
+            again.matches.len(),
+            first.matches.len(),
+            "a search that found something is answered from the tree and not from a memo, \
+             because an edit between the two calls would change it"
+        );
     }
 
     #[tokio::test]

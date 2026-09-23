@@ -36,6 +36,8 @@ impl AuditHook {
                 tool: tool.to_string(),
                 outcome,
                 duration_ms: 0,
+                args: None,
+                found_nothing: false,
             });
     }
 

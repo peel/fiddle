@@ -395,11 +395,15 @@ mod tests {
                     tool: "search_files".to_string(),
                     outcome: "ok",
                     duration_ms: 10,
+                    args: None,
+                    found_nothing: false,
                 },
                 ToolReceipt {
                     tool: "search_files".to_string(),
                     outcome: "ok",
                     duration_ms: 12,
+                    args: None,
+                    found_nothing: false,
                 },
             ],
         };

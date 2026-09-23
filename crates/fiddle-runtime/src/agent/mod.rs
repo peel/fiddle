@@ -981,6 +981,10 @@ pub struct ToolReceipt {
     pub tool: String,
     pub outcome: &'static str,
     pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub found_nothing: bool,
 }
 
 #[cfg(test)]
