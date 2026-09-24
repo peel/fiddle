@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod retry;
 pub mod returns;
+pub mod spend;
 pub mod tools;
 pub mod transcript;
 
@@ -180,6 +181,7 @@ pub struct Brief<'a> {
 pub struct AgentBudget {
     pub max_turns: usize,
     pub max_tokens: u64,
+    pub max_tokens_total: Option<u64>,
     pub deadline: Duration,
     pub max_changed_files: usize,
     pub tool_timeout: Duration,
@@ -569,7 +571,10 @@ where
             .tool_choice(offer.tool_choice()),
         &abilities,
     );
-    let mut builder = builder.add_hook(AuditHook::for_host(&host));
+    let spend = crate::agent::spend::SpendHook::bounded_by(budget.max_tokens_total);
+    let mut builder = builder
+        .add_hook(AuditHook::for_host(&host))
+        .add_hook(spend.clone());
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
@@ -608,6 +613,9 @@ where
             refused(StructuredOutputError::PromptError(Box::new(error)))
         })?,
     };
+    if let Some(reason) = spend.stopped() {
+        return Err(AgentError::Bounded { reason });
+    }
     let Reported(report) = reported(&answered).map_err(refused)?;
 
     let changed = host
@@ -820,7 +828,10 @@ where
             .tool_choice(offer.tool_choice()),
         &abilities,
     );
-    let mut builder = builder.add_hook(AuditHook::for_host(&host));
+    let spend = crate::agent::spend::SpendHook::bounded_by(budget.max_tokens_total);
+    let mut builder = builder
+        .add_hook(AuditHook::for_host(&host))
+        .add_hook(spend.clone());
     if let Some(hook) = hook {
         builder = builder.add_hook(hook);
     }
@@ -859,6 +870,9 @@ where
             refused(StructuredOutputError::PromptError(Box::new(error)))
         })?,
     };
+    if let Some(reason) = spend.stopped() {
+        return Err(AgentError::Bounded { reason });
+    }
     let Judged(verdict) = judged(&answered).map_err(refused)?;
 
     match &verdict {

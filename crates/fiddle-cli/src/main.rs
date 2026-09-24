@@ -1173,6 +1173,7 @@ fn build_capability<'a>(
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
+                        max_tokens_total: agent.max_tokens_total,
                         deadline: agent.deadline.as_duration(),
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
@@ -1254,6 +1255,7 @@ fn build_capability<'a>(
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
+                        max_tokens_total: agent.max_tokens_total,
                         deadline: agent.deadline.as_duration(),
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
@@ -1362,6 +1364,7 @@ fn build_capability<'a>(
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
+                        max_tokens_total: agent.max_tokens_total,
                         deadline: agent.deadline.as_duration(),
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),
@@ -1489,6 +1492,7 @@ fn build_capability<'a>(
                     budget: AgentBudget {
                         max_turns: agent.max_turns,
                         max_tokens: agent.max_tokens,
+                        max_tokens_total: agent.max_tokens_total,
                         deadline: agent.deadline.as_duration(),
                         max_changed_files: agent.max_changed_files,
                         tool_timeout: agent.tool_timeout.as_duration(),

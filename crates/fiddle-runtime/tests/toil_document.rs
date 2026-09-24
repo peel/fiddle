@@ -789,6 +789,7 @@ impl World {
             budget: AgentBudget {
                 max_turns: 8,
                 max_tokens: 4096,
+                max_tokens_total: None,
                 deadline: PATIENT,
                 max_changed_files: 16,
                 tool_timeout: PATIENT,

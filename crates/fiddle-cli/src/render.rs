@@ -60,6 +60,7 @@ pub fn config_check_json(config: &Config) -> String {
             "api_key": { "env": agent.api_key.env },
             "max_turns": agent.max_turns,
             "max_tokens": agent.max_tokens,
+            "max_tokens_total": agent.max_tokens_total,
             "max_changed_files": agent.max_changed_files,
             "deadline": agent.deadline.to_string(),
             "tool_timeout": agent.tool_timeout.to_string(),
@@ -254,6 +255,7 @@ pub fn config_check_human(config: &Config) -> String {
              \n  agent.api_key.env = {}\
              \n  agent.max_turns = {}\
              \n  agent.max_tokens = {}\
+             \n  agent.max_tokens_total = {}\
              \n  agent.max_changed_files = {}\
              \n  agent.deadline = {}\
              \n  agent.tool_timeout = {}\
@@ -265,6 +267,15 @@ pub fn config_check_human(config: &Config) -> String {
             agent.api_key.env,
             agent.max_turns,
             agent.max_tokens,
+            match agent.max_tokens_total {
+                Some(bound) => format!(
+                    "{bound} (the attempt stops here whatever the cause; every turn resends \
+                     the history, so a run that is not converging costs more per turn)"
+                ),
+                None => "not configured, so nothing bounds what an attempt spends; \
+                         max_turns and deadline do not measure it"
+                    .to_string(),
+            },
             agent.max_changed_files,
             agent.deadline,
             agent.tool_timeout,

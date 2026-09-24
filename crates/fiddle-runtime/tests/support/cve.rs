@@ -1118,6 +1118,7 @@ impl MigrationWorld {
             budget: AgentBudget {
                 max_turns: 8,
                 max_tokens: 4096,
+                max_tokens_total: None,
                 deadline: Duration::from_secs(300),
                 max_changed_files: 16,
                 tool_timeout: MIGRATION_CHECK_TIMEOUT,

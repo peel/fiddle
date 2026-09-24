@@ -110,6 +110,9 @@ pub struct Agent {
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u64,
 
+    #[serde(default)]
+    pub max_tokens_total: Option<u64>,
+
     #[serde(default = "default_max_changed_files")]
     pub max_changed_files: usize,
 
@@ -3227,6 +3230,7 @@ token = { env = "JIRA_API_TOKEN" }
                 budget: fiddle_runtime::agent::AgentBudget {
                     max_turns: 2,
                     max_tokens: 4096,
+                    max_tokens_total: None,
                     deadline: Duration::from_secs(60),
                     max_changed_files: 64,
                     tool_timeout: Duration::from_secs(30),

@@ -187,6 +187,7 @@ impl Reading {
             budget: AgentBudget {
                 max_turns: 1,
                 max_tokens: 16,
+                max_tokens_total: None,
                 deadline: PATIENT,
                 max_changed_files: 1,
                 tool_timeout: PATIENT,
