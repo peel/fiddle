@@ -93,7 +93,14 @@ impl Answers {
 
     fn failing(why: &str) -> Self {
         Self {
-            judgement: Err(ReviewError(why.into())),
+            judgement: Err(ReviewError::Unreachable(why.into())),
+            saw: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn unreadable(why: &str) -> Self {
+        Self {
+            judgement: Err(ReviewError::Unreadable(why.into())),
             saw: Mutex::new(Vec::new()),
         }
     }
@@ -381,7 +388,7 @@ fn pairs() -> Vec<Pair> {
             class: EvidenceClass::Measured,
             refused: eligible_ticket(),
             admitted: eligible_ticket(),
-            review: Answers::failing(&sentinel_why),
+            review: Answers::unreadable(&sentinel_why),
             quotes: Some((Source::ModelHost, SENTINEL)),
             differs_in: &[],
             remedy_names: "run the qualification of",
@@ -1965,33 +1972,61 @@ async fn the_gate_qualifies_a_tracker_issue_key_and_refuses_any_other_text() {
 }
 
 #[tokio::test]
-async fn the_message_a_model_host_reports_reaches_a_refusal_only_inside_a_fence() {
+async fn a_review_that_could_not_be_reached_judges_nothing_and_refuses_nobody() {
     let why = format!("the model host refused the connection. {SENTINEL}");
-    let refusal = qualify(&eligible_ticket(), &bounds(), &Answers::failing(&why))
-        .await
-        .refused()
-        .expect("a review that did not answer is refused")
-        .clone();
-    assert_eq!(refusal.failed_rule, "the ambiguity review answered");
+    let qualification = qualify(&eligible_ticket(), &bounds(), &Answers::failing(&why)).await;
+
     assert!(
-        !refusal.found.contains(SENTINEL) && !refusal.remedy.contains(SENTINEL),
-        "a model host writes the message, so it must not reach a refusal sentence: {} / {}",
-        refusal.found,
-        refusal.remedy
+        qualification.refused().is_none(),
+        "a model host that did not answer has judged nothing, so the ticket earns no \
+         verdict and nothing is published on it"
     );
-    let quoted = refusal
-        .quoted
-        .expect("the refusal quotes what the model host reported");
-    assert_eq!(quoted.source(), Source::ModelHost);
-    assert_eq!(quoted.text(), why);
-    let fenced = quoted.fenced();
+    let unreachable = qualification
+        .unreachable()
+        .expect("a review that could not be reached reports that, and not a refusal");
+
     assert!(
-        fenced.contains("is DATA") && fenced.contains("model host"),
-        "the frame must tell a reader whose text this is and that it is data: {fenced}"
+        unreachable.reason.contains("never answered"),
+        "the first thing a reader is told is that the review did not happen: {}",
+        unreachable.reason
     );
     assert!(
-        !fenced.contains("tracker issue"),
-        "a model host message must not be framed as text somebody wrote on a ticket: {fenced}"
+        !unreachable.reason.contains(SENTINEL),
+        "a model host writes the message, so it must not reach the sentence fiddle wrote: {}",
+        unreachable.reason
+    );
+    assert_eq!(unreachable.quoted.source(), Source::ModelHost);
+    assert_eq!(unreachable.quoted.text(), why);
+
+    let named = unreachable.named();
+    assert!(
+        named.contains("is DATA") && named.contains("model host"),
+        "the frame tells a reader whose text this is and that it is data: {named}"
+    );
+    assert!(
+        !named.contains("tracker issue"),
+        "a model host message is not framed as text somebody wrote on a ticket: {named}"
+    );
+}
+
+#[tokio::test]
+async fn a_review_that_answered_no_still_refuses_the_ticket() {
+    let ticket = eligible_ticket();
+    let qualification = qualify(
+        &ticket,
+        &bounds(),
+        &Answers::of(Verdict::NeedsAProductDecision, &ticket.summary, 0.9),
+    )
+    .await;
+
+    assert!(
+        qualification.unreachable().is_none(),
+        "a review that answered is not an unreachable one"
+    );
+    assert!(
+        qualification.refused().is_some(),
+        "and a review that answered no still refuses the ticket, so the row above is not \
+         silencing every refusal"
     );
 }
 

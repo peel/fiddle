@@ -187,7 +187,18 @@ pub struct Judgement {
 
 #[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
 #[error("{0}")]
-pub struct ReviewError(pub String);
+pub enum ReviewError {
+    Unreachable(String),
+    Unreadable(String),
+}
+
+impl ReviewError {
+    pub fn why(&self) -> &str {
+        match self {
+            ReviewError::Unreachable(why) | ReviewError::Unreadable(why) => why,
+        }
+    }
+}
 
 #[async_trait]
 pub trait AmbiguityReview: Send + Sync {
@@ -236,20 +247,41 @@ pub struct Eligible {
 pub enum Qualification {
     Eligible(Eligible),
     Refused(Refusal),
+    Unreachable(Unreachable),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Unreachable {
+    pub work_item: String,
+    pub reason: String,
+    pub quoted: Quoted,
+}
+
+impl Unreachable {
+    pub fn named(&self) -> String {
+        format!("{}: {}", self.reason, self.quoted.fenced())
+    }
 }
 
 impl Qualification {
     pub fn refused(&self) -> Option<&Refusal> {
         match self {
             Qualification::Refused(refusal) => Some(refusal),
-            Qualification::Eligible(_) => None,
+            Qualification::Eligible(_) | Qualification::Unreachable(_) => None,
+        }
+    }
+
+    pub fn unreachable(&self) -> Option<&Unreachable> {
+        match self {
+            Qualification::Unreachable(unreachable) => Some(unreachable),
+            Qualification::Eligible(_) | Qualification::Refused(_) => None,
         }
     }
 
     pub fn eligible(&self) -> Option<&Eligible> {
         match self {
             Qualification::Eligible(eligible) => Some(eligible),
-            Qualification::Refused(_) => None,
+            Qualification::Refused(_) | Qualification::Unreachable(_) => None,
         }
     }
 
@@ -257,6 +289,7 @@ impl Qualification {
         match self {
             Qualification::Eligible(eligible) => &eligible.ledger,
             Qualification::Refused(refusal) => &refusal.ledger,
+            Qualification::Unreachable(_) => &[],
         }
     }
 }
@@ -639,7 +672,17 @@ pub async fn review_of(reached: Reached, review: &dyn AmbiguityReview) -> Qualif
     let key = &ticket.id;
     let judgement = match review.review(&quoted).await {
         Ok(judgement) => judgement,
-        Err(ReviewError(why)) => {
+        Err(ReviewError::Unreachable(why)) => {
+            return Qualification::Unreachable(Unreachable {
+                work_item: key.clone(),
+                reason: format!(
+                    "the ambiguity review of {key} never answered, so nothing about {key} \
+                     was judged and no verdict on it was earned"
+                ),
+                quoted: Quoted::reported_by_the_model_host(&why),
+            })
+        }
+        Err(ReviewError::Unreadable(why)) => {
             return refuse(
                 ticket,
                 &ledger,

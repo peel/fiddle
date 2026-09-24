@@ -89,6 +89,10 @@ enum CliError {
 
     #[error(transparent)]
     #[diagnostic(transparent)]
+    ReviewUnreachable(#[from] ReviewUnreachable),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
     Jira(#[from] JiraUnusable),
 
     #[error(transparent)]
@@ -296,6 +300,17 @@ struct NamedValueAbsent {
 struct GatewayUnavailable(GatewayError);
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{0}")]
+#[diagnostic(
+    code(fiddle::toil::review_unreachable),
+    help(
+        "the ticket was not judged, so nothing was published on it; run the qualification \
+         again once the model host answers"
+    )
+)]
+struct ReviewUnreachable(String);
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
 #[error("the jira client {1} describes could not be built: {0}")]
 #[diagnostic(
     code(fiddle::jira::unusable),
@@ -500,7 +515,9 @@ fn exit_code_for(termination: &Termination) -> u8 {
         Termination::Ran(RunOutcome::Retryable { .. }) => EXIT_RETRYABLE,
         Termination::Ran(RunOutcome::Rejected { .. }) => 12,
         Termination::Ran(RunOutcome::Failed { .. }) => 20,
-        Termination::Rejected(CliError::TicketUnread(_)) => EXIT_RETRYABLE,
+        Termination::Rejected(CliError::TicketUnread(_) | CliError::ReviewUnreachable(_)) => {
+            EXIT_RETRYABLE
+        }
         Termination::Rejected(
             CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
             | CliError::InvocationRef(_)
@@ -782,6 +799,9 @@ async fn qualified(
         }
     };
     match qualification {
+        fiddle_runtime::toil::Qualification::Unreachable(unreachable) => Err(
+            CliError::ReviewUnreachable(ReviewUnreachable(unreachable.named())),
+        ),
         fiddle_runtime::toil::Qualification::Eligible(admitted) => Ok(Some(admitted)),
         fiddle_runtime::toil::Qualification::Refused(refusal) => {
             let tracker = tracker_client(config, config_path, reference)?;

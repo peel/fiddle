@@ -112,21 +112,22 @@ where
         let run = agent.prompt(quoted.fenced()).max_turns(1).into_future();
 
         let answered = tokio::select! {
-            _ = tokio::time::sleep(self.bounds.deadline) => return Err(ReviewError(format!(
+            _ = tokio::time::sleep(self.bounds.deadline) => return Err(ReviewError::Unreachable(format!(
                 "the ambiguity review did not answer inside {:?}",
                 self.bounds.deadline
             ))),
             result = run => result,
         };
 
-        let answered = answered.map_err(|error| ReviewError(self.reported(error.to_string())))?;
+        let answered =
+            answered.map_err(|error| ReviewError::Unreachable(self.reported(error.to_string())))?;
         read(&answered)
     }
 }
 
 fn read(answered: &str) -> Result<Judgement, ReviewError> {
     let parsed = serde_json::from_str::<Answer>(unfenced(answered)).map_err(|error| {
-        ReviewError(format!(
+        ReviewError::Unreadable(format!(
             "the ambiguity review answered something this build cannot read: {error}"
         ))
     })?;
@@ -236,7 +237,7 @@ mod tests {
                 "an answer this build cannot read must refuse rather than become a verdict",
             );
             assert!(
-                refused.0.contains("cannot read"),
+                refused.why().contains("cannot read"),
                 "the refusal names what happened: {refused}"
             );
         }
@@ -262,7 +263,7 @@ mod tests {
                  beside one",
             );
             assert!(
-                refused.0.contains("cannot read"),
+                refused.why().contains("cannot read"),
                 "the refusal names what happened for `{unreadable}`: {refused}"
             );
         }
@@ -275,7 +276,7 @@ mod tests {
             "this read tolerates a fence around the object and not a rewritten tool contract",
         );
         assert!(
-            refused.0.contains("cannot read"),
+            refused.why().contains("cannot read"),
             "the refusal names what happened: {refused}"
         );
     }
