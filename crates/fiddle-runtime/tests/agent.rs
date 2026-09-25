@@ -79,6 +79,43 @@ fn report_turn(summary: &str, complete: bool) -> MockTurn {
 }
 
 #[tokio::test]
+async fn an_attempt_whose_check_cannot_start_is_refused_before_any_model_call() {
+    let (mut host, _g) = test_host();
+    host.check.program = "fiddle-no-such-program-4f1c".to_string();
+    let model = MockCompletionModel::new([report_turn("nothing to do", true)]);
+
+    let outcome = attempt(model, &redaction(), host, budget(), Direction::Fresh, None).await;
+
+    match outcome {
+        Err(AgentError::Unrunnable { reason }) => {
+            assert!(
+                reason.contains("`fiddle-no-such-program-4f1c` cannot be started"),
+                "the operator is told which program: {reason}"
+            );
+            assert!(
+                reason.contains("Its commands search"),
+                "and the PATH it was looked for on, which only the operator reads: {reason}"
+            );
+            assert!(reason.contains("No model call was made"), "{reason}");
+        }
+        other => panic!(
+            "the model was scripted to report success, so anything but a refusal means the \
+             attempt reached it: {other:?}"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn an_attempt_whose_check_can_start_reaches_the_model() {
+    let (host, _g) = test_host();
+    let model = MockCompletionModel::new([report_turn("nothing to do", true)]);
+    let report = attempt(model, &redaction(), host, budget(), Direction::Fresh, None)
+        .await
+        .expect("a check on the PATH is not refused, so the row above is not refusing everything");
+    assert_eq!(report.summary, "nothing to do");
+}
+
+#[tokio::test]
 async fn a_scripted_model_drives_the_real_tools() {
     let (host, _g) = test_host();
     let model = MockCompletionModel::new([

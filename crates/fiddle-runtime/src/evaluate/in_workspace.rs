@@ -53,6 +53,19 @@ impl Tree for InWorkspace<'_> {
                 source,
             }),
 
+            Err(WorkspaceError::Unstartable { why, .. }) => Err(Unanswered::NotStarted {
+                program: check.program.clone(),
+                source: std::io::Error::new(
+                    match why {
+                        crate::workspace::command::NOT_EXECUTABLE => {
+                            std::io::ErrorKind::PermissionDenied
+                        }
+                        _ => std::io::ErrorKind::NotFound,
+                    },
+                    why,
+                ),
+            }),
+
             Err(unreachable) => Err(Unanswered::NotStarted {
                 program: check.program.clone(),
                 source: std::io::Error::other(unreachable.to_string()),

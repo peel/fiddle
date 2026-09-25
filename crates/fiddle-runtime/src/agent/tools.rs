@@ -92,7 +92,9 @@ fn outcome_of<T>(result: &Result<T, ToolError>) -> &'static str {
         | Err(ToolError::ListingRefused { .. })
         | Err(ToolError::Undeclared { .. }) => "refused",
         Err(ToolError::Cancelled) => "cancelled",
-        Err(ToolError::Timeout { .. }) | Err(ToolError::Failed { .. }) => "failed",
+        Err(ToolError::Timeout { .. })
+        | Err(ToolError::Failed { .. })
+        | Err(ToolError::Unstartable { .. }) => "failed",
     }
 }
 
@@ -133,6 +135,15 @@ pub enum ToolError {
         source: WorkspaceError,
     },
 
+    #[error(
+        "{source}. Nothing in the project can change that, so no edit makes it start: stop, \
+         and report that the check could not run"
+    )]
+    Unstartable {
+        #[source]
+        source: WorkspaceError,
+    },
+
     #[error("{operation} did not succeed")]
     Failed {
         operation: &'static str,
@@ -158,6 +169,7 @@ impl ToolError {
             },
             WorkspaceError::Cancelled => ToolError::Cancelled,
             WorkspaceError::Timeout { .. } => ToolError::Timeout { source },
+            WorkspaceError::Unstartable { .. } => ToolError::Unstartable { source },
             WorkspaceError::Io { .. } | WorkspaceError::Git { .. } => {
                 ToolError::Failed { operation, source }
             }
@@ -175,6 +187,7 @@ impl ToolError {
             | ToolError::ListingRefused { .. }
             | ToolError::Undeclared { .. } => ToolExecutionError::invalid_args(message),
             ToolError::Timeout { .. } => ToolExecutionError::timeout(message),
+            ToolError::Unstartable { .. } => ToolExecutionError::other(message),
             ToolError::Failed { .. } => ToolExecutionError::other(message),
         };
         classified.with_source(self)
@@ -1125,6 +1138,78 @@ pub(crate) mod tests {
             receipts: Arc::new(Mutex::new(ToolReceipts::default())),
         };
         (host, dir)
+    }
+
+    const NO_SUCH_PROGRAM: &str = "fiddle-no-such-program-4f1c";
+
+    #[tokio::test]
+    async fn a_check_that_cannot_start_tells_the_agent_why_and_that_no_edit_fixes_it() {
+        let (mut host, _g) = test_host();
+        host.check.program = NO_SUCH_PROGRAM.to_string();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+
+        let said = RunCheck
+            .call(&mut ctx, NoArgs {})
+            .await
+            .expect_err("a check whose program is missing cannot report an outcome")
+            .to_string();
+
+        assert!(
+            said.contains(&format!("`{NO_SUCH_PROGRAM}` cannot be started"))
+                && said.contains(crate::workspace::command::NOT_ON_PATH),
+            "the agent is told which program and why: {said}"
+        );
+        assert!(
+            said.contains("no edit makes it start"),
+            "and that the project cannot fix it, so it stops looking: {said}"
+        );
+        assert!(
+            !said.contains(crate::workspace::command::tool_path()),
+            "the PATH is a fact about the host, so it stays out of what the model reads: {said}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_check_that_starts_still_returns_what_it_printed() {
+        let (host, _g) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+        let outcome = RunCheck
+            .call(&mut ctx, NoArgs {})
+            .await
+            .expect("a check on the PATH runs, so the row above is not refusing every check");
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.stdout.trim(), "true");
+    }
+
+    #[test]
+    fn a_project_script_is_found_in_the_project_and_refused_when_it_cannot_execute() {
+        use std::os::unix::fs::PermissionsExt;
+        let (host, _g) = test_host();
+        let script = host.workspace.root().join("check.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let refused = host.workspace.locate("./check.sh").unwrap_err().to_string();
+        assert!(
+            refused.contains(crate::workspace::command::NOT_EXECUTABLE),
+            "a file that exists but cannot execute is named as that, not as missing: {refused}"
+        );
+
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(host.workspace.locate("./check.sh").is_ok());
+
+        let absent = host
+            .workspace
+            .locate("./absent.sh")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            absent.contains(crate::workspace::command::NOT_THERE),
+            "a path is not looked up on the PATH, so a missing one is not called missing from \
+             it: {absent}"
+        );
     }
 
     #[tokio::test]

@@ -381,6 +381,9 @@ pub enum AgentError {
 
     #[error("the model gave no answer ({arrived}): {reason}")]
     Unanswered { arrived: String, reason: String },
+
+    #[error("the attempt did not start, because its check cannot run: {reason}")]
+    Unrunnable { reason: String },
 }
 
 pub async fn attempt<M>(
@@ -533,6 +536,18 @@ where
         })
 }
 
+pub fn can_run_its_check(host: &ToolHost) -> Result<(), AgentError> {
+    host.workspace
+        .locate(&host.check.program)
+        .map(|_| ())
+        .map_err(|unstartable| AgentError::Unrunnable {
+            reason: format!(
+                "{unstartable}. Its commands search {}. No model call was made",
+                crate::workspace::command::tool_path()
+            ),
+        })
+}
+
 pub async fn attempt_briefed<M>(
     model: M,
     redaction: &Redaction,
@@ -545,6 +560,7 @@ pub async fn attempt_briefed<M>(
 where
     M: rig_core::completion::CompletionModel + 'static,
 {
+    can_run_its_check(&host)?;
     let declares_commands = !host.commands.is_empty();
     let offer = Offer::Repair;
     let abilities = offer.abilities(declares_commands);

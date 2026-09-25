@@ -25,6 +25,22 @@ static TOOL_PATH: LazyLock<String> = LazyLock::new(|| match std::env::var("PATH"
 
 const MINIMUM_PATH: &str = "/usr/bin:/bin";
 
+pub const NOT_ON_PATH: &str = "it is not on the PATH this deployment gives its commands";
+
+pub const NOT_EXECUTABLE: &str = "it is not an executable file";
+
+pub const NOT_THERE: &str = "no file is at that path";
+
+pub fn tool_path() -> &'static str {
+    &TOOL_PATH
+}
+
+fn executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
+
 const RUSTUP_HOME: &str = "RUSTUP_HOME";
 
 const GIT_AUTHOR_DATE: &str = "GIT_AUTHOR_DATE";
@@ -32,10 +48,32 @@ const GIT_AUTHOR_DATE: &str = "GIT_AUTHOR_DATE";
 const GIT_COMMITTER_DATE: &str = "GIT_COMMITTER_DATE";
 
 impl Workspace {
+    pub fn locate(&self, program: &str) -> Result<PathBuf, WorkspaceError> {
+        let unstartable = |why| WorkspaceError::Unstartable {
+            program: program.to_string(),
+            why,
+        };
+        if program.contains('/') {
+            let path = self.root.join(program);
+            return match executable(&path) {
+                true => Ok(path),
+                false if path.exists() => Err(unstartable(NOT_EXECUTABLE)),
+                false => Err(unstartable(NOT_THERE)),
+            };
+        }
+        tool_path()
+            .split(':')
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| Path::new(dir).join(program))
+            .find(|path| executable(path))
+            .ok_or_else(|| unstartable(NOT_ON_PATH))
+    }
+
     pub async fn run(&self, cmd: &WorkspaceCommand) -> Result<CommandResult, WorkspaceError> {
         if self.cancel.is_cancelled() {
             return Err(WorkspaceError::Cancelled);
         }
+        self.locate(&cmd.program)?;
 
         let mut command = tokio::process::Command::new(&cmd.program);
         command

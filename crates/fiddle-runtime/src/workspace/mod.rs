@@ -36,6 +36,9 @@ pub enum WorkspaceError {
     #[error("{program} did not finish within {timeout:?} and was killed")]
     Timeout { program: String, timeout: Duration },
 
+    #[error("`{program}` cannot be started: {why}")]
+    Unstartable { program: String, why: &'static str },
+
     #[error("cancelled")]
     Cancelled,
 }
