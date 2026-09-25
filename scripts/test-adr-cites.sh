@@ -392,6 +392,31 @@ assert_exit "a retired name on an early line of a large record → exit 0 on 10 
 assert_contains "and the retirement is counted" "1 retired names, 0 unresolved" "$OUT"
 
 echo ""
+echo "=== Test 19c: in a git tree, a cite found only in an ignored directory does not resolve ==="
+fresh
+git -C "$WORK/tree" init -q
+printf '.fiddle/\n' > "$WORK/tree/.gitignore"
+mkdir -p "$WORK/tree/.fiddle/live/workspaces"
+printf 'pub fn only_in_run_output() {}\n' > "$WORK/tree/.fiddle/live/workspaces/leaked.rs"
+adr "021-a-decision" "fiddle_core::only_in_run_output"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "a cite that lives only under .fiddle/ → exit 1" 1 "$EXIT_CODE"
+assert_contains "and it is named" "only_in_run_output" "$OUT"
+
+echo ""
+echo "=== Test 19d: in a git tree, an untracked file that is not ignored still resolves ==="
+fresh
+git -C "$WORK/tree" init -q
+printf '.fiddle/\n' > "$WORK/tree/.gitignore"
+printf 'pub fn written_before_the_commit() {}\n' > "$WORK/tree/crates/fiddle-core/src/new.rs"
+adr "021-a-decision" "fiddle_core::written_before_the_commit, crates/fiddle-core/src/new.rs"
+EXIT_CODE=0
+OUT=$(run 2>&1) || EXIT_CODE=$?
+assert_exit "an uncommitted, unignored file resolves → exit 0" 0 "$EXIT_CODE"
+assert_contains "both cites counted" "2 cited symbols, 0 body names, 0 retired names, 0 unresolved" "$OUT"
+
+echo ""
 echo "=== Test 20: the repository's own ADRs pass ==="
 EXIT_CODE=0
 OUT=$("$SCRIPT_DIR/check-adr-cites.sh" --root "$SCRIPT_DIR/.." 2>&1) || EXIT_CODE=$?

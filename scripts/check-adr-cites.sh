@@ -26,7 +26,7 @@ fi
 LEAVES=$(mktemp "${TMPDIR:-/tmp}/adr-cites-XXXXXX") || exit 2
 GONE=$(mktemp "${TMPDIR:-/tmp}/adr-gone-XXXXXX") || exit 2
 NAMES=$(mktemp "${TMPDIR:-/tmp}/adr-body-XXXXXX") || exit 2
-trap 'rm -f "$LEAVES" "$GONE" "$NAMES"' EXIT INT TERM
+trap 'rm -f "$LEAVES" "$GONE" "$NAMES" "$CORPUS" "$SEARCHED"' EXIT INT TERM
 
 names_a_path() {
   case "$1" in
@@ -35,23 +35,37 @@ names_a_path() {
   esac
 }
 
-find_file() {
-  find "$ROOT" \
+CORPUS=$(mktemp "${TMPDIR:-/tmp}/adr-corpus-XXXXXX") || exit 2
+SEARCHED=$(mktemp "${TMPDIR:-/tmp}/adr-searched-XXXXXX") || exit 2
+
+if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  git -C "$ROOT" ls-files -co --exclude-standard -- . ':!:.beans' ':!:*/.beans' \
+    >"$CORPUS" || exit 2
+else
+  (cd "$ROOT" && find . \
     -name .git -prune -o \
     -name target -prune -o \
     -name .beans -prune -o \
     -name node_modules -prune -o \
-    -type f -path "*/$1" -print 2>/dev/null | head -1
+    -type f -print | sed 's|^\./||') >"$CORPUS" || exit 2
+fi
+[ -s "$CORPUS" ] || { printf '{"error":"no file to search under %s"}\n' "$ROOT" >&2; exit 2; }
+grep -vE '(^|/)decisions/' "$CORPUS" | (cd "$ROOT" && while IFS= read -r file; do
+  cat -- "$file" 2>/dev/null
+  printf '\n'
+done) >"$SEARCHED"
+
+find_file() {
+  awk -v want="/$1" '{
+    have = "/" $0
+    if (length(have) >= length(want) && substr(have, length(have) - length(want) + 1) == want) {
+      print; exit
+    }
+  }' "$CORPUS"
 }
 
 resolves_in_tree() {
-  grep -rqF \
-    --exclude-dir=.git \
-    --exclude-dir=target \
-    --exclude-dir=.beans \
-    --exclude-dir=node_modules \
-    --exclude-dir=decisions \
-    -- "$1" "$ROOT"
+  grep -qF -- "$1" "$SEARCHED"
 }
 
 split_entries() {
