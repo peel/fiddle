@@ -1,7 +1,7 @@
 # 087 — A steered run that changes nothing answers the direction once, and settles
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml
+Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation
 
 ## Context
 
@@ -23,6 +23,15 @@ The operator decided: settle, and reply on the pull request.
 
 A first run that changes nothing is unchanged by this record. It has no pull request to answer.
 
+## A question goes to whoever asked
+
+OBSERVED on 2026-09-25, live run 7 of the same ticket. This time the agent stopped on a question: the review points at two Claude comments whose text the run was not given. `declined` returned `Rejected`, and nothing was written anywhere. A question nobody is told cannot be answered.
+
+MEASURED before this change: `tell_the_work_item` was called only for an evaluation that rejected, so a question the agent stopped on reached no ticket and no pull request, on a first run or a steered one. ADR 083 recorded that as a boundary and left open whether a question should reach the ticket. The note on `fiddle-k2uh` that said it already did was wrong.
+
+- A steered run that stops on a question asks it on the pull request, through the same effect, with `NEEDS_AN_ANSWER` before it and the same marker after it. The run still refuses, exit 12. The marker means the next run settles without the agent until somebody writes something new, and an answer is something new.
+- A run with no pull request posts the question on the ticket, as `question_note`. This decides what ADR 083 left open, and it is the part of this record the operator did not choose directly: they chose to reply on the pull request, and the ticket is the same rule applied where there is no pull request. It does not reuse the evaluation's note, which says a change was made and then rejected.
+
 ## Only entitled authors can answer
 
 A marker is honoured only in a comment whose author association is OWNER, MEMBER or COLLABORATOR. fiddle posts with the deployment's token, which is an entitled account. Without that bar, anybody who can comment could post a marker and stop a member's review from steering. MEASURED by `a_marker_from_someone_the_project_does_not_entitle_silences_nothing`.
@@ -32,12 +41,16 @@ A marker is honoured only in a comment whose author association is OWNER, MEMBER
 - `a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles`: the run completes, the branch head is unchanged, no second pull request is opened, and exactly one reply names the review it answers.
 - `a_review_fiddle_already_answered_settles_the_next_run_without_the_agent`: the next run makes one model call, the eligibility review, and posts no second reply.
 - `a_review_left_after_the_reply_steers_the_run_again`: a later review reaches the agent's brief, the answered one does not, and the later one gets its own reply.
+- `a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once`: the question is asked once on the pull request and not on the ticket, and the next run makes only the eligibility call.
+- `a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation` now also holds that the ticket is told the question, and not told a change was rejected.
+
+Removing the question routing fails both question rows.
 
 Removing the filter in the steer step fails the second and third rows. Removing the reply-and-settle branch fails all three.
 
 ## Consequences
 
 - `pull_request_answered` is an eleventh registered effect. A deployment's `[github.policy]` may deny it. With no rule it is allowed, as every effect is.
-- The reply reaches the pull request only. Nothing is written on the ticket.
+- A steered run's reply reaches the pull request only. A run with no pull request that stops on a question writes on the ticket.
 - The reply carries the agent's summary, which the model wrote. It is posted as fiddle's answer, and a reader should read it as the agent's account of what it checked.
 - No workflow step names this effect. The workflow performs it from the commit step, as `workflows/toil.toml` says above that step.

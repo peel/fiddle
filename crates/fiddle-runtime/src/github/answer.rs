@@ -113,6 +113,17 @@ pub fn unanswered(
     (reviews, conversation)
 }
 
+pub const NEEDS_AN_ANSWER: &str = "fiddle read the direction on this pull request and made no \
+     change, because it needs an answer before it can:";
+
+pub fn asked(question: &str, answered: &Answered) -> String {
+    format!(
+        "{NEEDS_AN_ANSWER}\n\n{}\n\n{}",
+        question.trim(),
+        answered.marker()
+    )
+}
+
 pub fn reply(summary: &str, answered: &Answered) -> String {
     format!("{NO_CHANGE}\n\n{}\n\n{}", summary.trim(), answered.marker())
 }

@@ -2324,6 +2324,18 @@ fn a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_n
         "and the run recorded no completion, so the same ticket is worked again once a person \
          answers the question in a comment: {payload}"
     );
+    let told = stopped
+        .jira()
+        .last_comment_on(TICKET)
+        .expect("a question nobody is told cannot be answered, so the ticket carries it");
+    assert!(
+        told.contains(THE_QUESTION_THAT_STOPPED_IT) && told.contains("needs an answer"),
+        "the ticket is told the question in the attempt's words: {told}"
+    );
+    assert!(
+        !told.contains("rejected its own change"),
+        "and not told that a change was made and then rejected, because none was: {told}"
+    );
 }
 
 #[test]
@@ -4264,4 +4276,64 @@ fn a_review_left_after_the_reply_steers_the_run_again() {
         "{}",
         replies[1]
     );
+}
+
+const A_QUESTION_THE_REVIEW_RAISES: &str =
+    "The review points at two Claude comments, and their text is not in what this run was given.";
+
+#[test]
+fn a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(vec![
+                a_review_that_reads_a_change(),
+                a_report_that_changed_nothing_and_asked(A_QUESTION_THE_REVIEW_RAISES),
+            ])
+            .chain(vec![a_review_that_reads_a_change()])
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let published = world.github().head_of(&world.github().only_branch());
+    world
+        .github()
+        .reviews_are(&[(A_REVIEW_FIDDLE_ANSWERS, &published, A_MEMBER_REVIEW_OF_270)]);
+    world.forgets_that_the_work_was_completed();
+    let ticket_before = world.jira().last_comment_on(TICKET);
+
+    let second = world.run_toil(REFERENCE);
+    assert_eq!(
+        second.status.code(),
+        Some(12),
+        "a run stopped by a question still refuses: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "the question is asked once: {replies:?}");
+    assert!(
+        replies[0].contains("it needs an answer before it can")
+            && replies[0].contains(A_QUESTION_THE_REVIEW_RAISES),
+        "on the pull request, where the reviewer who raised it will read it: {}",
+        replies[0]
+    );
+    assert!(
+        replies[0].contains(&format!("reviews={A_REVIEW_FIDDLE_ANSWERS} ")),
+        "{}",
+        replies[0]
+    );
+    assert_eq!(
+        world.jira().last_comment_on(TICKET),
+        ticket_before,
+        "and not on the ticket as well, because the direction came from the pull request"
+    );
+
+    let before = world.model_calls();
+    let third = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.model_calls() - before,
+        1,
+        "until somebody answers, the next run does not pay for the agent: {third}"
+    );
+    assert_eq!(world.github().replies().len(), 1, "and asks nothing twice");
 }

@@ -324,6 +324,22 @@ pub fn without_waiting(error: EffectError) -> CapabilityError {
 
 const THE_NOTE_REACHED_NO_WORK_ITEM: &str = "rejection_unpublished";
 
+pub const A_QUESTION_STOPPED_IT: &str = "made no change, because it needs an answer to this \
+     first:";
+
+fn question_note(work_item: &str, question: &str) -> String {
+    [
+        format!("fiddle took `{work_item}` on and {A_QUESTION_STOPPED_IT}"),
+        format!("- {}", question.trim()),
+        "Nothing reached a branch or a pull request.".to_string(),
+        format!(
+            "What would change that: answer the question in a comment on `{work_item}`, then \
+             run it again."
+        ),
+    ]
+    .join("\n")
+}
+
 fn rejection_note(work_item: &str, findings: &[Published]) -> String {
     let mut told = vec![
         format!(
@@ -603,18 +619,17 @@ where
     async fn answer(
         &self,
         by: &SteeredBy,
-        report: Option<&RepairReport>,
+        body: String,
         params: &mut StepParams,
     ) -> Result<(), CapabilityError> {
         let kind = EffectName::shipped(fiddle_core::PULL_REQUEST_ANSWERED);
         let construct = registry::resolve(&kind).ok_or_else(|| CapabilityError::Unsteerable {
             reason: format!("this build performs no `{kind}`, so the direction cannot be answered"),
         })?;
-        let summary = report.map(|it| it.summary.as_str()).unwrap_or_default();
         let mut answering = params.clone();
         answering.repo = Some(by.repo.clone());
         answering.pull_request = Some(by.pr);
-        answering.body = Some(crate::github::answer::reply(summary, &by.answering));
+        answering.body = Some(body);
         self.effect(construct, &mut answering).await
     }
 
@@ -634,11 +649,11 @@ where
         })
     }
 
-    async fn tell_the_work_item(&self, findings: &[Published]) {
+    async fn tell_the_work_item(&self, note: impl Fn(&str) -> String) {
         let Some(admitted) = self.qualification.as_ref() else {
             return;
         };
-        let recorded = match self.publish_rejection(admitted, findings).await {
+        let recorded = match self.publish_note(admitted, note(&admitted.work_item)).await {
             Ok(receipt) => evidence_of(&receipt),
             Err(why) => EvidenceRef(format!(
                 "{THE_NOTE_REACHED_NO_WORK_ITEM}:{}:{}",
@@ -652,15 +667,15 @@ where
             .push(recorded);
     }
 
-    async fn publish_rejection(
+    async fn publish_note(
         &self,
         admitted: &Eligible,
-        findings: &[Published],
+        note: String,
     ) -> Result<ErasedReceipt, String> {
         let comment = AddComment::new(
             admitted.work_item.clone(),
             &admitted.revision,
-            rejection_note(&admitted.work_item, findings),
+            note,
             self.executor.project(),
             self.executor.invocation_ref(),
         )
@@ -768,6 +783,19 @@ where
                         )
                         .await?;
                     if let Some(finding) = self.declined(&report)? {
+                        match (steered.as_ref(), report.question()) {
+                            (Some(by), Some(question)) => {
+                                let body = crate::github::answer::asked(question, &by.answering);
+                                self.answer(by, body, &mut params).await?
+                            }
+                            (None, Some(question)) => {
+                                self.tell_the_work_item(|work_item| {
+                                    question_note(work_item, question)
+                                })
+                                .await
+                            }
+                            (_, None) => {}
+                        }
                         return Ok(Executed::Rejected {
                             findings: vec![finding],
                         });
@@ -787,7 +815,12 @@ where
                 Ready::Commit => {
                     let committed = self.commit(&mut params).await?;
                     if let (false, Some(by)) = (committed, steered.as_ref()) {
-                        self.answer(by, reported.as_ref(), &mut params).await?;
+                        let summary = reported.as_ref().map(|it| it.summary.as_str());
+                        let body = crate::github::answer::reply(
+                            summary.unwrap_or_default(),
+                            &by.answering,
+                        );
+                        self.answer(by, body, &mut params).await?;
                         return Ok(Executed::Settled {
                             reason: Published::of(answered_without_a_change(&by.repo, by.pr)),
                         });
@@ -809,7 +842,8 @@ where
         match params.earned.verdict() {
             Some(Verdict::Rejected { findings }) => {
                 let findings: Vec<Published> = findings.iter().map(Published::of).collect();
-                self.tell_the_work_item(&findings).await;
+                self.tell_the_work_item(|work_item| rejection_note(work_item, &findings))
+                    .await;
                 Ok(Executed::Rejected { findings })
             }
             Some(Verdict::Accepted {}) | None => {
