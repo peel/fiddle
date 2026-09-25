@@ -141,6 +141,41 @@ fn the_worktree_is_removed_even_when_nobody_calls_remove() {
     assert!(!path.exists(), "a dropped workspace must not survive");
 }
 
+fn a_read_only_tree_like_go_leaves_in(home: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let module = home.join("go/pkg/mod/example.com/m@v1.0.0");
+    std::fs::create_dir_all(module.join("internal")).unwrap();
+    std::fs::write(module.join("go.mod"), "module example.com/m\n").unwrap();
+    std::fs::write(module.join("internal/a.go"), "package internal\n").unwrap();
+    for dir in [module.join("internal"), module.clone()] {
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+    module
+}
+
+#[test]
+fn a_home_holding_a_read_only_module_cache_is_removed_with_its_workspace() {
+    let _env = env_reader();
+    let dir = tempfile::tempdir().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+    let home = {
+        let ws = Workspace::create(&repo, &dir.path().join("ws"), &attempt(), token()).unwrap();
+        let module = a_read_only_tree_like_go_leaves_in(ws.home());
+        assert!(
+            std::fs::remove_dir_all(ws.home()).is_err(),
+            "the row's own premise: a plain removal of this home is refused"
+        );
+        assert!(module.exists());
+        ws.home().to_path_buf()
+    };
+    assert!(
+        !home.exists(),
+        "Go writes its module cache read-only, and a dropped workspace must still take its \
+         home with it: {} survived",
+        home.display()
+    );
+}
+
 #[test]
 fn removing_twice_is_not_an_error() {
     let _env = env_reader();

@@ -859,7 +859,6 @@ async fn no_worktree_survives_the_attempt() {
             .expect("the workspace root is readable")
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .filter(|name| !name.ends_with(".home"))
             .collect();
         assert!(
             leftovers.is_empty(),

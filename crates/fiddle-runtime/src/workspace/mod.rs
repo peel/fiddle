@@ -254,7 +254,7 @@ impl Workspace {
                 &self.root.to_string_lossy(),
             ],
         );
-        let home = discarded(&self.home, |path| std::fs::remove_dir_all(path));
+        let home = discarded(&self.home, removed_even_if_read_only);
         let baseline = discarded(&self.baseline_ignore, |path| std::fs::remove_file(path));
         worktree.and(home).and(baseline)
     }
@@ -262,8 +262,39 @@ impl Workspace {
 
 impl Drop for Workspace {
     fn drop(&mut self) {
-        let _ = self.remove();
+        if let Err(error) = self.remove() {
+            eprintln!(
+                "fiddle could not clean up the workspace of this attempt: {error}. It is \
+                 left on disk; remove it by hand"
+            );
+        }
     }
+}
+
+fn removed_even_if_read_only(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Err(refused) if refused.kind() == std::io::ErrorKind::PermissionDenied => {
+            made_writable(path)?;
+            std::fs::remove_dir_all(path)
+        }
+        other => other,
+    }
+}
+
+fn made_writable(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() {
+        return Ok(());
+    }
+    let mode = meta.permissions().mode();
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode | 0o700))?;
+    }
+    for entry in std::fs::read_dir(dir)? {
+        made_writable(&entry?.path())?;
+    }
+    Ok(())
 }
 
 fn discarded<F>(path: &Path, remove: F) -> Result<(), WorkspaceError>
