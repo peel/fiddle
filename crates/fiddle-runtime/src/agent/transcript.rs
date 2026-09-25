@@ -319,7 +319,12 @@ impl AgentHook for TranscriptHook {
                 .number("turn", turn)
                 .number("blocks", event.content.len() as u64)
                 .number("input_tokens", event.usage.input_tokens)
-                .number("output_tokens", event.usage.output_tokens),
+                .number("output_tokens", event.usage.output_tokens)
+                .number("cache_read_tokens", event.usage.cached_input_tokens)
+                .number(
+                    "cache_write_tokens",
+                    event.usage.cache_creation_input_tokens,
+                ),
         );
         for block in event.content.iter() {
             self.append(returned(turn, block));
@@ -371,6 +376,7 @@ fn finish_reason<T: serde::Serialize>(raw: &T) -> Option<String> {
     let rendered = serde_json::to_value(raw).ok()?;
     rendered["choices"][0]["finish_reason"]
         .as_str()
+        .or_else(|| rendered["stop_reason"].as_str())
         .map(str::to_string)
 }
 
@@ -563,6 +569,16 @@ mod tests {
         assert!(
             elapsed[3] > 0,
             "the elapsed value must advance with the run: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_messages_response_names_its_reason_as_stop_reason() {
+        assert_eq!(
+            finish_reason(&serde_json::json!({"stop_reason": "max_tokens", "content": []}))
+                .as_deref(),
+            Some("max_tokens"),
+            "the Messages protocol reports why it stopped outside any choice"
         );
     }
 

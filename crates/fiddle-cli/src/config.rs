@@ -99,6 +99,9 @@ pub struct Agent {
 
     pub base_url: WrittenOrNamed,
 
+    #[serde(default)]
+    pub protocol: fiddle_runtime::Protocol,
+
     pub api_key: EnvRef,
 
     #[serde(default = "default_max_turns")]
@@ -1561,6 +1564,34 @@ success = "artefact-written"
         );
     }
 
+    fn agent_with(line: &str) -> Result<Config, toml::de::Error> {
+        toml::from_str(&format!(
+            "[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+             [agent]\nmodel=\"m\"\nbase_url=\"u\"\napi_key={{env=\"K\"}}\n{line}\n[workspace]\n"
+        ))
+    }
+
+    #[test]
+    fn a_document_can_ask_for_the_messages_protocol() {
+        let agent = agent_with("protocol = \"messages\"")
+            .unwrap()
+            .agent
+            .unwrap();
+        assert_eq!(agent.protocol, fiddle_runtime::Protocol::Messages);
+        assert!(agent.protocol.caches());
+    }
+
+    #[test]
+    fn a_protocol_this_build_does_not_speak_is_refused() {
+        let refused = agent_with("protocol = \"anthropic\"")
+            .expect_err("a misspelt protocol must not fall back to the default silently");
+        let said = refused.to_string();
+        assert!(
+            said.contains("chat-completions") && said.contains("messages"),
+            "the refusal names the protocols this build speaks: {said}"
+        );
+    }
+
     #[test]
     fn the_defaults_are_the_ones_documented() {
         let cfg: Config = toml::from_str(
@@ -1576,6 +1607,11 @@ success = "artefact-written"
             "the outer bound, which is parsed and not consumed — ADR 013"
         );
         assert_eq!(agent.max_tokens, 8192);
+        assert_eq!(
+            agent.protocol,
+            fiddle_runtime::Protocol::ChatCompletions,
+            "a document that names no protocol keeps the route ADR 012 chose"
+        );
         assert_eq!(agent.max_changed_files, 16);
         assert_eq!(agent.deadline.as_duration(), Duration::from_secs(45 * 60));
         assert_eq!(

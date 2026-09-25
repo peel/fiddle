@@ -971,8 +971,14 @@ fn transcripts(
 fn model_client(agent: &config::Agent) -> Result<fiddle_runtime::Gateway, CliError> {
     let base_url = resolve_named(MODEL_ENDPOINT, &agent.base_url)?;
     let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
-    fiddle_runtime::completion_model(&base_url, credential, &agent.api_key.env, &agent.model)
-        .map_err(|error| CliError::Gateway(GatewayUnavailable(error)))
+    fiddle_runtime::completion_model(
+        agent.protocol,
+        &base_url,
+        credential,
+        &agent.api_key.env,
+        &agent.model,
+    )
+    .map_err(|error| CliError::Gateway(GatewayUnavailable(error)))
 }
 
 fn cancel_on_interrupt(token: &CancellationToken) {

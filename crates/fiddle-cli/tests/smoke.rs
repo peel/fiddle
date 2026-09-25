@@ -6,10 +6,13 @@ const CREDENTIAL_VAR: &str = "LITELLM_API_KEY";
 
 const MODEL_VAR: &str = "FIDDLE_TIER1_MODEL";
 const BASE_URL_VAR: &str = "FIDDLE_TIER1_BASE_URL";
+const PROTOCOL_VAR: &str = "FIDDLE_TIER1_PROTOCOL";
 
 const DEFAULT_MODEL: &str = "bedrock/moonshotai.kimi-k2.5";
 
 const DEFAULT_BASE_URL: &str = "https://litellm.firn.snplow.net/v1";
+
+const DEFAULT_PROTOCOL: &str = "chat-completions";
 
 const PROJECT: &str = "icecube";
 const WORK_ID: &str = "fiddle-m1-smoke";
@@ -30,8 +33,9 @@ fn the_agent_loop_still_works_against_a_real_model() {
     };
     let model = env_or(MODEL_VAR, DEFAULT_MODEL);
     let base_url = env_or(BASE_URL_VAR, DEFAULT_BASE_URL);
+    let protocol = env_or(PROTOCOL_VAR, DEFAULT_PROTOCOL);
 
-    let project = Project::new(&model, &base_url);
+    let project = Project::new(&model, &base_url, &protocol);
 
     let started = Instant::now();
     let out = Command::new(env!("CARGO_BIN_EXE_fiddle"))
@@ -168,6 +172,7 @@ fn the_agent_loop_still_works_against_a_real_model() {
     println!("\n─── tier 1 observation ────────────────────────────────────");
     println!("  model            = {model}");
     println!("  gateway          = {base_url}");
+    println!("  protocol         = {protocol}");
     println!("  latency          = {:.1}s", latency.as_secs_f64());
     println!("  exit code        = {:?}", out.status.code());
     println!("  outcome          = {}", payload["outcome"]);
@@ -193,6 +198,16 @@ fn the_agent_loop_still_works_against_a_real_model() {
         println!("    {reference}");
     }
     println!("  bundle           = {}", bundle_path.display());
+    match spent_under(&project.report_dir()) {
+        Some(spent) => println!(
+            "  tokens           = {} turns: {} fresh input, {} read from the cache, {} written \
+             to it, {} output",
+            spent.turns, spent.input, spent.cache_read, spent.cache_write, spent.output
+        ),
+        None => {
+            println!("  tokens           = no transcript; export FIDDLE_TRANSCRIPT=1 to count them")
+        }
+    }
     println!("───────────────────────────────────────────────────────────");
     println!(
         "  `repair landed` is data, never a verdict: `no` is correct behaviour \
@@ -254,6 +269,55 @@ fn classify(reason: &str) {
     );
 }
 
+#[derive(Default)]
+struct Spent {
+    turns: u64,
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+}
+
+fn spent_under(report_dir: &Path) -> Option<Spent> {
+    let mut found = Vec::new();
+    let mut pending = vec![report_dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "jsonl")
+                && path
+                    .parent()
+                    .is_some_and(|parent| parent.ends_with("transcript"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    if found.is_empty() {
+        return None;
+    }
+    let mut spent = Spent::default();
+    for path in found {
+        for line in std::fs::read_to_string(path).ok()?.lines() {
+            let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if record["record"] != "spent" {
+                continue;
+            }
+            let count = |field: &str| record[field].as_u64().unwrap_or(0);
+            spent.turns += 1;
+            spent.input += count("input_tokens");
+            spent.output += count("output_tokens");
+            spent.cache_read += count("cache_read_tokens");
+            spent.cache_write += count("cache_write_tokens");
+        }
+    }
+    Some(spent)
+}
+
 fn env_or(name: &str, fallback: &str) -> String {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => value,
@@ -266,7 +330,7 @@ struct Project {
 }
 
 impl Project {
-    fn new(model: &str, base_url: &str) -> Self {
+    fn new(model: &str, base_url: &str, protocol: &str) -> Self {
         let project = Project {
             dir: tempfile::tempdir().expect("a temporary directory"),
         };
@@ -296,6 +360,7 @@ impl Project {
                  [agent]\n\
                  model = \"{model}\"\n\
                  base_url = \"{base_url}\"\n\
+                 protocol = \"{protocol}\"\n\
                  api_key = {{ env = \"{CREDENTIAL_VAR}\" }}\n\
                  max_turns = 16\n\
                  max_tokens = 4096\n\

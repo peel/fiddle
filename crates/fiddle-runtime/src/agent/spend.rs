@@ -37,6 +37,13 @@ impl SpendHook {
     }
 }
 
+pub fn sent(usage: &rig_core::completion::Usage) -> u64 {
+    match usage.total_tokens {
+        0 => usage.input_tokens + usage.output_tokens,
+        total => total,
+    }
+}
+
 pub fn reached(spent: u64, bound: u64) -> String {
     format!(
         "the token bound of {bound} was reached at {spent}. Every turn resends the history, so \
@@ -51,7 +58,7 @@ impl AgentHook for SpendHook {
         _ctx: &HookContext,
         event: CompletionResponse<'_>,
     ) -> ObservationAction {
-        let turn = event.usage.input_tokens + event.usage.output_tokens;
+        let turn = sent(&event.usage);
         let spent = self.spent.fetch_add(turn, Ordering::Relaxed) + turn;
         match self.over(spent) {
             Some(reason) => {
@@ -92,6 +99,33 @@ mod tests {
             hook.over(250).is_some_and(|it| it.contains("250")),
             "and past it the reason names what was actually spent, not the bound alone"
         );
+    }
+
+    #[test]
+    fn a_turn_read_from_the_cache_still_counts_toward_the_bound() {
+        let usage = rig_core::completion::Usage {
+            input_tokens: 12,
+            output_tokens: 40,
+            cached_input_tokens: 88_000,
+            total_tokens: 88_052,
+            ..rig_core::completion::Usage::new()
+        };
+        assert_eq!(
+            sent(&usage),
+            88_052,
+            "the Messages protocol leaves cached context out of `input_tokens`, so counting \
+             only that would let a runaway run pass the bound once its history is cached"
+        );
+    }
+
+    #[test]
+    fn a_provider_that_reports_no_total_is_counted_from_its_parts() {
+        let usage = rig_core::completion::Usage {
+            input_tokens: 100,
+            output_tokens: 10,
+            ..rig_core::completion::Usage::new()
+        };
+        assert_eq!(sent(&usage), 110);
     }
 
     #[test]

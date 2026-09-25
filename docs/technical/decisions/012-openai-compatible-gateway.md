@@ -1,6 +1,6 @@
 # 012 — M1 talks to an OpenAI-compatible gateway, not to Anthropic
 
-Status: accepted; amended in M4b by 050, which replaces "Suppressing the body was right and stays"
+Status: accepted; amended in M4b by 050, which replaces "Suppressing the body was right and stays"; amended by 086, which adds a Messages route that caches the history
 Cites: crates/fiddle-runtime/src/gateway.rs, GatewayModel, completion_model, completions_api, AgentError, agent::classify, agent::provider_fault, OutputMode::Tool, crates/fiddle-cli/tests/smoke.rs, scripts/tier2.sh, crates/fiddle-acceptance/tests/binary_repair.rs
 
 ## Context

@@ -59,6 +59,10 @@ pub fn config_check_json(config: &Config) -> String {
             "base_url": written_or_named_json(&agent.base_url),
             "api_key": { "env": agent.api_key.env },
             "max_turns": agent.max_turns,
+            "protocol": {
+                "configured": agent.protocol.name(),
+                "prompt_caching": agent.protocol.caches(),
+            },
             "max_tokens": agent.max_tokens,
             "max_tokens_total": agent.max_tokens_total,
             "max_changed_files": agent.max_changed_files,
@@ -252,6 +256,7 @@ pub fn config_check_human(config: &Config) -> String {
         out.push_str(&format!(
             "\n  agent.model = {}\
              \n  {}\
+             \n  agent.protocol = {}\
              \n  agent.api_key.env = {}\
              \n  agent.max_turns = {}\
              \n  agent.max_tokens = {}\
@@ -264,6 +269,18 @@ pub fn config_check_human(config: &Config) -> String {
              request's body — see decision {})",
             agent.model,
             written_or_named_line("agent.base_url", &agent.base_url),
+            match agent.protocol.caches() {
+                true => format!(
+                    "{} (prompt caching on: the system prompt, the last tool and the last \
+                     message carry a cache breakpoint)",
+                    agent.protocol.name()
+                ),
+                false => format!(
+                    "{} (prompt caching off: every turn resends and is billed for the whole \
+                     history; `messages` caches it)",
+                    agent.protocol.name()
+                ),
+            },
             agent.api_key.env,
             agent.max_turns,
             agent.max_tokens,

@@ -1,7 +1,110 @@
 use rig_core::client::CompletionClient;
-use rig_core::providers::openai;
+use rig_core::completion::{CompletionError, CompletionRequest, CompletionResponse};
+use rig_core::providers::{anthropic, openai};
+use rig_core::streaming::StreamingCompletionResponse;
 
-pub type GatewayModel = openai::completion::CompletionModel;
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Protocol {
+    #[default]
+    ChatCompletions,
+    Messages,
+}
+
+impl Protocol {
+    pub fn name(self) -> &'static str {
+        match self {
+            Protocol::ChatCompletions => "chat-completions",
+            Protocol::Messages => "messages",
+        }
+    }
+
+    pub fn caches(self) -> bool {
+        matches!(self, Protocol::Messages)
+    }
+}
+
+#[derive(Clone)]
+pub enum GatewayModel {
+    ChatCompletions(openai::completion::CompletionModel),
+    Messages(anthropic::completion::CompletionModel),
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(untagged)]
+pub enum GatewayResponse {
+    Messages(anthropic::completion::CompletionResponse),
+    ChatCompletions(openai::completion::CompletionResponse),
+}
+
+fn carried<T>(
+    answered: CompletionResponse<T>,
+    wrap: impl FnOnce(T) -> GatewayResponse,
+) -> CompletionResponse<GatewayResponse> {
+    CompletionResponse {
+        choice: answered.choice,
+        usage: answered.usage,
+        raw_response: wrap(answered.raw_response),
+        message_id: answered.message_id,
+    }
+}
+
+pub const STREAMING_UNSUPPORTED: &str =
+    "this build does not stream a completion, so a streamed request is refused rather than \
+     answered in part";
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct NeverStreamed;
+
+impl rig_core::completion::GetTokenUsage for NeverStreamed {
+    fn token_usage(&self) -> rig_core::completion::Usage {
+        rig_core::completion::Usage::new()
+    }
+}
+
+impl rig_core::completion::CompletionModel for GatewayModel {
+    type Response = GatewayResponse;
+    type StreamingResponse = NeverStreamed;
+    type Client = ();
+
+    fn make(_client: &Self::Client, _model: impl Into<String>) -> Self {
+        unreachable!(
+            "a gateway model is built by `completion_model`, which reads the credential once"
+        )
+    }
+
+    async fn completion(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse<GatewayResponse>, CompletionError> {
+        match self {
+            GatewayModel::ChatCompletions(model) => {
+                let answered = model.completion(request).await?;
+                Ok(carried(answered, GatewayResponse::ChatCompletions))
+            }
+            GatewayModel::Messages(model) => {
+                let answered = model.completion(request).await?;
+                Ok(carried(answered, GatewayResponse::Messages))
+            }
+        }
+    }
+
+    fn composes_native_output_with_tools(&self) -> bool {
+        match self {
+            GatewayModel::ChatCompletions(model) => model.composes_native_output_with_tools(),
+            GatewayModel::Messages(model) => model.composes_native_output_with_tools(),
+        }
+    }
+
+    async fn stream(
+        &self,
+        _request: CompletionRequest,
+    ) -> Result<StreamingCompletionResponse<NeverStreamed>, CompletionError> {
+        Err(CompletionError::ProviderError(
+            STREAMING_UNSUPPORTED.to_string(),
+        ))
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -86,25 +189,38 @@ pub struct Gateway {
 }
 
 pub fn completion_model(
+    protocol: Protocol,
     base_url: &str,
     api_key: String,
     variable: &str,
     model: &str,
 ) -> Result<Gateway, GatewayError> {
     let redaction = Redaction::of(&api_key);
-    let client = openai::Client::builder()
-        .api_key(api_key)
-        .base_url(base_url)
-        .build()
-        .map_err(|_| GatewayError {
-            base_url: base_url.to_string(),
-            variable: variable.to_string(),
-        })?
-        .completions_api();
-    Ok(Gateway {
-        model: client.completion_model(model),
-        redaction,
-    })
+    let unbuilt = || GatewayError {
+        base_url: base_url.to_string(),
+        variable: variable.to_string(),
+    };
+    let model = match protocol {
+        Protocol::ChatCompletions => GatewayModel::ChatCompletions(
+            openai::Client::builder()
+                .api_key(api_key)
+                .base_url(base_url)
+                .build()
+                .map_err(|_| unbuilt())?
+                .completions_api()
+                .completion_model(model),
+        ),
+        Protocol::Messages => GatewayModel::Messages(
+            anthropic::Client::builder()
+                .api_key(api_key)
+                .base_url(base_url)
+                .build()
+                .map_err(|_| unbuilt())?
+                .completion_model(model)
+                .with_prompt_caching(),
+        ),
+    };
+    Ok(Gateway { model, redaction })
 }
 
 #[cfg(test)]
@@ -117,6 +233,7 @@ mod tests {
     fn a_model_is_built_without_reaching_the_endpoint() {
         assert!(
             completion_model(
+                Protocol::ChatCompletions,
                 "http://127.0.0.1:9/v1",
                 "not-a-real-credential".to_string(),
                 "LITELLM_API_KEY",
@@ -132,6 +249,7 @@ mod tests {
     fn a_credential_that_cannot_be_a_header_is_refused_without_being_quoted() {
         let secret = "sk-secret\nvalue";
         let Err(error) = completion_model(
+            Protocol::ChatCompletions,
             "http://127.0.0.1:9/v1",
             secret.to_string(),
             "LITELLM_API_KEY",
@@ -154,6 +272,7 @@ mod tests {
     #[test]
     fn the_model_and_the_redaction_come_from_one_read_of_the_credential() {
         let gateway = completion_model(
+            Protocol::ChatCompletions,
             "http://127.0.0.1:9/v1",
             SECRET.to_string(),
             "LITELLM_API_KEY",
