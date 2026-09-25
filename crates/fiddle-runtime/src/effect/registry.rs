@@ -9,6 +9,7 @@ use crate::jira::{AddComment, LinkPullRequest, TransitionIssue};
 use fiddle_core::{
     EffectName, HumanDecisionRequirement, ENSURE_CHECK_REQUESTED, ENSURE_PULL_REQUEST,
     ENSURE_PULL_REQUEST_BODY, ENSURE_PULL_REQUEST_READY, PUBLISH_DECISION_REQUEST,
+    PULL_REQUEST_ANSWERED,
 };
 use std::sync::OnceLock;
 
@@ -67,6 +68,11 @@ pub const BUILT_IN: &[EffectDescriptor] = &[
         name: ENSURE_PULL_REQUEST_BODY,
         minimum: HumanDecisionRequirement::Automatic,
         construct: build::<EnsurePullRequestBody>,
+    },
+    EffectDescriptor {
+        name: PULL_REQUEST_ANSWERED,
+        minimum: HumanDecisionRequirement::Automatic,
+        construct: build::<crate::github::AnswerPullRequest>,
     },
     FileVerdict::descriptor(),
     AddComment::descriptor(),
@@ -218,6 +224,15 @@ mod tests {
         EnsurePullRequestBody::new("acme/widget".to_string(), 7, "a body".to_string())
     }
 
+    fn answer_op() -> crate::github::AnswerPullRequest {
+        crate::github::AnswerPullRequest::new(
+            "acme/widget".to_string(),
+            7,
+            crate::github::answer::reply("already here", &crate::github::Answered::default()),
+        )
+        .expect("a reply that carries its marker builds")
+    }
+
     const OBSERVED_REVISION: &str = "2026-08-26T09:15:00Z";
 
     fn verdict_op() -> FileVerdict {
@@ -299,6 +314,7 @@ mod tests {
             "ensure_pull_request_body",
             HumanDecisionRequirement::Automatic,
         ),
+        ("pull_request_answered", HumanDecisionRequirement::Automatic),
         ("jira.issue_filed", HumanDecisionRequirement::Automatic),
         ("jira.comment_added", HumanDecisionRequirement::Automatic),
         (
@@ -320,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn the_registry_holds_exactly_the_ten_this_build_ships() {
+    fn the_registry_holds_exactly_the_eleven_this_build_ships() {
         let held: Vec<(&str, HumanDecisionRequirement)> =
             BUILT_IN.iter().map(|d| (d.name, d.minimum)).collect();
         assert_eq!(
@@ -435,6 +451,7 @@ mod tests {
             (PUBLISH_DECISION_REQUEST, request_op().minimum()),
             (ENSURE_PULL_REQUEST_READY, ready_op().minimum()),
             (ENSURE_PULL_REQUEST_BODY, body_op().minimum()),
+            (PULL_REQUEST_ANSWERED, answer_op().minimum()),
             (JIRA_ISSUE_FILED, verdict_op().minimum()),
             (JIRA_COMMENT_ADDED, comment_op().minimum()),
             (JIRA_ISSUE_TRANSITIONED, transition_op().minimum()),

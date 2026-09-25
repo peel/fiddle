@@ -221,6 +221,10 @@ fn quoted_ticket(admitted: Option<&Eligible>, work_item: Option<&WorkItemState>)
     }
 }
 
+fn steered_task(steered: &Option<SteeredBy>) -> Option<&String> {
+    steered.as_ref().map(|by| &by.task)
+}
+
 fn task_carrying(task: &str, quoted: Option<&String>, steered: Option<&String>) -> String {
     let mut sections = vec![task.to_string()];
     if let Some(quoted) = quoted {
@@ -274,8 +278,23 @@ fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
 
 enum Steered {
     NothingPublishedYet,
-    By(String),
+    By(SteeredBy),
     Settled { repo: String, pr: u64 },
+}
+
+struct SteeredBy {
+    task: String,
+    repo: String,
+    pr: u64,
+    answering: crate::github::Answered,
+}
+
+pub const ANSWERED_WITHOUT_A_CHANGE: &str =
+    "the direction on the pull request asked for a change that is already made, so the run \
+     changed nothing and answered it there";
+
+pub fn answered_without_a_change(repo: &str, pr: u64) -> String {
+    format!("{ANSWERED_WITHOUT_A_CHANGE}: {repo}#{pr}")
 }
 
 pub const NOTHING_ASKED_FOR: &str =
@@ -546,10 +565,17 @@ where
         .await
         .map_err(CapabilityError::Forge)?;
 
+        let (reviews, conversation) = crate::github::unanswered(reviews, conversation);
+        let answering = crate::github::Answered::of(&reviews, &conversation);
         let direction =
             crate::capability::Direction::read_from(reviews, conversation, &open.head_sha);
         Ok(match direction.rendered() {
-            Some(task) => Steered::By(task),
+            Some(task) => Steered::By(SteeredBy {
+                task,
+                repo: repo.to_string(),
+                pr: open.number,
+                answering,
+            }),
             None => Steered::Settled {
                 repo: repo.to_string(),
                 pr: open.number,
@@ -557,11 +583,11 @@ where
         })
     }
 
-    async fn commit(&self, params: &mut StepParams) -> Result<(), CapabilityError> {
+    async fn commit(&self, params: &mut StepParams) -> Result<bool, CapabilityError> {
         let workspace = Arc::clone(&self.ports.host.workspace);
         let changed = workspace.changed_files()?;
         if changed.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         let head = commit::commit_changed(
             &workspace,
@@ -571,7 +597,25 @@ where
         )
         .await?;
         params.earned.record_head_sha(&head)?;
-        Ok(())
+        Ok(true)
+    }
+
+    async fn answer(
+        &self,
+        by: &SteeredBy,
+        report: Option<&RepairReport>,
+        params: &mut StepParams,
+    ) -> Result<(), CapabilityError> {
+        let kind = EffectName::shipped(fiddle_core::PULL_REQUEST_ANSWERED);
+        let construct = registry::resolve(&kind).ok_or_else(|| CapabilityError::Unsteerable {
+            reason: format!("this build performs no `{kind}`, so the direction cannot be answered"),
+        })?;
+        let summary = report.map(|it| it.summary.as_str()).unwrap_or_default();
+        let mut answering = params.clone();
+        answering.repo = Some(by.repo.clone());
+        answering.pull_request = Some(by.pr);
+        answering.body = Some(crate::github::answer::reply(summary, &by.answering));
+        self.effect(construct, &mut answering).await
     }
 
     fn record_change_set(&self, work_id: &str) -> Result<(), CapabilityError> {
@@ -688,7 +732,8 @@ where
             });
         }
         let quoted = quoted_ticket(self.qualification.as_ref(), work_item);
-        let mut steered: Option<String> = None;
+        let mut steered: Option<SteeredBy> = None;
+        let mut reported: Option<RepairReport> = None;
         let mut params = StepParams {
             earned: StepOutputs::default(),
             ..self.params.clone()
@@ -708,7 +753,7 @@ where
             match step {
                 Ready::Steer => match self.steer().await? {
                     Steered::NothingPublishedYet => steered = None,
-                    Steered::By(task) => steered = Some(task),
+                    Steered::By(by) => steered = Some(by),
                     Steered::Settled { repo, pr } => {
                         return Ok(Executed::Settled {
                             reason: Published::of(nothing_asked_for(&repo, pr)),
@@ -718,7 +763,7 @@ where
                 Ready::Agent { task, max_turns } => {
                     let report = self
                         .attempt(
-                            &task_carrying(task, quoted.as_ref(), steered.as_ref()),
+                            &task_carrying(task, quoted.as_ref(), steered_task(&steered)),
                             *max_turns,
                         )
                         .await?;
@@ -727,18 +772,27 @@ where
                             findings: vec![finding],
                         });
                     }
+                    reported = Some(report);
                     self.within_scope()?
                 }
                 Ready::Evaluate { task, max_turns } => {
                     self.evaluate(
-                        &task_carrying(task, quoted.as_ref(), steered.as_ref()),
+                        &task_carrying(task, quoted.as_ref(), steered_task(&steered)),
                         *max_turns,
                         &mut params,
                     )
                     .await?
                 }
                 Ready::Check { command } => self.check(command).await?,
-                Ready::Commit => self.commit(&mut params).await?,
+                Ready::Commit => {
+                    let committed = self.commit(&mut params).await?;
+                    if let (false, Some(by)) = (committed, steered.as_ref()) {
+                        self.answer(by, reported.as_ref(), &mut params).await?;
+                        return Ok(Executed::Settled {
+                            reason: Published::of(answered_without_a_change(&by.repo, by.pr)),
+                        });
+                    }
+                }
                 Ready::Effect {
                     construct,
                     reaching,

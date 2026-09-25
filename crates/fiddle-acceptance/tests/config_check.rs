@@ -615,13 +615,14 @@ fn config_check_reports_the_github_table_it_accepted() {
     assert_eq!(github["policy"]["publish_decision_request"], "allow");
     assert_eq!(github["policy"]["ensure_pull_request_ready"], "allow");
     assert_eq!(github["policy"]["ensure_pull_request_body"], "allow");
+    assert_eq!(github["policy"]["pull_request_answered"], "allow");
     assert_eq!(github["policy"]["jira.issue_filed"], "allow");
     assert_eq!(github["policy"]["jira.comment_added"], "allow");
     assert_eq!(github["policy"]["jira.issue_transitioned"], "allow");
     assert_eq!(github["policy"]["jira.pull_request_linked"], "allow");
     assert_eq!(
         github["policy"].as_object().unwrap().len(),
-        10,
+        11,
         "one row per effect this build performs, and no more: {github}"
     );
     assert_eq!(github["decision"], serde_json::Value::Null, "{github}");

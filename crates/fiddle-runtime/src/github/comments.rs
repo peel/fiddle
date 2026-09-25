@@ -54,6 +54,7 @@ impl From<ListedComment> for HumanResponse {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reviewed {
+    pub id: u64,
     pub author: ActorRef,
     pub author_association: String,
     pub state: String,
@@ -63,6 +64,8 @@ pub struct Reviewed {
 
 #[derive(Debug, Deserialize)]
 struct ListedReview {
+    #[serde(default)]
+    id: u64,
     body: Option<String>,
     state: String,
     author_association: String,
@@ -109,6 +112,7 @@ pub async fn read_reviews(
             ))
         })?;
         reviews.extend(listed.into_iter().map(|it| Reviewed {
+            id: it.id,
             author: ActorRef {
                 login: it.user.login,
                 id: it.user.id,

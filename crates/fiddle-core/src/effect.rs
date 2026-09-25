@@ -61,6 +61,7 @@ pub const ENSURE_CHECK_REQUESTED: &str = "ensure_check_requested";
 pub const PUBLISH_DECISION_REQUEST: &str = "publish_decision_request";
 pub const ENSURE_PULL_REQUEST_READY: &str = "ensure_pull_request_ready";
 pub const ENSURE_PULL_REQUEST_BODY: &str = "ensure_pull_request_body";
+pub const PULL_REQUEST_ANSWERED: &str = "pull_request_answered";
 pub const JIRA_ISSUE_FILED: &str = "jira.issue_filed";
 pub const JIRA_COMMENT_ADDED: &str = "jira.comment_added";
 pub const JIRA_ISSUE_TRANSITIONED: &str = "jira.issue_transitioned";

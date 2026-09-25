@@ -1937,6 +1937,7 @@ mod direction {
         use fiddle_core::ActorRef;
 
         let review = |commit: &str| Reviewed {
+            id: 1,
             author: ActorRef {
                 login: "peel".to_string(),
                 id: 1,

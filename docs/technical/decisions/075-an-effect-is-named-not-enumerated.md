@@ -2,6 +2,7 @@
 
 Status: accepted
 Cites: EffectName, EffectDescriptor, BUILT_IN, PINNED_MINIMUMS, HumanDecisionRequirement, FileVerdict, RegistryError, ENSURE_BRANCH_PUBLISHED, JIRA_ISSUE_FILED, JIRA_COMMENT_ADDED, JIRA_ISSUE_TRANSITIONED, JIRA_PULL_REQUEST_LINKED, PolicyTable, PolicyDocument, UnknownEffect, effect_id, branch_name, ProposedEffect, IntegrationOperation, AdapterError, EffectPhase, FromStepParams, resolve, describe
+Retired: the_registry_holds_exactly_the_ten_this_build_ships
 
 ## Context
 

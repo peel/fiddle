@@ -1,3 +1,4 @@
+pub mod answer;
 pub mod checks;
 pub mod cli;
 pub mod comments;
@@ -6,6 +7,7 @@ pub mod ready;
 pub mod refs;
 
 pub use crate::effect::RetryAdvice;
+pub use answer::{unanswered, AnswerPullRequest, Answered, AnsweredComment};
 pub use checks::{
     check_request_target, classify, observe_checks, observe_genuine_failure, run_name, BlamedCheck,
     CheckState, EnsureCheckRequested, GenuineFailure, Settlement, WorkflowRun,

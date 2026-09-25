@@ -318,15 +318,17 @@ async fn every_registered_descriptor_builds_the_operation_its_name_means_or_refu
     assert_eq!(
         refused,
         vec![
+            "pull_request_answered",
             "jira.issue_filed",
             "jira.comment_added",
             "jira.issue_transitioned",
             "jira.pull_request_linked",
         ],
-        "each of these carries an observed issue revision or a scan verdict in its identity, \
-         which a synchronous `from_params` cannot read, so it is registered because the \
-         executor refuses an unregistered name and not because a step can name it; a jira \
-         effect that moved into the list above gained a constructor made of defaults"
+        "each of these carries something a step cannot name: an observed issue revision, a \
+         scan verdict, or the reply a workflow writes when a steered run changed nothing. It \
+         is registered because the executor refuses an unregistered name and not because a \
+         step can name it; an effect that moved into the list above gained a constructor made \
+         of defaults"
     );
     assert_eq!(
         built.len() + refused.len(),

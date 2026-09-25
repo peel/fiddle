@@ -798,6 +798,36 @@ impl ToilForge {
         .unwrap();
     }
 
+    fn reviews_are(&self, reviews: &[(u64, &str, &str)]) {
+        let listed: Vec<serde_json::Value> = reviews
+            .iter()
+            .map(|(id, commit, body)| {
+                serde_json::json!({
+                    "id": id,
+                    "user": { "login": "spenes", "id": 88_285_759, "type": "User" },
+                    "author_association": "MEMBER",
+                    "state": "COMMENTED",
+                    "commit_id": commit,
+                    "body": body,
+                })
+            })
+            .collect();
+        std::fs::write(
+            self.stub.join("reviews").join("page-1.json"),
+            serde_json::Value::Array(listed).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn replies(&self) -> Vec<String> {
+        self.landed("comments")
+            .iter()
+            .filter_map(|landed| landed["body"].as_str())
+            .filter_map(|sent| serde_json::from_str::<serde_json::Value>(sent).ok())
+            .filter_map(|sent| sent["body"].as_str().map(str::to_string))
+            .collect()
+    }
+
     fn a_bot_commented(&self, body: &str) {
         let conversation = serde_json::json!([{
             "id": 5_634_162_958u64,
@@ -993,6 +1023,23 @@ fn an_accepted_change_whose_judge_reads_before_it_answers() -> Vec<support::Repl
             "read_file",
             serde_json::json!({ "path": "src/lib.rs" }),
         )),
+        support::accepted(support::reports(serde_json::json!({
+            "verdict": "accepted",
+        }))),
+    ]
+}
+
+const ALREADY_HERE: &str =
+    "both of the ticket's decisions are already on this branch, so nothing was changed";
+
+fn an_answer_that_changes_nothing() -> Vec<support::Reply> {
+    vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": [],
+            "summary": ALREADY_HERE,
+            "claimed_complete": true,
+        }))),
         support::accepted(support::reports(serde_json::json!({
             "verdict": "accepted",
         }))),
@@ -4081,5 +4128,140 @@ fn a_rerun_over_a_pull_request_nobody_reviewed_carries_no_direction() {
         0,
         "a pull request nobody wrote on puts neither direction frame in the brief, so the \
          row above is not passing on text every run carries: {briefs:?}"
+    );
+}
+
+const A_REVIEW_FIDDLE_ANSWERS: u64 = 4_101;
+
+const A_LATER_REVIEW: u64 = 4_102;
+
+const A_LATER_ASK: &str = "Please also bump the chart version.";
+
+fn a_world_whose_second_run_changes_nothing() -> (ToilWorld, String, String) {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(an_answer_that_changes_nothing())
+            .chain(vec![a_review_that_reads_a_change()])
+            .chain(an_answer_that_changes_nothing())
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    let first = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run opened a pull request: {first}"
+    );
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    world
+        .github()
+        .reviews_are(&[(A_REVIEW_FIDDLE_ANSWERS, &published, A_MEMBER_REVIEW_OF_270)]);
+    world.forgets_that_the_work_was_completed();
+    (world, branch, published)
+}
+
+#[test]
+fn a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles() {
+    let (world, branch, published) = a_world_whose_second_run_changes_nothing();
+
+    let second = payload_of(&world.run_toil(REFERENCE));
+
+    assert_eq!(
+        second["outcome"], "completed",
+        "an accepted answer that needed no change completes rather than failing at the \
+         publish step: {second}"
+    );
+    assert_eq!(
+        world.github().head_of(&branch),
+        published,
+        "nothing was committed, so nothing was published over the branch"
+    );
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "and no second pull request was opened"
+    );
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        1,
+        "the review is answered exactly once: {replies:?}"
+    );
+    assert!(
+        replies[0].contains("made no change, because the change it asks for is already here")
+            && replies[0].contains(ALREADY_HERE),
+        "the reply says no change was made and carries what the agent checked: {}",
+        replies[0]
+    );
+    assert!(
+        replies[0].contains(&format!("reviews={A_REVIEW_FIDDLE_ANSWERS} ")),
+        "and it names the review it answers, so the next run can tell: {}",
+        replies[0]
+    );
+}
+
+#[test]
+fn a_review_fiddle_already_answered_settles_the_next_run_without_the_agent() {
+    let (world, _branch, _published) = a_world_whose_second_run_changes_nothing();
+    payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(world.github().replies().len(), 1, "the row's own premise");
+    assert!(
+        world.recorded_marker().is_none(),
+        "a settled run records no completion, so the next run reads the forge again"
+    );
+
+    let before = world.model_calls();
+    let third = payload_of(&world.run_toil(REFERENCE));
+
+    assert_eq!(third["outcome"], "completed", "{third}");
+    assert_eq!(
+        world.model_calls() - before,
+        1,
+        "the eligibility review is the only model call: an answered review does not pay for \
+         the agent again: {third}"
+    );
+    assert_eq!(
+        world.github().replies().len(),
+        1,
+        "and it is not answered a second time"
+    );
+}
+
+#[test]
+fn a_review_left_after_the_reply_steers_the_run_again() {
+    let (world, _branch, published) = a_world_whose_second_run_changes_nothing();
+    payload_of(&world.run_toil(REFERENCE));
+    world.github().reviews_are(&[
+        (A_REVIEW_FIDDLE_ANSWERS, &published, A_MEMBER_REVIEW_OF_270),
+        (A_LATER_REVIEW, &published, A_LATER_ASK),
+    ]);
+
+    let before = world.model_prompts().len();
+    let fourth = payload_of(&world.run_toil(REFERENCE));
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+
+    assert!(
+        briefs.iter().any(|brief| brief.contains(A_LATER_ASK)),
+        "a review written after fiddle answered is new direction, so the agent is briefed \
+         with it: {fourth}"
+    );
+    assert!(
+        !briefs
+            .iter()
+            .any(|brief| brief.contains("Commit message and PR description is missing")),
+        "and the review it already answered is not handed to the agent again"
+    );
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        2,
+        "the new review gets its own answer: {replies:?}"
+    );
+    assert!(
+        replies[1].contains(&format!("reviews={A_LATER_REVIEW} ")),
+        "{}",
+        replies[1]
     );
 }
