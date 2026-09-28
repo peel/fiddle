@@ -11,6 +11,17 @@ const EMPTY: [&str; 2] = [
     "Response contained no choices",
 ];
 
+pub const RESEND_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+pub fn never_arrived(error: &CompletionError) -> Option<String> {
+    let CompletionError::HttpError(rig_core::http_client::Error::Instance(inner)) = error else {
+        return None;
+    };
+    let sent = inner.downcast_ref::<reqwest::Error>()?;
+    let unsent = sent.is_connect() || (sent.is_request() && !sent.is_timeout());
+    unsent.then(|| format!("the request never reached the gateway, so it is sent again: {error}"))
+}
+
 pub fn empty_response(error: &CompletionError) -> Option<&str> {
     match error {
         CompletionError::ResponseError(reason) if EMPTY.contains(&reason.as_str()) => Some(reason),
@@ -98,18 +109,22 @@ where
         let turn = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
         loop {
             let answered = self.model.completion(request.clone()).await;
-            let empty = match &answered {
-                Err(error) => empty_response(error).map(str::to_string),
-                Ok(_) => None,
-            };
-            let Some(reason) = empty else {
-                return answered;
+            let (reason, resent) = match &answered {
+                Err(error) => match (empty_response(error), never_arrived(error)) {
+                    (Some(empty), _) => (empty.to_string(), false),
+                    (None, Some(unsent)) => (unsent, true),
+                    (None, None) => return answered,
+                },
+                Ok(_) => return answered,
             };
             let Some(retries) = self.allowed() else {
                 self.record(UNANSWERED, turn, self.retried(), &reason);
                 return answered;
             };
             self.record(RETRY, turn, retries, &reason);
+            if resent {
+                tokio::time::sleep(RESEND_WAIT * retries as u32).await;
+            }
         }
     }
 
@@ -207,6 +222,153 @@ mod tests {
         > {
             self.inner.stream(request).await
         }
+    }
+
+    async fn a_refused_connection() -> CompletionError {
+        let refused = reqwest::Client::new()
+            .get("http://127.0.0.1:9/v1/messages")
+            .send()
+            .await
+            .expect_err("nothing listens on the discard port");
+        assert!(refused.is_connect(), "the row's own premise: {refused}");
+        CompletionError::HttpError(rig_core::http_client::Error::Instance(Box::new(refused)))
+    }
+
+    async fn a_request_that_timed_out() -> CompletionError {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let held = std::thread::spawn(move || listener.accept().map(|(socket, _)| socket));
+        let timed_out = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap()
+            .get(format!("http://{address}/v1/messages"))
+            .send()
+            .await
+            .expect_err("the listener accepts and never answers");
+        drop(held);
+        assert!(timed_out.is_timeout(), "the row's own premise: {timed_out}");
+        CompletionError::HttpError(rig_core::http_client::Error::Instance(Box::new(timed_out)))
+    }
+
+    #[tokio::test]
+    async fn a_request_that_never_reached_the_gateway_is_resent() {
+        let why = never_arrived(&a_refused_connection().await)
+            .expect("a refused connection sent nothing, so sending it again spends nothing twice");
+        assert!(why.contains("never reached the gateway"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_the_gateway_gave_is_not_resent() {
+        let status =
+            CompletionError::HttpError(rig_core::http_client::Error::InvalidStatusCodeWithMessage(
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+                "the gateway failed".to_string(),
+            ));
+        assert_eq!(
+            never_arrived(&status),
+            None,
+            "a 500 is an answer, not a lost request"
+        );
+        assert_eq!(
+            never_arrived(&CompletionError::ProviderError("over budget".to_string())),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_that_timed_out_is_not_resent_because_it_may_have_been_served() {
+        assert_eq!(
+            never_arrived(&a_request_that_timed_out().await),
+            None,
+            "a timed-out request may have reached the gateway and been billed, so sending it \
+             again could pay for it twice"
+        );
+    }
+
+    #[derive(Clone)]
+    struct Unsent<M> {
+        inner: M,
+        failing: u64,
+        calls: Arc<AtomicU64>,
+    }
+
+    impl<M> CompletionModel for Unsent<M>
+    where
+        M: CompletionModel,
+    {
+        type Response = M::Response;
+        type StreamingResponse = M::StreamingResponse;
+        type Client = M::Client;
+
+        fn make(client: &Self::Client, model: impl Into<String>) -> Self {
+            Unsent {
+                inner: M::make(client, model),
+                failing: 0,
+                calls: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        async fn completion(
+            &self,
+            request: CompletionRequest,
+        ) -> Result<rig_core::completion::CompletionResponse<Self::Response>, CompletionError>
+        {
+            let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+            if call <= self.failing {
+                return Err(a_refused_connection().await);
+            }
+            self.inner.completion(request).await
+        }
+
+        async fn stream(
+            &self,
+            request: CompletionRequest,
+        ) -> Result<
+            rig_core::streaming::StreamingCompletionResponse<Self::StreamingResponse>,
+            CompletionError,
+        > {
+            self.inner.stream(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_run_survives_a_dropped_connection_and_records_that_it_resent() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcripts = Transcripts::under(dir.path(), "a-run");
+        let unsent = Unsent {
+            inner: MockCompletionModel::new([MockTurn::text("answered")]),
+            failing: 1,
+            calls: Arc::new(AtomicU64::new(0)),
+        };
+        let retrying = RetryingModel::bounded(
+            unsent.clone(),
+            RETRIES,
+            &Redaction::of(SECRET),
+            Some(&transcripts),
+        );
+        let agent = AgentBuilder::new(retrying.clone()).build();
+
+        let answered = agent.prompt("go").max_turns(2).await;
+
+        assert_eq!(
+            answered.as_deref().ok(),
+            Some("answered"),
+            "one dropped connection does not end the run"
+        );
+        assert_eq!(unsent.calls.load(Ordering::Relaxed), 2, "it was sent twice");
+        assert_eq!(retrying.retried(), 1);
+        let resent: Vec<_> = lines(transcripts.path())
+            .into_iter()
+            .filter(|record| record["record"] == RETRY)
+            .collect();
+        assert_eq!(resent.len(), 1, "and the transcript says so: {resent:?}");
+        assert!(
+            resent[0]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("never reached the gateway")),
+            "{resent:?}"
+        );
     }
 
     fn a_reading_repair(turns: usize) -> MockCompletionModel {
