@@ -625,13 +625,14 @@ where
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result.map_err(|error| {
-            refused(StructuredOutputError::PromptError(Box::new(error)))
-        })?,
+        result = run => match (result, spend.stopped()) {
+            (_, Some(reason)) => return Err(AgentError::Bounded { reason }),
+            (Ok(answered), None) => answered,
+            (Err(error), None) => {
+                return Err(refused(StructuredOutputError::PromptError(Box::new(error))))
+            }
+        },
     };
-    if let Some(reason) = spend.stopped() {
-        return Err(AgentError::Bounded { reason });
-    }
     let Reported(report) = reported(&answered).map_err(refused)?;
 
     let changed = host
@@ -882,13 +883,14 @@ where
         _ = tokio::time::sleep(budget.deadline) => return Err(AgentError::Bounded {
             reason: format!("the deadline of {:?} elapsed", budget.deadline),
         }),
-        result = run => result.map_err(|error| {
-            refused(StructuredOutputError::PromptError(Box::new(error)))
-        })?,
+        result = run => match (result, spend.stopped()) {
+            (_, Some(reason)) => return Err(AgentError::Bounded { reason }),
+            (Ok(answered), None) => answered,
+            (Err(error), None) => {
+                return Err(refused(StructuredOutputError::PromptError(Box::new(error))))
+            }
+        },
     };
-    if let Some(reason) = spend.stopped() {
-        return Err(AgentError::Bounded { reason });
-    }
     let Judged(verdict) = judged(&answered).map_err(refused)?;
 
     match &verdict {

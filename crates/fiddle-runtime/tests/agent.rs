@@ -78,6 +78,70 @@ fn report_turn(summary: &str, complete: bool) -> MockTurn {
     )
 }
 
+fn listing_at(input: u64, output: u64, call: usize) -> MockTurn {
+    MockTurn::tool_call(format!("c{call}"), "list_files", json!({})).with_usage(
+        rig_core::completion::Usage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+            ..rig_core::completion::Usage::new()
+        },
+    )
+}
+
+fn three_listings_then_a_report() -> MockCompletionModel {
+    MockCompletionModel::new([
+        listing_at(100, 10, 1),
+        listing_at(100, 10, 2),
+        listing_at(100, 10, 3),
+        report_turn("listed the project", true),
+    ])
+}
+
+#[tokio::test]
+async fn an_attempt_past_its_token_bound_names_the_bound_and_not_a_cancellation() {
+    let (host, _g) = test_host();
+    let outcome = attempt(
+        three_listings_then_a_report(),
+        &redaction(),
+        host,
+        AgentBudget {
+            max_tokens_total: Some(150),
+            ..budget()
+        },
+        Direction::Fresh,
+        None,
+    )
+    .await;
+
+    match outcome {
+        Err(AgentError::Bounded { reason }) => assert!(
+            reason.contains("token bound of 150"),
+            "the bound that fired is the one named: {reason}"
+        ),
+        other => panic!(
+            "a run stopped by its token bound is reported as that bound, because a report of \
+             `cancelled` sends its reader to look for who interrupted it: {other:?}"
+        ),
+    }
+}
+
+#[tokio::test]
+async fn the_same_attempt_with_no_token_bound_completes() {
+    let (host, _g) = test_host();
+    let report = attempt(
+        three_listings_then_a_report(),
+        &redaction(),
+        host,
+        budget(),
+        Direction::Fresh,
+        None,
+    )
+    .await
+    .expect("with no bound the same script completes, so the row above is not a script that fails anyway");
+    assert_eq!(report.summary, "listed the project");
+}
+
 #[tokio::test]
 async fn an_attempt_whose_check_cannot_start_is_refused_before_any_model_call() {
     let (mut host, _g) = test_host();
