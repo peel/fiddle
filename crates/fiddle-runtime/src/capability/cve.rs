@@ -72,10 +72,27 @@ followed into `quoted_from_a_comment`, word for word as it is written above. A \
 sentence nobody wrote is ignored, and the rest of your work still counts.";
 
 const REVIEW_FRAME: &str = "\
-A person reviewed this pull request and asked for changes, which stops it being \
-merged until it is answered. Here is what they asked, in their words. This is \
-work to do, not permission to leave a check failing. Answer it in the change you \
-make.";
+A person who speaks for this project reviewed this pull request. Here is what \
+they asked, in their words. This is work to do, not permission to leave a check \
+failing.";
+
+pub const BLOCKS_MERGING: &str = "asked for changes, which stops this pull request being merged \
+     until it is answered";
+
+pub const LEFT_A_REVIEW: &str = "left a review";
+
+pub const STEERING_LIMITS: &str = "\
+What this run can and cannot do about the direction above:
+
+- fiddle writes the commit message and the pull request description, and you \
+cannot change them. No file you change answers an ask about them, so do not \
+search for one. Say in your summary that fiddle has to answer it, not this run.
+- Only the text quoted above reaches you. When the direction points at something \
+it does not quote, such as another person's comment, that text is not available \
+to you. Name what is missing in `stopped_by_this_question`, and change nothing \
+for it.
+- When the project already does what the direction asks, change nothing and say \
+so in your summary. An answer that changed no file is a correct answer.";
 
 const FEEDBACK_FRAME: &str = "\
 An earlier attempt on this project is already open, and the forge reports that \
@@ -158,12 +175,19 @@ fn already_passing_sentence(passing: &[String]) -> String {
 pub struct ChangesRequested {
     pub author: String,
     pub body: String,
+    pub blocking: bool,
 }
 
 fn review_task(asked: &[ChangesRequested]) -> String {
     let quoted: Vec<String> = asked
         .iter()
-        .map(|it| format!("{} asked for changes:\n{}", it.author, it.body.trim()))
+        .map(|it| {
+            let said = match it.blocking {
+                true => BLOCKS_MERGING,
+                false => LEFT_A_REVIEW,
+            };
+            format!("{} {said}:\n{}", it.author, it.body.trim())
+        })
         .collect();
     format!("{REVIEW_FRAME}\n\n{}", quoted.join("\n\n"))
 }
@@ -260,6 +284,9 @@ impl Direction {
             .map(|it| ChangesRequested {
                 author: it.author.login.clone(),
                 body: it.body.clone(),
+                blocking: it
+                    .state
+                    .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED),
             })
             .collect();
         let mut said: Vec<HumanSaid> = spoken
@@ -314,6 +341,7 @@ impl Direction {
         if !self.said.is_empty() {
             sections.push(conversation_task(&self.said));
         }
+        sections.push(STEERING_LIMITS.to_string());
         Some(sections.join("\n\n"))
     }
 }
@@ -1897,6 +1925,7 @@ mod direction {
         let asked = vec![ChangesRequested {
             author: "peel".to_string(),
             body: "add a comment above the require block naming the advisory".to_string(),
+            blocking: true,
         }];
         let brief = migration_task(&[], None, &[], &asked);
 
@@ -1963,10 +1992,32 @@ mod direction {
     }
 
     #[test]
+    fn only_a_review_that_asked_for_changes_is_said_to_block_the_merge() {
+        let review = |blocking| ChangesRequested {
+            author: "peel".to_string(),
+            body: "Commit message and PR description is missing.".to_string(),
+            blocking,
+        };
+        let commented = review_task(&[review(false)]);
+        assert!(
+            !commented.contains(BLOCKS_MERGING) && commented.contains(LEFT_A_REVIEW),
+            "a COMMENTED review blocks nothing, and telling the agent it does sends it looking \
+             for a change to make: {commented}"
+        );
+        let requested = review_task(&[review(true)]);
+        assert!(
+            requested.contains(BLOCKS_MERGING),
+            "a CHANGES_REQUESTED review does block the merge, so the row above is not a \
+             sentence that was deleted: {requested}"
+        );
+    }
+
+    #[test]
     fn a_review_asking_for_changes_is_work_and_not_permission() {
         let asked = vec![ChangesRequested {
             author: "peel".to_string(),
             body: "pin the transitive dependency too, or this lands half done".to_string(),
+            blocking: true,
         }];
         let brief = migration_task(&[&a_finding()], None, &[], &asked);
 

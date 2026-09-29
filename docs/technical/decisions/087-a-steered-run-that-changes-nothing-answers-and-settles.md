@@ -1,7 +1,7 @@
 # 087 — A steered run that changes nothing answers the direction once, and settles
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation
+Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief
 
 ## Context
 
@@ -31,6 +31,17 @@ MEASURED before this change: `tell_the_work_item` was called only for an evaluat
 
 - A steered run that stops on a question asks it on the pull request, through the same effect, with `NEEDS_AN_ANSWER` before it and the same marker after it. The run still refuses, exit 12. The marker means the next run settles without the agent until somebody writes something new, and an answer is something new.
 - A run with no pull request posts the question on the ticket, as `question_note`. This decides what ADR 083 left open, and it is the part of this record the operator did not choose directly: they chose to reply on the pull request, and the ticket is the same rule applied where there is no pull request. It does not reuse the evaluation's note, which says a change was made and then rejected.
+
+## The brief gives the agent a way out
+
+OBSERVED on 2026-09-28 and 2026-09-29, live runs 8, 9 and 10. Each repair step verified the change was already made and then searched on, 35 to 75 turns, until a bound or a dropped connection ended it. Nothing reached the pull request. Runs 6 and 7 had ended in 9 turns by reporting no change or naming a question.
+
+The brief sent them looking. It framed a COMMENTED review as `asked for changes, which stops it being merged` and said `Answer it in the change you make`. Two of the review's asks cannot be answered by a file edit: fiddle writes the commit message and the pull request description, and the Claude comments the review names were not quoted.
+
+- A review is described as blocking the merge only when its state is CHANGES_REQUESTED. Any other steering review `left a review`. `ChangesRequested` now carries that as `blocking`, on the toil route and the CVE route alike.
+- `STEERING_LIMITS` follows the direction in a steered toil brief. It says fiddle writes the commit message and description, that text the direction points at but does not quote is not available and is a question to name, and that an answer that changed no file is a correct answer.
+
+These are the two ways out that now end in a reply on the pull request. `a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief` reads each sentence off the brief a steered run sends and fails without them. `only_a_review_that_asked_for_changes_is_said_to_block_the_merge` holds both framings.
 
 ## Only entitled authors can answer
 

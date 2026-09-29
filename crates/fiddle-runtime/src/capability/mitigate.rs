@@ -604,6 +604,9 @@ where
             .map(|it| ChangesRequested {
                 author: it.author.login.clone(),
                 body: it.body.clone(),
+                blocking: it
+                    .state
+                    .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED),
             })
             .collect();
         let said = spoken

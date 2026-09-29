@@ -4043,8 +4043,30 @@ fn a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agen
         "and the person who asked is named, so the agent is not following an anonymous voice"
     );
     assert!(
-        carrying("A person reviewed this pull request and asked for changes") > 0,
+        carrying("reviewed this pull request. Here is what they asked") > 0,
         "the review reaches the agent framed as work to do and not as chatter"
+    );
+    assert!(
+        carrying("spenes left a review") > 0
+            && carrying("stops this pull request being merged") == 0,
+        "the review of #270 is COMMENTED, so it is not described as blocking the merge: a \
+         brief that says it does sends the agent looking for a change to make: {briefs:?}"
+    );
+    assert!(
+        carrying("fiddle writes the commit message and the pull request description") > 0,
+        "the review asks for a commit message and a description, which no file the agent can \
+         change answers, so the brief says who writes them"
+    );
+    assert!(
+        carrying("that text is not available to you") > 0
+            && carrying("`stopped_by_this_question`") > 0,
+        "the direction points at text it may not quote, and the brief says to name what is \
+         missing rather than search for it"
+    );
+    assert!(
+        carrying("An answer that changed no file is a correct answer") > 0,
+        "and it says that finding the change already made is an answer, which is the way out \
+         runs 8 to 10 of ISP-263 did not take"
     );
 }
 
