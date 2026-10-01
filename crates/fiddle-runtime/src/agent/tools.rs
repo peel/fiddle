@@ -560,6 +560,11 @@ pub const MATCH_CAP: usize = 200;
 
 pub struct SearchFiles;
 
+fn names_the_whole_project(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .all(|part| part.is_empty() || part == ".")
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct SearchFilesArgs {
     pub text: String,
@@ -644,7 +649,8 @@ impl Tool for SearchFiles {
                     reason: "an empty text is held by every line, so it names nothing".to_string(),
                 });
             }
-            let under = match &args.path {
+            let under = match args.path.as_deref() {
+                Some(path) if names_the_whole_project(path) => None,
                 Some(path) => Some(parse(path)?),
                 None => None,
             };
@@ -2487,6 +2493,37 @@ mod searching {
         );
         assert!(found.matches[0].text.contains("v4.5.0"));
         assert_eq!(found.withheld, None);
+    }
+
+    #[tokio::test]
+    async fn a_search_scoped_to_the_project_root_searches_the_whole_project() {
+        let (host, _dir) = test_host();
+        let mut ctx = ToolContext::new();
+        ctx.insert(host);
+        let unscoped = SearchFiles
+            .call(&mut ctx, looking_for("fn", None))
+            .await
+            .expect("an unscoped search runs");
+        assert!(!unscoped.matches.is_empty(), "the row's own premise");
+        for root in [".", "./", "/."] {
+            let scoped = SearchFiles
+                .call(&mut ctx, looking_for("fn", Some(root)))
+                .await
+                .unwrap_or_else(|refused| panic!("`{root}` names the project root: {refused}"));
+            assert_eq!(
+                scoped.matches.len(),
+                unscoped.matches.len(),
+                "`{root}` searches what no scope searches"
+            );
+        }
+        assert!(
+            SearchFiles
+                .call(&mut ctx, looking_for("fn", Some("../outside")))
+                .await
+                .is_err(),
+            "a scope outside the project is still refused, so the row above is not a scope \
+             that accepts everything"
+        );
     }
 
     #[tokio::test]

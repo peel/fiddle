@@ -1,7 +1,7 @@
 # 087 — A steered run that changes nothing answers the direction once, and settles
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief
+Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief, STOPPED_WITHOUT_AN_ANSWER, stopped, max_turns_when_steered, Thinking, THINKING_NEEDS_MESSAGES, a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits, a_messages_request_asks_for_no_thinking_only_when_the_deployment_says_so, turning_thinking_off_without_the_messages_protocol_is_refused
 
 ## Context
 
@@ -42,6 +42,16 @@ The brief sent them looking. It framed a COMMENTED review as `asked for changes,
 - `STEERING_LIMITS` follows the direction in a steered toil brief. It says fiddle writes the commit message and description, that text the direction points at but does not quote is not available and is a question to name, and that an answer that changed no file is a correct answer.
 
 These are the two ways out that now end in a reply on the pull request. `a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief` reads each sentence off the brief a steered run sends and fails without them. `only_a_review_that_asked_for_changes_is_said_to_block_the_merge` holds both framings.
+
+## A steered run that cannot conclude still answers, sooner
+
+OBSERVED on live run 11, 2026-10-01, with the brief above in place. The repair step searched 53 turns and reached the token bound with nothing changed. Across runs 8 to 11, exact repeats were 10 to 20 percent of the searches, so the agent was rephrasing a check, not repeating one, and no tool memo would have stopped it. Every turn carried a thinking block, which the model writes by default on this gateway.
+
+- When a bound stops a steered run that changed nothing, the run answers on the pull request with `STOPPED_WITHOUT_AN_ANSWER` and the bound's own reason, under the same marker, and then reports the bound. The direction is answered whatever the model does, and the next run waits for somebody to write again.
+- The agent step takes `max_turns_when_steered`. `workflows/toil.toml` sets it to 24 against the first run's 160, because a steered run checks work that is already published.
+- `[agent] thinking = "disabled"` asks the model to answer without thinking. It is a field of the messages protocol, so `load` refuses it with any other protocol, as `THINKING_NEEDS_MESSAGES`. MEASURED on 2026-10-01 against this gateway: the same question cost 308 output tokens with a thinking block by default, and 78 without one when disabled. Whether it changes how a steered run converges is not yet measured.
+
+`a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits` scripts 24 listings: the run makes exactly 25 model calls, answers once naming `the turn budget of 24`, and the next run makes only the eligibility call. Removing the answer, or the steered bound, fails it.
 
 ## Only entitled authors can answer
 

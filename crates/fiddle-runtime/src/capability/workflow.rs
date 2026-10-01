@@ -29,6 +29,8 @@ pub enum Step {
     Agent {
         prompt: PathBuf,
         max_turns: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_turns_when_steered: Option<u32>,
     },
     Evaluate {
         prompt: PathBuf,
@@ -161,6 +163,7 @@ enum Ready {
     Agent {
         task: String,
         max_turns: usize,
+        max_turns_when_steered: Option<usize>,
     },
     Evaluate {
         task: String,
@@ -238,9 +241,14 @@ fn task_carrying(task: &str, quoted: Option<&String>, steered: Option<&String>) 
 
 fn ready(step: &Step, prompts: &Path) -> Result<Ready, WorkflowRefusal> {
     match step {
-        Step::Agent { prompt, max_turns } => Ok(Ready::Agent {
+        Step::Agent {
+            prompt,
+            max_turns,
+            max_turns_when_steered,
+        } => Ok(Ready::Agent {
             task: task_in(prompt, prompts)?,
             max_turns: *max_turns as usize,
+            max_turns_when_steered: max_turns_when_steered.map(|it| it as usize),
         }),
         Step::Evaluate { prompt, max_turns } => Ok(Ready::Evaluate {
             task: task_in(prompt, prompts)?,
@@ -775,13 +783,37 @@ where
                         })
                     }
                 },
-                Ready::Agent { task, max_turns } => {
-                    let report = self
+                Ready::Agent {
+                    task,
+                    max_turns,
+                    max_turns_when_steered,
+                } => {
+                    let max_turns = match (&steered, max_turns_when_steered) {
+                        (Some(_), Some(bounded)) => bounded,
+                        _ => max_turns,
+                    };
+                    let attempted = self
                         .attempt(
                             &task_carrying(task, quoted.as_ref(), steered_task(&steered)),
                             *max_turns,
                         )
-                        .await?;
+                        .await;
+                    let report = match (attempted, steered.as_ref()) {
+                        (Ok(report), _) => report,
+                        (
+                            Err(CapabilityError::Agent(crate::agent::AgentError::Bounded {
+                                reason,
+                            })),
+                            Some(by),
+                        ) if self.ports.host.workspace.changed_files()?.is_empty() => {
+                            let body = crate::github::answer::stopped(&reason, &by.answering);
+                            self.answer(by, body, &mut params).await?;
+                            return Err(CapabilityError::Agent(
+                                crate::agent::AgentError::Bounded { reason },
+                            ));
+                        }
+                        (Err(other), _) => return Err(other),
+                    };
                     if let Some(finding) = self.declined(&report)? {
                         match (steered.as_ref(), report.question()) {
                             (Some(by), Some(question)) => {

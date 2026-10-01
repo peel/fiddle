@@ -43,7 +43,7 @@ pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;
 pub use gateway::{
     completion_model, Gateway, GatewayError, GatewayModel, GatewayResponse, Protocol, Redaction,
-    REDACTED,
+    Thinking, REDACTED,
 };
 pub use git::{GitCli, GitError, PublishedBranch};
 pub use github::{branch_name, branch_target, BranchRef, EnsureBranchPublished};

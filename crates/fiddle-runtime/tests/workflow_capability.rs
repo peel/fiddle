@@ -380,6 +380,7 @@ fn agent_step() -> Step {
     Step::Agent {
         prompt: PathBuf::from("triage.md"),
         max_turns: 4,
+        max_turns_when_steered: None,
     }
 }
 
@@ -1097,6 +1098,7 @@ fn a_prompt_this_run_cannot_read_is_refused_before_any_step_runs() {
             Step::Agent {
                 prompt: PathBuf::from("absent.md"),
                 max_turns: 4,
+                max_turns_when_steered: None,
             },
         ]),
         executor(&world, &ctx, &deployment),
@@ -1126,6 +1128,7 @@ fn a_prompt_that_says_nothing_is_refused_when_the_workflow_is_built() {
         workflow(vec![Step::Agent {
             prompt: PathBuf::from("empty.md"),
             max_turns: 4,
+            max_turns_when_steered: None,
         }]),
         executor(&world, &ctx, &deployment),
         params(),

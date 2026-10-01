@@ -4359,3 +4359,74 @@ fn a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once() {
     );
     assert_eq!(world.github().replies().len(), 1, "and asks nothing twice");
 }
+
+fn listings(count: usize) -> Vec<support::Reply> {
+    (0..count)
+        .map(|_| support::accepted(support::calls("list_files", serde_json::json!({}))))
+        .collect()
+}
+
+#[test]
+fn a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(vec![a_review_that_reads_a_change()])
+            .chain(listings(24))
+            .chain(vec![a_review_that_reads_a_change()])
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let published = world.github().head_of(&world.github().only_branch());
+    world
+        .github()
+        .reviews_are(&[(A_REVIEW_FIDDLE_ANSWERS, &published, A_MEMBER_REVIEW_OF_270)]);
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_calls();
+    let second = world.run_toil(REFERENCE);
+    let spent = world.model_calls() - before;
+    assert_eq!(
+        second.status.code(),
+        Some(11),
+        "a run stopped by a bound is retryable: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert_eq!(
+        spent, 25,
+        "the eligibility review and 24 agent turns: a steered run is held to \
+         `max_turns_when_steered`, not the 160 a first run gets"
+    );
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        1,
+        "the direction is answered once: {replies:?}"
+    );
+    assert!(
+        replies[0].contains("stopped before it reached an answer")
+            && replies[0].contains("the turn budget of 24"),
+        "and the answer says the run stopped and which bound stopped it: {}",
+        replies[0]
+    );
+    assert!(
+        replies[0].contains(&format!("reviews={A_REVIEW_FIDDLE_ANSWERS} ")),
+        "{}",
+        replies[0]
+    );
+    assert_eq!(
+        world.github().head_of(&world.github().only_branch()),
+        published,
+        "and nothing was published over the branch"
+    );
+
+    let before = world.model_calls();
+    let third = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.model_calls() - before,
+        1,
+        "until somebody writes again, the next run does not pay for the agent: {third}"
+    );
+    assert_eq!(world.github().replies().len(), 1);
+}

@@ -102,6 +102,9 @@ pub struct Agent {
     #[serde(default)]
     pub protocol: fiddle_runtime::Protocol,
 
+    #[serde(default)]
+    pub thinking: fiddle_runtime::Thinking,
+
     pub api_key: EnvRef,
 
     #[serde(default = "default_max_turns")]
@@ -1071,9 +1074,30 @@ pub enum ConfigError {
     Invalid(#[from] Box<InvalidConfig>),
 }
 
+pub const THINKING_NEEDS_MESSAGES: &str = "`thinking = \"disabled\"` is sent as a field of the \
+     messages protocol, and `protocol` is not `messages`, so nothing would turn thinking off: set \
+     `protocol = \"messages\"` or remove `thinking`";
+
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
     let text =
         std::fs::read_to_string(path).map_err(|_| ConfigError::NotFound(path.to_path_buf()))?;
+    let config = parsed(path, text.clone())?;
+    let refused = config.agent.as_ref().is_some_and(|agent| {
+        agent.thinking == fiddle_runtime::Thinking::Disabled
+            && agent.protocol != fiddle_runtime::Protocol::Messages
+    });
+    if refused {
+        return Err(ConfigError::Invalid(Box::new(InvalidConfig {
+            path: path.to_path_buf(),
+            src: miette::NamedSource::new(path.display().to_string(), text),
+            span: None,
+            message: THINKING_NEEDS_MESSAGES.to_string(),
+        })));
+    }
+    Ok(config)
+}
+
+fn parsed(path: &Path, text: String) -> Result<Config, ConfigError> {
     toml::from_str(&text).map_err(|e| {
         let message = e.message().to_string();
         let (source, span) = if message == CREDENTIAL_MUST_BE_NAMED {
@@ -1580,6 +1604,49 @@ success = "artefact-written"
             .unwrap();
         assert_eq!(agent.protocol, fiddle_runtime::Protocol::Messages);
         assert!(agent.protocol.caches());
+    }
+
+    fn loaded_with(lines: &str) -> Result<Config, ConfigError> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("deployment.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[project]\nname=\"p\"\n[stub]\nroot=\"s\"\n[report]\ndir=\"r\"\n\
+                 [agent]\nmodel=\"m\"\nbase_url=\"u\"\napi_key={{env=\"K\"}}\n{lines}\n\
+                 [workspace]\n"
+            ),
+        )
+        .unwrap();
+        load(&path)
+    }
+
+    #[test]
+    fn thinking_can_be_turned_off_on_the_messages_protocol() {
+        let agent = loaded_with("protocol = \"messages\"\nthinking = \"disabled\"")
+            .expect("both settings belong together")
+            .agent
+            .unwrap();
+        assert_eq!(agent.thinking, fiddle_runtime::Thinking::Disabled);
+        assert_eq!(
+            loaded_with("protocol = \"messages\"")
+                .unwrap()
+                .agent
+                .unwrap()
+                .thinking,
+            fiddle_runtime::Thinking::Default,
+            "a document that names no thinking leaves the model to decide"
+        );
+    }
+
+    #[test]
+    fn turning_thinking_off_without_the_messages_protocol_is_refused() {
+        let ConfigError::Invalid(refused) = loaded_with("thinking = \"disabled\"")
+            .expect_err("a setting nothing would send is refused, not ignored")
+        else {
+            panic!("the refusal is an invalid document");
+        };
+        assert_eq!(refused.message, THINKING_NEEDS_MESSAGES);
     }
 
     #[test]
@@ -3235,6 +3302,7 @@ token = { env = "JIRA_API_TOKEN" }
                 vec![Step::Agent {
                     prompt: PathBuf::from("change.md"),
                     max_turns: 2,
+                    max_turns_when_steered: None,
                 }],
             )
             .unwrap(),

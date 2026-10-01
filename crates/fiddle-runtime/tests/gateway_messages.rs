@@ -1,4 +1,4 @@
-use fiddle_runtime::{completion_model, GatewayModel, Protocol};
+use fiddle_runtime::{completion_model, GatewayModel, Protocol, Thinking};
 use rig_core::completion::{CompletionModel, Message, ToolDefinition};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -113,8 +113,13 @@ fn chat_answer() -> serde_json::Value {
 }
 
 fn model(protocol: Protocol, base_url: &str) -> GatewayModel {
+    thinking_model(protocol, Thinking::Default, base_url)
+}
+
+fn thinking_model(protocol: Protocol, thinking: Thinking, base_url: &str) -> GatewayModel {
     completion_model(
         protocol,
+        thinking,
         base_url,
         "sk-loopback-only".to_string(),
         "LITELLM_API_KEY",
@@ -275,6 +280,7 @@ async fn a_real_gateway_reads_back_the_prefix_the_turn_before_it_cached() {
     let model_name = std::env::var("FIDDLE_GATEWAY_MODEL").unwrap_or("claude-sonnet-5".into());
     let model = completion_model(
         Protocol::Messages,
+        Thinking::Default,
         &base_url,
         credential,
         "LITELLM_API_KEY",
@@ -324,4 +330,31 @@ fn both_protocols_keep_the_providers_own_answer_on_output_and_tools() {
              default is false and changes how a typed prompt is sent"
         );
     }
+}
+
+#[tokio::test]
+async fn a_messages_request_asks_for_no_thinking_only_when_the_deployment_says_so() {
+    let (base_url, served) = answering(messages_answer(0)).await;
+    a_turn_with_history(thinking_model(
+        Protocol::Messages,
+        Thinking::Disabled,
+        &base_url,
+    ))
+    .await;
+    let disabled = served.await.expect("the loopback served one request");
+    assert_eq!(
+        disabled.body["thinking"],
+        serde_json::json!({ "type": "disabled" }),
+        "a deployment that turned thinking off sends that on every request: {}",
+        disabled.body
+    );
+
+    let (base_url, served) = answering(messages_answer(0)).await;
+    a_turn_with_history(model(Protocol::Messages, &base_url)).await;
+    let default = served.await.expect("the loopback served one request");
+    assert!(
+        default.body.get("thinking").is_none(),
+        "and one that did not sends nothing, so the model decides as it did before: {}",
+        default.body
+    );
 }

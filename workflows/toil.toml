@@ -20,10 +20,14 @@ kind = "steer"
 
 # quickfix_change. The agent makes the bounded change the ticket asked for and
 # runs the check this project declares, through the `run_check` tool.
+# A run a person steered from the pull request is checking work that is already
+# published, so it is bounded far lower. When that bound stops it with nothing
+# changed, the run still answers the direction on the pull request.
 [[steps]]
 kind = "agent"
 prompt = "toil.md"
 max_turns = 160
+max_turns_when_steered = 24
 
 # The shared change_evaluate. It reads the project and answers a typed verdict.
 # A rejection stops every step below and the run reports a refusal, which is the

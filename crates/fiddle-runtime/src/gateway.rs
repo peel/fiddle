@@ -24,10 +24,39 @@ impl Protocol {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Thinking {
+    #[default]
+    Default,
+    Disabled,
+}
+
+impl Thinking {
+    pub fn name(self) -> &'static str {
+        match self {
+            Thinking::Default => "default",
+            Thinking::Disabled => "disabled",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum GatewayModel {
     ChatCompletions(openai::completion::CompletionModel),
-    Messages(anthropic::completion::CompletionModel),
+    Messages(anthropic::completion::CompletionModel, Thinking),
+}
+
+fn without_thinking(mut request: CompletionRequest) -> CompletionRequest {
+    let disabled = serde_json::json!({ "type": "disabled" });
+    request.additional_params = match request.additional_params.take() {
+        Some(serde_json::Value::Object(mut held)) => {
+            held.insert("thinking".to_string(), disabled);
+            Some(serde_json::Value::Object(held))
+        }
+        _ => Some(serde_json::json!({ "thinking": disabled })),
+    };
+    request
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -82,7 +111,11 @@ impl rig_core::completion::CompletionModel for GatewayModel {
                 let answered = model.completion(request).await?;
                 Ok(carried(answered, GatewayResponse::ChatCompletions))
             }
-            GatewayModel::Messages(model) => {
+            GatewayModel::Messages(model, thinking) => {
+                let request = match thinking {
+                    Thinking::Default => request,
+                    Thinking::Disabled => without_thinking(request),
+                };
                 let answered = model.completion(request).await?;
                 Ok(carried(answered, GatewayResponse::Messages))
             }
@@ -92,7 +125,7 @@ impl rig_core::completion::CompletionModel for GatewayModel {
     fn composes_native_output_with_tools(&self) -> bool {
         match self {
             GatewayModel::ChatCompletions(model) => model.composes_native_output_with_tools(),
-            GatewayModel::Messages(model) => model.composes_native_output_with_tools(),
+            GatewayModel::Messages(model, _) => model.composes_native_output_with_tools(),
         }
     }
 
@@ -190,6 +223,7 @@ pub struct Gateway {
 
 pub fn completion_model(
     protocol: Protocol,
+    thinking: Thinking,
     base_url: &str,
     api_key: String,
     variable: &str,
@@ -218,6 +252,7 @@ pub fn completion_model(
                 .map_err(|_| unbuilt())?
                 .completion_model(model)
                 .with_prompt_caching(),
+            thinking,
         ),
     };
     Ok(Gateway { model, redaction })
@@ -234,6 +269,7 @@ mod tests {
         assert!(
             completion_model(
                 Protocol::ChatCompletions,
+                Thinking::Default,
                 "http://127.0.0.1:9/v1",
                 "not-a-real-credential".to_string(),
                 "LITELLM_API_KEY",
@@ -250,6 +286,7 @@ mod tests {
         let secret = "sk-secret\nvalue";
         let Err(error) = completion_model(
             Protocol::ChatCompletions,
+            Thinking::Default,
             "http://127.0.0.1:9/v1",
             secret.to_string(),
             "LITELLM_API_KEY",
@@ -273,6 +310,7 @@ mod tests {
     fn the_model_and_the_redaction_come_from_one_read_of_the_credential() {
         let gateway = completion_model(
             Protocol::ChatCompletions,
+            Thinking::Default,
             "http://127.0.0.1:9/v1",
             SECRET.to_string(),
             "LITELLM_API_KEY",

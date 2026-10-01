@@ -124,6 +124,18 @@ pub fn asked(question: &str, answered: &Answered) -> String {
     )
 }
 
+pub const STOPPED_WITHOUT_AN_ANSWER: &str = "fiddle looked into the direction on this pull \
+     request and stopped before it reached an answer. It changed nothing. Write on this pull \
+     request to have it look again. What stopped it:";
+
+pub fn stopped(reason: &str, answered: &Answered) -> String {
+    format!(
+        "{STOPPED_WITHOUT_AN_ANSWER}\n\n{}\n\n{}",
+        reason.trim(),
+        answered.marker()
+    )
+}
+
 pub fn reply(summary: &str, answered: &Answered) -> String {
     format!("{NO_CHANGE}\n\n{}\n\n{}", summary.trim(), answered.marker())
 }

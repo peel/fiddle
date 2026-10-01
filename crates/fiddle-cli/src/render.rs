@@ -63,6 +63,7 @@ pub fn config_check_json(config: &Config) -> String {
                 "configured": agent.protocol.name(),
                 "prompt_caching": agent.protocol.caches(),
             },
+            "thinking": agent.thinking.name(),
             "max_tokens": agent.max_tokens,
             "max_tokens_total": agent.max_tokens_total,
             "max_changed_files": agent.max_changed_files,
@@ -257,6 +258,7 @@ pub fn config_check_human(config: &Config) -> String {
             "\n  agent.model = {}\
              \n  {}\
              \n  agent.protocol = {}\
+             \n  agent.thinking = {}\
              \n  agent.api_key.env = {}\
              \n  agent.max_turns = {}\
              \n  agent.max_tokens = {}\
@@ -280,6 +282,14 @@ pub fn config_check_human(config: &Config) -> String {
                      history; `messages` caches it)",
                     agent.protocol.name()
                 ),
+            },
+            match agent.thinking {
+                fiddle_runtime::Thinking::Default => {
+                    "default (the model decides whether to think before it answers)".to_string()
+                }
+                fiddle_runtime::Thinking::Disabled => {
+                    "disabled (every request asks the model to answer without thinking)".to_string()
+                }
             },
             agent.api_key.env,
             agent.max_turns,

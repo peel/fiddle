@@ -10,6 +10,7 @@ fn canonical() -> Workflow {
             Step::Agent {
                 prompt: PathBuf::from("prompts/triage.md"),
                 max_turns: 8,
+                max_turns_when_steered: None,
             },
             Step::Evaluate {
                 prompt: PathBuf::from("prompts/change_evaluate.md"),

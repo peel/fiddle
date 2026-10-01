@@ -143,7 +143,9 @@ fn toil() -> Workflow {
 
 fn spelled(step: &Step) -> String {
     match step {
-        Step::Agent { prompt, max_turns } => {
+        Step::Agent {
+            prompt, max_turns, ..
+        } => {
             format!("agent:{} in {max_turns} turns", prompt.display())
         }
         Step::Evaluate { prompt, max_turns } => {

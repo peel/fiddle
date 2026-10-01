@@ -973,6 +973,7 @@ fn model_client(agent: &config::Agent) -> Result<fiddle_runtime::Gateway, CliErr
     let credential = resolve_credential(CredentialPurpose::Model, &agent.api_key.env)?;
     fiddle_runtime::completion_model(
         agent.protocol,
+        agent.thinking,
         &base_url,
         credential,
         &agent.api_key.env,
