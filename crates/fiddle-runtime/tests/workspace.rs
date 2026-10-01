@@ -177,6 +177,31 @@ fn a_home_holding_a_read_only_module_cache_is_removed_with_its_workspace() {
 }
 
 #[test]
+fn a_workspace_moves_to_a_commit_and_refuses_to_move_over_changes() {
+    let _env = env_reader();
+    let (ws, _dir) = workspace();
+    let base = git_out(ws.root(), &["rev-parse", "HEAD"]).unwrap();
+    std::fs::write(ws.root().join("published.txt"), "on the pull request\n").unwrap();
+    let published = commit_all(ws.root(), "the head a pull request carries");
+    ws.move_to(&base).expect("an untouched workspace moves");
+    assert_eq!(git_out(ws.root(), &["rev-parse", "HEAD"]).unwrap(), base);
+
+    ws.move_to(&published).expect("and moves forward again");
+    assert!(ws.root().join("published.txt").exists());
+
+    std::fs::write(ws.root().join("published.txt"), "the agent's edit\n").unwrap();
+    let refused = ws
+        .move_to(&base)
+        .expect_err("a workspace that holds changes is not moved under them");
+    assert!(refused.to_string().contains("would lose them"), "{refused}");
+    assert_eq!(
+        std::fs::read_to_string(ws.root().join("published.txt")).unwrap(),
+        "the agent's edit\n",
+        "and the change is still there"
+    );
+}
+
+#[test]
 fn removing_twice_is_not_an_error() {
     let _env = env_reader();
     let dir = tempfile::tempdir().unwrap();

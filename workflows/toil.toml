@@ -38,10 +38,12 @@ prompt = "change_evaluate.md"
 max_turns = 60
 
 # Commit what the agent changed. When it changed nothing and a review or comment on
-# the pull request steered this run, the change asked for is already made: the run
-# answers that direction once on the pull request, through `pull_request_answered`,
-# and settles here, so the publish steps below do not run. The answer names what it
-# answered, so the next run steers only on what was written after it.
+# the pull request steered this run, the change asked for is already made: the
+# pull request's head stands as this run's commit, and the steps below find it
+# already published and finish whatever an earlier run left. After them the run
+# answers that direction once on the pull request, through `pull_request_answered`.
+# The answer names what it answered, so the next run steers only on what was
+# written after it.
 [[steps]]
 kind = "commit"
 

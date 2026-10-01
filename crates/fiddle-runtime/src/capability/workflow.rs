@@ -228,6 +228,13 @@ fn steered_task(steered: &Option<SteeredBy>) -> Option<&String> {
     steered.as_ref().map(|by| &by.task)
 }
 
+fn widened(task: String, steered: &Option<SteeredBy>, scope: &str) -> String {
+    match steered {
+        Some(_) => format!("{task}\n\n{scope}"),
+        None => task,
+    }
+}
+
 fn task_carrying(task: &str, quoted: Option<&String>, steered: Option<&String>) -> String {
     let mut sections = vec![task.to_string()];
     if let Some(quoted) = quoted {
@@ -294,15 +301,8 @@ struct SteeredBy {
     task: String,
     repo: String,
     pr: u64,
+    head: String,
     answering: crate::github::Answered,
-}
-
-pub const ANSWERED_WITHOUT_A_CHANGE: &str =
-    "the direction on the pull request asked for a change that is already made, so the run \
-     changed nothing and answered it there";
-
-pub fn answered_without_a_change(repo: &str, pr: u64) -> String {
-    format!("{ANSWERED_WITHOUT_A_CHANGE}: {repo}#{pr}")
 }
 
 pub const NOTHING_ASKED_FOR: &str =
@@ -624,11 +624,16 @@ where
                 },
             });
         }
-        Ok(match direction.rendered() {
+        let rendered = direction.rendered();
+        if rendered.is_some() {
+            self.stand_on(branch, &open.head_sha).await?;
+        }
+        Ok(match rendered {
             Some(task) => Steered::By(SteeredBy {
                 task,
                 repo: repo.to_string(),
                 pr: open.number,
+                head: open.head_sha.clone(),
                 answering,
             }),
             None => Steered::Settled {
@@ -636,6 +641,18 @@ where
                 pr: open.number,
             },
         })
+    }
+
+    async fn stand_on(&self, branch: &str, head: &str) -> Result<(), CapabilityError> {
+        use crate::capability::cve::Git;
+        let workspace = &self.ports.host.workspace;
+        let git = crate::capability::cve::InWorktree::new(
+            workspace,
+            self.ports.budget.tool_timeout,
+            self.executor.git()?,
+        );
+        git.fetch(branch).await?;
+        Ok(workspace.move_to(head)?)
     }
 
     async fn commit(&self, params: &mut StepParams) -> Result<bool, CapabilityError> {
@@ -788,6 +805,7 @@ where
         let quoted = quoted_ticket(self.qualification.as_ref(), work_item);
         let mut steered: Option<SteeredBy> = None;
         let mut reported: Option<RepairReport> = None;
+        let mut committed_for_direction = false;
         let mut params = StepParams {
             earned: StepOutputs::default(),
             ..self.params.clone()
@@ -825,7 +843,11 @@ where
                     };
                     let attempted = self
                         .attempt(
-                            &task_carrying(task, quoted.as_ref(), steered_task(&steered)),
+                            &widened(
+                                task_carrying(task, quoted.as_ref(), steered_task(&steered)),
+                                &steered,
+                                crate::capability::cve::STEERED_SCOPE,
+                            ),
                             *max_turns,
                         )
                         .await;
@@ -868,7 +890,11 @@ where
                 }
                 Ready::Evaluate { task, max_turns } => {
                     self.evaluate(
-                        &task_carrying(task, quoted.as_ref(), steered_task(&steered)),
+                        &widened(
+                            task_carrying(task, quoted.as_ref(), steered_task(&steered)),
+                            &steered,
+                            crate::capability::cve::STEERED_EVALUATION,
+                        ),
                         *max_turns,
                         &mut params,
                     )
@@ -877,16 +903,9 @@ where
                 Ready::Check { command } => self.check(command).await?,
                 Ready::Commit => {
                     let committed = self.commit(&mut params).await?;
+                    committed_for_direction = committed && steered.is_some();
                     if let (false, Some(by)) = (committed, steered.as_ref()) {
-                        let summary = reported.as_ref().map(|it| it.summary.as_str());
-                        let body = crate::github::answer::reply(
-                            summary.unwrap_or_default(),
-                            &by.answering,
-                        );
-                        self.answer(by, body, &mut params).await?;
-                        return Ok(Executed::Settled {
-                            reason: Published::of(answered_without_a_change(&by.repo, by.pr)),
-                        });
+                        params.earned.record_head_sha(&by.head)?;
                     }
                 }
                 Ready::Effect {
@@ -910,6 +929,17 @@ where
                 Ok(Executed::Rejected { findings })
             }
             Some(Verdict::Accepted {}) | None => {
+                if let Some(by) = steered.as_ref() {
+                    let summary = reported
+                        .as_ref()
+                        .map(|it| it.summary.as_str())
+                        .unwrap_or_default();
+                    let body = match committed_for_direction {
+                        true => crate::github::answer::changed(summary, &by.answering),
+                        false => crate::github::answer::reply(summary, &by.answering),
+                    };
+                    self.answer(by, body, &mut params).await?;
+                }
                 self.record_change_set(work_id)?;
                 Ok(Executed::Earned(EvidenceRef(format!(
                     "workflow:{}:{}",

@@ -240,6 +240,17 @@ impl Workspace {
         Ok(parent.join(leaf))
     }
 
+    pub fn move_to(&self, revision: &str) -> Result<(), WorkspaceError> {
+        if !self.changed_files()?.is_empty() {
+            return Err(WorkspaceError::Git {
+                command: format!("checkout {revision}"),
+                stderr: "the workspace already holds changes, and moving it would lose them"
+                    .to_string(),
+            });
+        }
+        git(&self.root, &["checkout", "--detach", "-q", revision])
+    }
+
     pub fn remove(&mut self) -> Result<(), WorkspaceError> {
         if self.removed {
             return Ok(());

@@ -146,6 +146,12 @@ pub fn stopped(reason: &str, answered: &Answered) -> String {
     )
 }
 
+pub const CHANGED: &str = "**fiddle changed this pull request for the direction above.**";
+
+pub fn changed(summary: &str, answered: &Answered) -> String {
+    format!("{CHANGED}\n\n{}\n\n{}", summary.trim(), answered.marker())
+}
+
 pub fn reply(summary: &str, answered: &Answered) -> String {
     format!("{NO_CHANGE}\n\n{}\n\n{}", summary.trim(), answered.marker())
 }
@@ -159,6 +165,10 @@ mod rendered {
         let answered = Answered::default();
         for (body, headline) in [
             (reply("- `metrics.go` emits a sample", &answered), NO_CHANGE),
+            (
+                changed("- added a constructor for `Sampled`", &answered),
+                CHANGED,
+            ),
             (
                 asked("Where are Claude's two comments?", &answered),
                 NEEDS_AN_ANSWER,

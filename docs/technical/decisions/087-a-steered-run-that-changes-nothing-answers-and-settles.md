@@ -1,7 +1,8 @@
 # 087 — A steered run that changes nothing answers the direction once, and settles
 
-Status: accepted
-Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief, STOPPED_WITHOUT_AN_ANSWER, stopped, max_turns_when_steered, Thinking, THINKING_NEEDS_MESSAGES, a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits, a_messages_request_asks_for_no_thinking_only_when_the_deployment_says_so, turning_thinking_off_without_the_messages_protocol_is_refused, every_reply_opens_on_a_bold_headline_and_hides_its_marker_last, a_question_is_quoted_line_by_line
+Status: accepted; amended by 089, under which the publish steps run over the pull request's head
+Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief, STOPPED_WITHOUT_AN_ANSWER, stopped, max_turns_when_steered, Thinking, THINKING_NEEDS_MESSAGES, a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits, a_messages_request_asks_for_no_thinking_only_when_the_deployment_says_so, turning_thinking_off_without_the_messages_protocol_is_refused, every_reply_opens_on_a_bold_headline_and_hides_its_marker_last, a_question_is_quoted_line_by_line
+Retired: ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change
 
 ## Context
 
@@ -22,6 +23,8 @@ The operator decided: settle, and reply on the pull request.
 - `Reviewed` now carries the review's `id`, which GitHub already returned and this build discarded.
 
 A first run that changes nothing is unchanged by this record. It has no pull request to answer.
+
+**Amended by ADR 089, 2026-10-01.** A steered run that changes nothing no longer ends `Executed::Settled` at the commit step. It records the pull request's head as the commit its run earned, the publish steps run over it and find it already published, the link and transition steps finish what an earlier run may have left, and the run then answers. It is reported as `completed` and records a completion, like any finished run. `ANSWERED_WITHOUT_A_CHANGE` and `answered_without_a_change` are gone with the settle.
 
 ## A question goes to whoever asked
 

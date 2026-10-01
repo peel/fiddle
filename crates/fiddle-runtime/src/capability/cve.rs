@@ -81,6 +81,26 @@ pub const BLOCKS_MERGING: &str = "asked for changes, which stops this pull reque
 
 pub const LEFT_A_REVIEW: &str = "left a review";
 
+pub const STEERED_SCOPE: &str = "\
+A person who speaks for this project steered this run from its pull request, and \
+what they asked for is quoted above. It is part of the work, alongside the \
+ticket, even where the ticket did not ask for it, so do it. The rule that you \
+make nothing the ticket did not ask for now reads: make nothing that neither the \
+ticket nor that direction asked for. This holds for the pull request direction \
+above and not for a comment on the ticket.
+
+Answer every ask in your summary, one bullet each. For an ask you do not act on, \
+say why in that bullet: doing it would undo what the ticket asked for, it needs a \
+decision the direction does not make, or the text it points at is not available \
+to you.";
+
+pub const STEERED_EVALUATION: &str = "\
+A person who speaks for this project steered this change from its pull request, \
+and what they asked for is quoted above. Judge the change against the ticket and \
+that direction together. A part the direction asked for is part of the change \
+that was asked for, even where the ticket did not ask for it. What neither the \
+ticket nor the direction asked for is still more than was asked.";
+
 pub const STEERING_LIMITS: &str = "\
 What this run can and cannot do about the direction above:
 

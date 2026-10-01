@@ -2697,10 +2697,12 @@ fn a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_ta
             BRANCH_EFFECT,
             PULL_REQUEST_EFFECT,
             LINK_EFFECT,
-            TRANSITION_EFFECT
+            TRANSITION_EFFECT,
+            "pull_request_answered",
         ],
         "so it reached the pull request, the link and the transition rather than \
-         stopping at the branch step: {second}"
+         stopping at the branch step, and then answered the review that steered it: \
+         {second}"
     );
     assert_eq!(
         external_ref_of(&effect_named(&second, BRANCH_EFFECT)),
@@ -2817,32 +2819,22 @@ fn a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_publis
 
     assert_eq!(
         rerun.status.code(),
-        Some(11),
-        "the second run built a tree the branch does not carry, so the guard refused \
-         it rather than overwriting work it does not recognise: {second}"
+        Some(0),
+        "a steered rerun works on the head the pull request carries, so the tree it \
+         changed is built on that work and publishing it needs no force: {second}"
     );
-    let stopped = second["outcome"]["retryable"]["reason"]
-        .as_str()
-        .unwrap_or_else(|| panic!("and this build reports where it stopped: {second}"));
-    assert!(
-        stopped.contains(BRANCH_EFFECT) && stopped.contains(&branch),
-        "it stopped at the branch step, and the step names the branch the first run \
-         published: {stopped}"
-    );
-    assert!(
-        stopped.contains("not an ancestor") && stopped.contains("not forced"),
-        "and it stopped because it refused to overwrite that branch, rather than \
-         because it could not reach the forge: {stopped}"
-    );
-    assert!(
-        !stopped.contains(PULL_REQUEST_EFFECT) && !stopped.contains(LINK_EFFECT),
-        "the pull request and the link are not what refused; they were never \
-         reached, and neither was written a second time: {stopped}"
+    let now = world.github().head_of(&branch);
+    assert_ne!(now, published, "the rerun's change was published: {second}");
+    assert_eq!(
+        world.github().head_of(&format!("{now}^")),
+        published,
+        "and its parent is the commit the first run published, so the first run's work is \
+         under it and was not overwritten"
     );
     assert_eq!(
-        world.github().head_of(&branch),
-        published,
-        "and the branch still points where the first run left it: {second}"
+        world.github().file_at(&now, "src/lib.rs").trim_end(),
+        REPAIRED_ANOTHER_WAY.trim_end(),
+        "and the branch holds what the second run wrote"
     );
     assert_eq!(
         world.github().pull_requests().len(),
@@ -2854,12 +2846,6 @@ fn a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_publis
         1,
         "and no second link comment reached the ticket: {:?}",
         world.jira().request_lines()
-    );
-    assert_eq!(
-        world.recorded_marker(),
-        None,
-        "so this run recorded no completion, which is what a run that reached no \
-         terminal state must leave behind: {second}"
     );
 }
 
@@ -4253,10 +4239,7 @@ fn a_review_fiddle_already_answered_settles_the_next_run_without_the_agent() {
     let (world, _branch, _published) = a_world_whose_second_run_changes_nothing();
     payload_of(&world.run_toil(REFERENCE));
     assert_eq!(world.github().replies().len(), 1, "the row's own premise");
-    assert!(
-        world.recorded_marker().is_none(),
-        "a settled run records no completion, so the next run reads the forge again"
-    );
+    world.forgets_that_the_work_was_completed();
 
     let before = world.model_calls();
     let third = payload_of(&world.run_toil(REFERENCE));
@@ -4283,6 +4266,7 @@ fn a_review_left_after_the_reply_steers_the_run_again() {
         (A_REVIEW_FIDDLE_ANSWERS, &published, A_MEMBER_REVIEW_OF_270),
         (A_LATER_REVIEW, &published, A_LATER_ASK),
     ]);
+    world.forgets_that_the_work_was_completed();
 
     let before = world.model_prompts().len();
     let fourth = payload_of(&world.run_toil(REFERENCE));
@@ -4515,5 +4499,77 @@ fn a_review_that_points_at_another_pull_request_brings_the_comments_it_names_int
         carrying("Bumps the whole module graph."),
         0,
         "nor a bot the review never named"
+    );
+}
+
+#[test]
+fn a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_answered() {
+    let widened = format!("{REPAIRED}// the constructor the review asked for\n");
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(an_accepted_change_writing(&widened))
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let first_briefs = world.model_prompts();
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    world
+        .github()
+        .reviews_are(&[(A_REVIEW_FIDDLE_ANSWERS, &published, A_MEMBER_REVIEW_OF_270)]);
+    world.forgets_that_the_work_was_completed();
+
+    let second = world.run_toil(REFERENCE);
+    let briefs: Vec<String> = world
+        .model_prompts()
+        .into_iter()
+        .skip(first_briefs.len())
+        .collect();
+    let carrying = |text: &str| briefs.iter().filter(|brief| brief.contains(text)).count();
+
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "the change the review asked for is accepted: {}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert!(
+        carrying("It is part of the work, alongside the ticket") > 0,
+        "the agent is told the review's asks are work, not more than the ticket asked for"
+    );
+    assert!(
+        carrying("Judge the change against the ticket and that direction together") > 0,
+        "and the evaluation is told to judge them together, or it rejects what the review asked for"
+    );
+    for sentence in [
+        "It is part of the work, alongside the ticket",
+        "Judge the change against the ticket and that direction together",
+    ] {
+        assert!(
+            !first_briefs.iter().any(|brief| brief.contains(sentence)),
+            "a first run has no direction, so nothing widens it: {sentence}"
+        );
+    }
+    assert_ne!(
+        world.github().head_of(&branch),
+        published,
+        "the change was published onto the pull request's branch"
+    );
+    assert!(
+        world
+            .github()
+            .file_at(&world.github().head_of(&branch), "src/lib.rs")
+            .contains("the constructor the review asked for"),
+        "and it is the change the agent made"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "the review is answered once: {replies:?}");
+    assert!(
+        replies[0].starts_with("**fiddle changed this pull request for the direction above.**")
+            && replies[0].contains(&format!("reviews={A_REVIEW_FIDDLE_ANSWERS} ")),
+        "with what it changed, so an ask it did not act on is still answered: {}",
+        replies[0]
     );
 }
