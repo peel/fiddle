@@ -12,8 +12,8 @@ const MARKER_OPEN: &str = "<!-- fiddle:answered v1";
 
 const MARKER_CLOSE: &str = "-->";
 
-pub const NO_CHANGE: &str = "fiddle read the direction on this pull request and made no change, \
-     because the change it asks for is already here. This is what it checked:";
+pub const NO_CHANGE: &str =
+    "**fiddle made no change: what this pull request was asked for is already here.**";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Answered {
@@ -113,24 +113,34 @@ pub fn unanswered(
     (reviews, conversation)
 }
 
-pub const NEEDS_AN_ANSWER: &str = "fiddle read the direction on this pull request and made no \
-     change, because it needs an answer before it can:";
+pub const NEEDS_AN_ANSWER: &str = "**fiddle made no change: it needs an answer before it can.**";
+
+fn quoted(text: &str) -> String {
+    text.trim()
+        .lines()
+        .map(|line| match line.trim_end() {
+            "" => ">".to_string(),
+            kept => format!("> {kept}"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 pub fn asked(question: &str, answered: &Answered) -> String {
     format!(
-        "{NEEDS_AN_ANSWER}\n\n{}\n\n{}",
-        question.trim(),
+        "{NEEDS_AN_ANSWER}\n\n{}\n\nAnswer on this pull request and fiddle will look again.\n\n{}",
+        quoted(question),
         answered.marker()
     )
 }
 
-pub const STOPPED_WITHOUT_AN_ANSWER: &str = "fiddle looked into the direction on this pull \
-     request and stopped before it reached an answer. It changed nothing. Write on this pull \
-     request to have it look again. What stopped it:";
+pub const STOPPED_WITHOUT_AN_ANSWER: &str =
+    "**fiddle stopped before it reached an answer, and changed nothing.**";
 
 pub fn stopped(reason: &str, answered: &Answered) -> String {
     format!(
-        "{STOPPED_WITHOUT_AN_ANSWER}\n\n{}\n\n{}",
+        "{STOPPED_WITHOUT_AN_ANSWER}\n\nWhat stopped it: {}\n\nWrite on this pull request and \
+         fiddle will look again.\n\n{}",
         reason.trim(),
         answered.marker()
     )
@@ -138,6 +148,54 @@ pub fn stopped(reason: &str, answered: &Answered) -> String {
 
 pub fn reply(summary: &str, answered: &Answered) -> String {
     format!("{NO_CHANGE}\n\n{}\n\n{}", summary.trim(), answered.marker())
+}
+
+#[cfg(test)]
+mod rendered {
+    use super::*;
+
+    #[test]
+    fn every_reply_opens_on_a_bold_headline_and_hides_its_marker_last() {
+        let answered = Answered::default();
+        for (body, headline) in [
+            (reply("- `metrics.go` emits a sample", &answered), NO_CHANGE),
+            (
+                asked("Where are Claude's two comments?", &answered),
+                NEEDS_AN_ANSWER,
+            ),
+            (
+                stopped("the turn budget of 24 was exhausted", &answered),
+                STOPPED_WITHOUT_AN_ANSWER,
+            ),
+        ] {
+            assert!(
+                body.starts_with(headline)
+                    && headline.starts_with("**")
+                    && headline.ends_with("**"),
+                "a reviewer reads one bold line first: {body}"
+            );
+            assert!(
+                body.trim_end().ends_with(&answered.marker()),
+                "the marker is last, where an HTML comment renders as nothing: {body}"
+            );
+            assert!(
+                body.contains("\n\n"),
+                "paragraphs are separated, so Markdown does not run them together: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_question_is_quoted_line_by_line() {
+        let body = asked(
+            "Which two comments?\n\nThey are not in the brief.",
+            &Answered::default(),
+        );
+        assert!(
+            body.contains("> Which two comments?\n>\n> They are not in the brief."),
+            "every line of the question stays inside the quote: {body}"
+        );
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

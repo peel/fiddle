@@ -591,8 +591,39 @@ where
 
         let (reviews, conversation) = crate::github::unanswered(reviews, conversation);
         let answering = crate::github::Answered::of(&reviews, &conversation);
-        let direction =
+        let mut direction =
             crate::capability::Direction::read_from(reviews, conversation, &open.head_sha);
+        let spoken = direction.spoken();
+        let texts: Vec<&str> = spoken.iter().map(String::as_str).collect();
+        for pr in crate::github::references::referenced(&texts, repo, open.number) {
+            let read = crate::github::read_conversation(
+                gh,
+                repo,
+                pr,
+                crate::human::CONVERSATION_PAGES,
+                cancel,
+            )
+            .await;
+            direction.referenced.push(match read {
+                Ok(conversation) => crate::capability::Referenced {
+                    pr,
+                    said: crate::github::references::admitted(conversation, &spoken)
+                        .into_iter()
+                        .map(|it| crate::capability::HumanSaid {
+                            author: it.author.login,
+                            entitled: crate::capability::entitled(&it.author_association),
+                            body: it.body,
+                        })
+                        .collect(),
+                    unreadable: None,
+                },
+                Err(unreadable) => crate::capability::Referenced {
+                    pr,
+                    said: Vec::new(),
+                    unreadable: Some(unreadable.to_string()),
+                },
+            });
+        }
         Ok(match direction.rendered() {
             Some(task) => Steered::By(SteeredBy {
                 task,

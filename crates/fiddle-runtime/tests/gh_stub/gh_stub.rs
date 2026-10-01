@@ -709,7 +709,14 @@ fn comment_page(dir: &Path, collection: &str, path: &str) -> (u16, String, Strin
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
     let bare_path = path.split('?').next().unwrap_or(path);
-    let file = |k: u64| dir.join(collection).join(format!("page-{k}.json"));
+    let thread = bare_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .nth(4)
+        .map(|number| dir.join(collection).join(format!("pr-{number}")))
+        .filter(|held| held.is_dir());
+    let base = thread.unwrap_or_else(|| dir.join(collection));
+    let file = |k: u64| base.join(format!("page-{k}.json"));
 
     let body = std::fs::read_to_string(file(page)).unwrap_or_else(|_| {
         panic!(

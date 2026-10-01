@@ -1,7 +1,7 @@
 # 087 — A steered run that changes nothing answers the direction once, and settles
 
 Status: accepted
-Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief, STOPPED_WITHOUT_AN_ANSWER, stopped, max_turns_when_steered, Thinking, THINKING_NEEDS_MESSAGES, a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits, a_messages_request_asks_for_no_thinking_only_when_the_deployment_says_so, turning_thinking_off_without_the_messages_protocol_is_refused
+Cites: crates/fiddle-runtime/src/github/answer.rs, Answered, AnswerPullRequest, AnsweredComment, unanswered, NO_CHANGE, PULL_REQUEST_ANSWERED, crates/fiddle-runtime/src/capability/workflow.rs, SteeredBy, ANSWERED_WITHOUT_A_CHANGE, answered_without_a_change, Reviewed, crates/fiddle-acceptance/tests/toil.rs, a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles, a_review_fiddle_already_answered_settles_the_next_run_without_the_agent, a_review_left_after_the_reply_steers_the_run_again, workflows/toil.toml, NEEDS_AN_ANSWER, asked, question_note, A_QUESTION_STOPPED_IT, a_steered_rerun_that_stops_on_a_question_asks_it_on_the_pull_request_once, a_decision_the_ticket_never_specified_refuses_with_the_question_and_reaches_no_evaluation, STEERING_LIMITS, BLOCKS_MERGING, LEFT_A_REVIEW, ChangesRequested, only_a_review_that_asked_for_changes_is_said_to_block_the_merge, a_rerun_carries_the_direction_a_member_left_on_the_pull_request_into_the_agents_brief, STOPPED_WITHOUT_AN_ANSWER, stopped, max_turns_when_steered, Thinking, THINKING_NEEDS_MESSAGES, a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits, a_messages_request_asks_for_no_thinking_only_when_the_deployment_says_so, turning_thinking_off_without_the_messages_protocol_is_refused, every_reply_opens_on_a_bold_headline_and_hides_its_marker_last, a_question_is_quoted_line_by_line
 
 ## Context
 
@@ -52,6 +52,15 @@ OBSERVED on live run 11, 2026-10-01, with the brief above in place. The repair s
 - `[agent] thinking = "disabled"` asks the model to answer without thinking. It is a field of the messages protocol, so `load` refuses it with any other protocol, as `THINKING_NEEDS_MESSAGES`. MEASURED on 2026-10-01 against this gateway: the same question cost 308 output tokens with a thinking block by default, and 78 without one when disabled. Whether it changes how a steered run converges is not yet measured.
 
 `a_steered_rerun_stopped_by_its_bound_answers_once_and_the_next_run_waits` scripts 24 listings: the run makes exactly 25 model calls, answers once naming `the turn budget of 24`, and the next run makes only the eligibility call. Removing the answer, or the steered bound, fails it.
+
+## The answer is written for the reviewer
+
+OBSERVED on 2026-10-01, comment 5928826206, the first live answer: about 2,600 characters in one paragraph under a run-on lead sentence. The operator had it deleted.
+
+- Every answer opens on one bold line, `NO_CHANGE`, `NEEDS_AN_ANSWER` or `STOPPED_WITHOUT_AN_ANSWER`, then a blank line, then the agent's text, and ends with the marker, which renders as nothing. A question is quoted line by line. A stop names the bound and says to write again.
+- `STEERING_LIMITS` tells the agent that its `summary` is posted as that answer and asks for Markdown: one sentence that answers, then one short bullet for each ask, with paths and symbols in backticks.
+
+`every_reply_opens_on_a_bold_headline_and_hides_its_marker_last` and `a_question_is_quoted_line_by_line` hold the shape. The steered acceptance rows now hold the headline at the start of the reply.
 
 ## Only entitled authors can answer
 

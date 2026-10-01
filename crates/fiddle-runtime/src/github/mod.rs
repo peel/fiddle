@@ -4,6 +4,7 @@ pub mod cli;
 pub mod comments;
 pub mod pulls;
 pub mod ready;
+pub mod references;
 pub mod refs;
 
 pub use crate::effect::RetryAdvice;
