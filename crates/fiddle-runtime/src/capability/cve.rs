@@ -94,6 +94,14 @@ say why in that bullet: doing it would undo what the ticket asked for, it needs 
 decision the direction does not make, or the text it points at is not available \
 to you.";
 
+pub fn standing_on(head: &str) -> String {
+    format!(
+        "The project you are reading is the head of the pull request, commit `{head}`. It is \
+         what the pull request holds now, not its base branch, so what you find here is what a \
+         reviewer of the pull request sees."
+    )
+}
+
 pub const STEERED_EVALUATION: &str = "\
 A person who speaks for this project steered this change from its pull request, \
 and what they asked for is quoted above. Judge the change against the ticket and \

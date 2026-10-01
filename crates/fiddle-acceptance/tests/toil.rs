@@ -4221,9 +4221,8 @@ fn a_steered_rerun_that_changes_nothing_answers_the_review_once_and_settles() {
         "the review is answered exactly once: {replies:?}"
     );
     assert!(
-        replies[0].starts_with(
-            "**fiddle made no change: what this pull request was asked for is already here.**"
-        ) && replies[0].contains(ALREADY_HERE),
+        replies[0].starts_with("**fiddle made no change for the direction above.**")
+            && replies[0].contains(ALREADY_HERE),
         "the reply says no change was made and carries what the agent checked: {}",
         replies[0]
     );
@@ -4538,6 +4537,12 @@ fn a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_an
     assert!(
         carrying("It is part of the work, alongside the ticket") > 0,
         "the agent is told the review's asks are work, not more than the ticket asked for"
+    );
+    assert!(
+        carrying(&format!(
+            "The project you are reading is the head of the pull request, commit `{published}`"
+        )) > 0,
+        "and which commit it stands on, so it does not mistake the pull request for its base"
     );
     assert!(
         carrying("Judge the change against the ticket and that direction together") > 0,

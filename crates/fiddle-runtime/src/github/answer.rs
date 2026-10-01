@@ -12,8 +12,7 @@ const MARKER_OPEN: &str = "<!-- fiddle:answered v1";
 
 const MARKER_CLOSE: &str = "-->";
 
-pub const NO_CHANGE: &str =
-    "**fiddle made no change: what this pull request was asked for is already here.**";
+pub const NO_CHANGE: &str = "**fiddle made no change for the direction above.**";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Answered {

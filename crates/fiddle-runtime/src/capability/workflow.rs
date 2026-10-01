@@ -846,7 +846,14 @@ where
                             &widened(
                                 task_carrying(task, quoted.as_ref(), steered_task(&steered)),
                                 &steered,
-                                crate::capability::cve::STEERED_SCOPE,
+                                &match steered.as_ref() {
+                                    Some(by) => format!(
+                                        "{}\n\n{}",
+                                        crate::capability::cve::STEERED_SCOPE,
+                                        crate::capability::cve::standing_on(&by.head)
+                                    ),
+                                    None => String::new(),
+                                },
                             ),
                             *max_turns,
                         )
