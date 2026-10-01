@@ -589,11 +589,21 @@ where
         .await
         .map_err(CapabilityError::Forge)?;
 
+        let earlier = crate::github::already_answered(&reviews, &conversation);
         let (reviews, conversation) = crate::github::unanswered(reviews, conversation);
         let answering = crate::github::Answered::of(&reviews, &conversation);
         let mut direction =
             crate::capability::Direction::read_from(reviews, conversation, &open.head_sha);
-        let spoken = direction.spoken();
+        let mut spoken = direction.spoken();
+        if !direction.is_empty() {
+            spoken.extend(
+                earlier
+                    .iter()
+                    .filter(|it| !it.by_fiddle)
+                    .map(|it| it.body.clone()),
+            );
+            direction.earlier = earlier;
+        }
         let texts: Vec<&str> = spoken.iter().map(String::as_str).collect();
         for pr in crate::github::references::referenced(&texts, repo, open.number) {
             let read = crate::github::read_conversation(

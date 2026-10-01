@@ -112,6 +112,59 @@ pub fn unanswered(
     (reviews, conversation)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Earlier {
+    pub author: String,
+    pub body: String,
+    pub by_fiddle: bool,
+}
+
+fn without_marker(body: &str) -> String {
+    body.lines()
+        .filter(|line| !line.trim().starts_with(MARKER_OPEN))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+pub fn already_answered(reviews: &[Reviewed], conversation: &[HumanResponse]) -> Vec<Earlier> {
+    let mut before = Answered::default();
+    for comment in conversation {
+        if entitled(&comment.author_association) {
+            if let Some(answered) = Answered::read_from(&comment.body) {
+                before.extend(answered);
+            }
+        }
+    }
+    let reviewed = reviews
+        .iter()
+        .filter(|it| before.reviews.contains(&it.id))
+        .filter(|it| entitled(&it.author_association) && !it.body.trim().is_empty())
+        .map(|it| Earlier {
+            author: it.author.login.clone(),
+            body: it.body.trim().to_string(),
+            by_fiddle: false,
+        });
+    let said = conversation
+        .iter()
+        .filter(|it| entitled(&it.author_association))
+        .filter_map(|it| match Answered::read_from(&it.body) {
+            Some(_) => Some(Earlier {
+                author: it.author.login.clone(),
+                body: without_marker(&it.body),
+                by_fiddle: true,
+            }),
+            None if before.comments.contains(&it.comment) => Some(Earlier {
+                author: it.author.login.clone(),
+                body: it.body.trim().to_string(),
+                by_fiddle: false,
+            }),
+            None => None,
+        });
+    reviewed.chain(said).collect()
+}
+
 pub const NEEDS_AN_ANSWER: &str = "**fiddle made no change: it needs an answer before it can.**";
 
 fn quoted(text: &str) -> String {
@@ -428,6 +481,37 @@ mod tests {
         assert_eq!(
             conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
             vec![12]
+        );
+    }
+
+    #[test]
+    fn what_was_answered_before_is_kept_as_context_and_what_was_not_is_left_out() {
+        let answered = Answered::of(&[review(1)], &[comment(3, "MEMBER", "and this too")]);
+        let fiddle = comment(9, "MEMBER", &reply("already here", &answered));
+        let earlier = already_answered(
+            &[review(1), review(2)],
+            &[
+                comment(3, "MEMBER", "and this too"),
+                fiddle,
+                comment(4, "NONE", "an outsider"),
+                comment(5, "MEMBER", "Yes, do them."),
+            ],
+        );
+        let kept: Vec<(&str, bool)> = earlier
+            .iter()
+            .map(|it| (it.body.as_str(), it.by_fiddle))
+            .collect();
+        assert_eq!(kept.len(), 3, "{kept:?}");
+        assert_eq!(
+            kept[0],
+            ("commit message and PR description is missing", false)
+        );
+        assert_eq!(kept[1], ("and this too", false));
+        assert!(
+            kept[2].1
+                && kept[2].0.contains("already here")
+                && !kept[2].0.contains("fiddle:answered"),
+            "fiddle's own answer is kept without its marker: {kept:?}"
         );
     }
 

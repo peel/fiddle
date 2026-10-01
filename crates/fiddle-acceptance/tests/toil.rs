@@ -828,6 +828,23 @@ impl ToilForge {
             .collect()
     }
 
+    fn a_member_commented(&self, id: u64, body: &str) {
+        let conversation = serde_json::json!([{
+            "id": id,
+            "body": body,
+            "created_at": "2026-10-01T17:10:14Z",
+            "updated_at": "2026-10-01T17:10:14Z",
+            "author_association": "MEMBER",
+            "user": { "login": "spenes", "id": 88_285_759, "type": "User" },
+            "performed_via_github_app": null,
+        }]);
+        std::fs::write(
+            self.stub.join("issue-comments").join("page-1.json"),
+            conversation.to_string(),
+        )
+        .unwrap();
+    }
+
     fn another_thread_holds(&self, pr: u64, conversation: serde_json::Value) {
         let thread = self.stub.join("issue-comments").join(format!("pr-{pr}"));
         std::fs::create_dir_all(&thread).unwrap();
@@ -4277,10 +4294,16 @@ fn a_review_left_after_the_reply_steers_the_run_again() {
          with it: {fourth}"
     );
     assert!(
-        !briefs
-            .iter()
-            .any(|brief| brief.contains("Commit message and PR description is missing")),
-        "and the review it already answered is not handed to the agent again"
+        !briefs.iter().any(|brief| brief
+            .contains(r"spenes left a review:\nCommit message and PR description is missing")),
+        "and the review it already answered is not handed to the agent again as work"
+    );
+    assert!(
+        briefs.iter().any(|brief| {
+            brief.contains("It is already answered and is not work for this run")
+                && brief.contains(r"spenes wrote:\nCommit message and PR description is missing")
+        }),
+        "it is quoted as context, under the frame that says it is answered"
     );
     let replies = world.github().replies();
     assert_eq!(
@@ -4576,5 +4599,95 @@ fn a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_an
             && replies[0].contains(&format!("reviews={A_REVIEW_FIDDLE_ANSWERS} ")),
         "with what it changed, so an ask it did not act on is still answered: {}",
         replies[0]
+    );
+}
+
+const A_REPLY_THAT_SAYS_DO_THEM: &str = "Yes, do Claude's comments 1 and 2.";
+
+#[test]
+fn a_reply_to_answered_direction_is_read_with_the_direction_it_replies_to() {
+    let widened = format!("{REPAIRED}// the two changes the reply asked for\n");
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(an_answer_that_changes_nothing())
+            .chain(an_accepted_change_writing(&widened))
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    world.github().reviews_are(&[(
+        A_REVIEW_FIDDLE_ANSWERS,
+        &published,
+        A_REVIEW_THAT_POINTS_AT_270,
+    )]);
+    world.github().another_thread_holds(
+        270,
+        serde_json::json!([{
+            "id": 5_634_162_958u64,
+            "body": THE_BOT_FINDINGS_OF_270,
+            "created_at": "2026-09-11T12:05:40Z",
+            "updated_at": "2026-09-11T12:05:40Z",
+            "author_association": "NONE",
+            "user": { "login": "claude[bot]", "id": 1, "type": "Bot" },
+            "performed_via_github_app": { "slug": "claude" },
+        }]),
+    );
+    world.forgets_that_the_work_was_completed();
+    payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.github().replies().len(),
+        1,
+        "the row's own premise: the review is answered"
+    );
+
+    world
+        .github()
+        .a_member_commented(7_001, A_REPLY_THAT_SAYS_DO_THEM);
+    world.forgets_that_the_work_was_completed();
+    let before = world.model_prompts().len();
+    let third = world.run_toil(REFERENCE);
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    let carrying = |text: &str| briefs.iter().filter(|brief| brief.contains(text)).count();
+
+    assert!(
+        carrying(A_REPLY_THAT_SAYS_DO_THEM) > 0,
+        "the reply is the direction this run steers on"
+    );
+    assert!(
+        carrying("It is already answered and is not work for this run") > 0
+            && carrying("Should we do them ?") > 0,
+        "the review it replies to is quoted as context, framed as already answered"
+    );
+    assert!(
+        carrying("fiddle answered:") > 0,
+        "and so is fiddle's own answer, which the reply is answering"
+    );
+    assert!(
+        carrying("claude[bot] wrote on #270") > 0
+            && carrying("Merge-free batches record a `0` sample") > 0,
+        "the reply names no thread, and the review it replies to does, so the comments `them` \
+         means reach the agent"
+    );
+    assert_eq!(
+        third.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&third.stdout)
+    );
+    assert_ne!(
+        world.github().head_of(&branch),
+        published,
+        "and the change the reply asked for was published"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert!(
+        replies[1].starts_with("**fiddle changed this pull request for the direction above.**")
+            && replies[1].contains("comments=7001 "),
+        "and the reply is answered by name: {}",
+        replies[1]
     );
 }

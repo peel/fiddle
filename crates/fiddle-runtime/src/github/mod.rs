@@ -8,7 +8,9 @@ pub mod references;
 pub mod refs;
 
 pub use crate::effect::RetryAdvice;
-pub use answer::{unanswered, AnswerPullRequest, Answered, AnsweredComment};
+pub use answer::{
+    already_answered, unanswered, AnswerPullRequest, Answered, AnsweredComment, Earlier,
+};
 pub use checks::{
     check_request_target, classify, observe_checks, observe_genuine_failure, run_name, BlamedCheck,
     CheckState, EnsureCheckRequested, GenuineFailure, Settlement, WorkflowRun,

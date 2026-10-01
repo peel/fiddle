@@ -300,6 +300,23 @@ pub struct Direction {
     pub asked: Vec<ChangesRequested>,
     pub said: Vec<HumanSaid>,
     pub referenced: Vec<Referenced>,
+    pub earlier: Vec<crate::github::Earlier>,
+}
+
+pub const EARLIER_FRAME: &str = "\
+Before the direction above, this was written on the pull request and fiddle \
+answered it. It is already answered and is not work for this run. It is quoted \
+so you can read what the direction above replies to, oldest first.";
+
+fn earlier_task(earlier: &[crate::github::Earlier]) -> String {
+    let quoted: Vec<String> = earlier
+        .iter()
+        .map(|it| match it.by_fiddle {
+            true => format!("fiddle answered:\n{}", it.body),
+            false => format!("{} wrote:\n{}", it.author, it.body),
+        })
+        .collect();
+    format!("{EARLIER_FRAME}\n\n{}", quoted.join("\n\n"))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -400,6 +417,7 @@ impl Direction {
             asked,
             said,
             referenced: Vec::new(),
+            earlier: Vec::new(),
         }
     }
 
@@ -425,6 +443,9 @@ impl Direction {
             return None;
         }
         let mut sections = Vec::new();
+        if !self.earlier.is_empty() {
+            sections.push(earlier_task(&self.earlier));
+        }
         if !self.asked.is_empty() {
             sections.push(review_task(&self.asked));
         }

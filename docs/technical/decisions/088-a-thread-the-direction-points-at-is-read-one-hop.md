@@ -1,7 +1,7 @@
 # 088 — A thread the direction points at is read, one hop, by the rules that admit direction
 
-Status: accepted
-Cites: crates/fiddle-runtime/src/github/references.rs, referenced, admitted, MAX_REFERENCED, Referenced, REFERENCED_FRAME, referenced_task, Direction, spoken, cited, entitled, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-acceptance/tests/toil.rs, a_review_that_points_at_another_pull_request_brings_the_comments_it_names_into_the_brief, a_named_bot_and_an_entitled_person_are_admitted_and_nobody_else_is, what_is_not_a_reference_is_not_followed, a_link_into_this_repository_is_a_reference_and_one_into_another_is_not, at_most_three_threads_are_read_whatever_the_direction_names
+Status: accepted; amended 2026-10-01 to carry answered direction as context
+Cites: crates/fiddle-runtime/src/github/references.rs, referenced, admitted, MAX_REFERENCED, Referenced, REFERENCED_FRAME, referenced_task, Direction, spoken, cited, entitled, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-acceptance/tests/toil.rs, a_review_that_points_at_another_pull_request_brings_the_comments_it_names_into_the_brief, a_named_bot_and_an_entitled_person_are_admitted_and_nobody_else_is, what_is_not_a_reference_is_not_followed, a_link_into_this_repository_is_a_reference_and_one_into_another_is_not, at_most_three_threads_are_read_whatever_the_direction_names, already_answered, Earlier, EARLIER_FRAME, earlier_task, a_reply_to_answered_direction_is_read_with_the_direction_it_replies_to, what_was_answered_before_is_kept_as_context_and_what_was_not_is_left_out, a_review_left_after_the_reply_steers_the_run_again
 
 ## Context
 
@@ -37,3 +37,13 @@ fiddle reads the thread, not the agent. A tool that let the model fetch links wo
 - A steered run makes up to three more conversation reads.
 - A long comment on the referenced thread is quoted whole. The claude[bot] review on #270 is about 8,000 characters.
 - Text from a referenced thread is quoted as data, under the same rule as the direction it explains: it describes work and gives the agent no instruction.
+
+## Amended 2026-10-01: a reply is read with the direction it replies to
+
+OBSERVED on live run 17. The operator answered fiddle on #275 with `Yes, do Claude's comments 1 and 2.` The review that named #270 was already answered, so the steer step had dropped it, and its reference with it. The agent was told to do comments it could not see, searched twice, and asked whether the ticket was written against another branch.
+
+- When new direction steers a run, `already_answered` keeps what a marker answered before it: the answered reviews and comments of entitled people, and fiddle's own answers without their marker. `earlier_task` quotes them first, under `EARLIER_FRAME`, which says they are already answered and are not work for this run.
+- References in that earlier direction are followed by the rules above, so a reply that says `do them` reaches the thread `them` names. fiddle's own answers are quoted but not read for references.
+- Answered direction alone still steers nothing. Context is added only to a run that new direction already steers.
+
+`a_reply_to_answered_direction_is_read_with_the_direction_it_replies_to` replays run 17: the reply names no thread, the review it replies to names #270, and the brief carries the reply as work, the review and fiddle's answer as context, and `claude[bot] wrote on #270`. The run publishes the change and answers the reply by its id. Without the context it fails. `a_review_left_after_the_reply_steers_the_run_again` now holds that the answered review is quoted as context and not as a review to answer.
