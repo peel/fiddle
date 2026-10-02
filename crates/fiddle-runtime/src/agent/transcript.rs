@@ -30,8 +30,13 @@ pub const ELAPSED: &str = "elapsed_ms";
 
 pub const TOOK: &str = "duration_ms";
 
-pub fn cut_note() -> String {
-    format!("\n[fiddle cut this text at {FIELD_LIMIT} characters]")
+pub const KEPT_AT_EACH_END: usize = FIELD_LIMIT / 2;
+
+pub fn cut_note(left_out: usize) -> String {
+    format!(
+        "\n[fiddle left out {left_out} characters here, and kept the first and last \
+         {KEPT_AT_EACH_END} characters of this text]\n"
+    )
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,13 +104,20 @@ impl Record {
 }
 
 fn safe(redaction: &Redaction, text: &str) -> serde_json::Value {
-    let Some(held) = redaction.redacted(text, FIELD_LIMIT) else {
+    let Some(held) = redaction.redacted(text, usize::MAX) else {
         return serde_json::Value::String(WITHHELD.to_string());
     };
-    serde_json::Value::String(match held.cut {
-        true => format!("{}{}", held.text, cut_note()),
-        false => held.text,
-    })
+    serde_json::Value::String(ends_of(&held.text))
+}
+
+fn ends_of(text: &str) -> String {
+    let count = text.chars().count();
+    if count <= FIELD_LIMIT {
+        return text.to_string();
+    }
+    let head: String = text.chars().take(KEPT_AT_EACH_END).collect();
+    let tail: String = text.chars().skip(count - KEPT_AT_EACH_END).collect();
+    format!("{head}{}{tail}", cut_note(count - FIELD_LIMIT))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -626,19 +638,28 @@ mod tests {
 
         transcripts.append(
             &Redaction::of(SECRET),
-            Record::of("tool").text("result", &"x".repeat(FIELD_LIMIT * 2)),
+            Record::of("tool").text(
+                "result",
+                &format!(
+                    "{}{}{}",
+                    "h".repeat(FIELD_LIMIT),
+                    "m".repeat(FIELD_LIMIT),
+                    "t".repeat(FIELD_LIMIT)
+                ),
+            ),
         );
 
         let records = lines(transcripts.path());
         let result = records[0]["result"].as_str().unwrap();
-        let note = cut_note();
-        let kept = result
-            .strip_suffix(note.as_str())
-            .unwrap_or_else(|| panic!("a cut field must name the bound: {result:?}"));
+        let note = cut_note(FIELD_LIMIT * 2);
+        let (head, tail) = result
+            .split_once(note.as_str())
+            .unwrap_or_else(|| panic!("a cut field must say what it left out: {result:?}"));
         assert_eq!(
-            kept.chars().count(),
-            FIELD_LIMIT,
-            "the bound is {FIELD_LIMIT} characters"
+            (head.to_string(), tail.to_string()),
+            ("h".repeat(KEPT_AT_EACH_END), "t".repeat(KEPT_AT_EACH_END)),
+            "the first and last {KEPT_AT_EACH_END} characters are kept, so what a brief appends \
+             last is still in its record, and the middle is what is left out"
         );
     }
 
