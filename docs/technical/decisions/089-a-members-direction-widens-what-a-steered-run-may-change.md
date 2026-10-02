@@ -1,7 +1,7 @@
 # 089 — A member's direction widens what a steered run may change, and the run works on the pull request's head
 
 Status: accepted
-Cites: commit_described, run_dated, submitted_at, marked_comment_or_holding, read_marked_or_holding, a_link_fiddle_wrote_at_another_revision_is_found_by_what_it_links, a_link_a_person_pasted_is_not_one_fiddle_wrote, the_revision_a_run_observes_is_the_revision_the_link_builds_its_identity_from, STEERED_SCOPE, STEERED_EVALUATION, standing_on, NO_CHANGE, widened, CHANGED, changed, stand_on, move_to, InWorktree, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-runtime/src/capability/cve.rs, crates/fiddle-runtime/src/github/answer.rs, crates/fiddle-runtime/src/workspace/mod.rs, workflows/prompts/toil.md, workflows/prompts/change_evaluate.md, crates/fiddle-acceptance/tests/toil.rs, a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_answered, a_workspace_moves_to_a_commit_and_refuses_to_move_over_changes, a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail, a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_published
+Cites: COMMITTER, a_hook_installed_in_the_clone_does_not_stop_fiddle_committing, commit_described, run_dated, submitted_at, marked_comment_or_holding, read_marked_or_holding, a_link_fiddle_wrote_at_another_revision_is_found_by_what_it_links, a_link_a_person_pasted_is_not_one_fiddle_wrote, the_revision_a_run_observes_is_the_revision_the_link_builds_its_identity_from, STEERED_SCOPE, STEERED_EVALUATION, standing_on, NO_CHANGE, widened, CHANGED, changed, stand_on, move_to, InWorktree, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-runtime/src/capability/cve.rs, crates/fiddle-runtime/src/github/answer.rs, crates/fiddle-runtime/src/workspace/mod.rs, workflows/prompts/toil.md, workflows/prompts/change_evaluate.md, crates/fiddle-acceptance/tests/toil.rs, a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_answered, a_workspace_moves_to_a_commit_and_refuses_to_move_over_changes, a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail, a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_published
 
 ## Context
 
@@ -64,3 +64,9 @@ OBSERVED on 2026-10-02: the operator read #275 as holding no commit from run 18.
 - A steered commit is dated at the newest direction it answers: a review's `submitted_at` or a comment's `created_at`. `commit_described` passes that to `run_dated`. A retry of the same direction reads the same date.
 
 The widened-change row reads both messages and the steered commit's date. Without the date, or with the old subject, it fails.
+
+## Amended 2026-10-02: a hook on the machine does not refuse fiddle's commit
+
+OBSERVED on 2026-10-02, live run 24. The agent fixed the two `planOperations` calls and its check passed, but the commit failed: a `prek` pre-commit hook in the clone's `.git/hooks` asked for a `.pre-commit-config.yaml` that the project does not have. The hook came from fiddle's own development shell, which installs its hooks into the repository the shell starts in. The project's checks are the checks fiddle runs. A hook is the machine's, so `COMMITTER` now sets `core.hooksPath=/dev/null` on every commit fiddle makes.
+
+`a_hook_installed_in_the_clone_does_not_stop_fiddle_committing` installs a hook that refuses every commit in the fixture. The run completes and publishes. Without the setting it fails.

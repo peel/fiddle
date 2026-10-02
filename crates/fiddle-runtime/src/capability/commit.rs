@@ -2,7 +2,11 @@ use super::CapabilityError;
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::time::Duration;
 
-pub(super) const COMMITTER: [&str; 2] = ["user.name=fiddle", "user.email=fiddle@invalid"];
+pub(super) const COMMITTER: [&str; 3] = [
+    "user.name=fiddle",
+    "user.email=fiddle@invalid",
+    "core.hooksPath=/dev/null",
+];
 
 pub(super) fn message(project: &str, invocation_ref: &str) -> String {
     format!("{project}: {invocation_ref}")

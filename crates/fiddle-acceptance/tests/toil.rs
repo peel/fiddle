@@ -1518,6 +1518,20 @@ impl ToilWorld {
         assert!(status.success(), "the fixture takes a dated base commit");
     }
 
+    pub fn holds_a_hook_that_refuses_every_commit(&self) {
+        let hooks = self.fixture.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("the fixture has a hooks directory");
+        let hook = hooks.join("pre-commit");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\necho 'config file not found' >&2\nexit 1\n",
+        )
+        .expect("the hook is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("the hook is executable");
+    }
+
     pub fn run_toil(&self, invocation_ref: &str) -> std::process::Output {
         let mut command = self.scenario.spawnable_run_command(invocation_ref);
         for name in support::CREDENTIAL_VARS {
@@ -4919,5 +4933,26 @@ fn a_steered_run_its_evaluation_rejects_answers_with_the_findings() {
             && replies[0].contains("comments=7101 "),
         "the answer carries the findings and names the comment it answers: {}",
         replies[0]
+    );
+}
+
+#[test]
+fn a_hook_installed_in_the_clone_does_not_stop_fiddle_committing() {
+    let world = ToilWorld::start();
+    world.holds_a_hook_that_refuses_every_commit();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "a hook on the machine is not the project's check, so it does not refuse fiddle's \
+         commit: {payload}"
+    );
+    let branch = world.github().only_branch();
+    assert!(
+        !world.github().head_of(&branch).is_empty(),
+        "and the commit was published"
     );
 }
