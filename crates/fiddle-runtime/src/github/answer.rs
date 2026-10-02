@@ -389,6 +389,7 @@ mod tests {
     fn review(id: u64) -> Reviewed {
         Reviewed {
             id,
+            submitted_at: None,
             author: ActorRef {
                 login: "peel".to_string(),
                 id: 1,

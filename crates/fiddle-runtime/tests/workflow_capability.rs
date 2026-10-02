@@ -2546,10 +2546,14 @@ async fn a_commit_step_earns_the_commit_it_made_and_the_step_after_it_reads_that
     assert_eq!(
         fixture::git_says(
             world.workspace.root(),
-            &["show", "--no-patch", "--format=%s", &after]
+            &["show", "--no-patch", "--format=%s%n%b", &after]
         ),
-        format!("{PROJECT}: {INVOCATION_REF}"),
-        "the commit the run earned is the one this run wrote"
+        format!(
+            "{PROJECT}: {}\nRefs: {INVOCATION_REF}",
+            params().title.expect("the run is titled")
+        ),
+        "the commit the run earned is the one this run wrote, and it names the work by its title \
+         and the invocation it was made for"
     );
     assert!(
         fixture::git_says(

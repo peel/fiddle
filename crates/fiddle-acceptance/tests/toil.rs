@@ -779,6 +779,10 @@ impl ToilForge {
         support::git_says(&self.remote, &["show", &format!("{commit}:{path}")])
     }
 
+    fn message_of(&self, commit: &str) -> String {
+        support::git_says(&self.remote, &["log", "-1", "--format=%B", commit])
+    }
+
     fn date_of(&self, commit: &str) -> String {
         support::git_says(&self.remote, &["log", "-1", "--format=%cI%n%aI", commit])
     }
@@ -804,6 +808,7 @@ impl ToilForge {
             .map(|(id, commit, body)| {
                 serde_json::json!({
                     "id": id,
+                    "submitted_at": "2026-10-01T17:10:14Z",
                     "user": { "login": "spenes", "id": 88_285_759, "type": "User" },
                     "author_association": "MEMBER",
                     "state": "COMMENTED",
@@ -4591,6 +4596,30 @@ fn a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_an
             .file_at(&world.github().head_of(&branch), "src/lib.rs")
             .contains("the constructor the review asked for"),
         "and it is the change the agent made"
+    );
+    let first_message = world.github().message_of(&published);
+    assert!(
+        first_message.starts_with("icecube: [ISP-42] Rename the deprecated helper")
+            && first_message.contains("Refs: jira:ISP-42"),
+        "a first run's commit names the ticket it changes, from what the ticket says: \
+         {first_message}"
+    );
+    let head = world.github().head_of(&branch);
+    let message = world.github().message_of(&head);
+    assert!(
+        message.starts_with("icecube: jira:ISP-42, answering the direction on acme/icecube#7")
+            && message.contains("corrected the off-by-one the ticket named"),
+        "a steered commit says what it answers and carries what the agent changed, so it \
+         cannot be mistaken for the first one: {message}"
+    );
+    assert!(
+        world
+            .github()
+            .date_of(&head)
+            .starts_with("2026-10-01T17:10:14"),
+        "and it is dated at the review it answers, not at the base the first run was cut \
+         from: {}",
+        world.github().date_of(&head)
     );
     let replies = world.github().replies();
     assert_eq!(replies.len(), 1, "the review is answered once: {replies:?}");

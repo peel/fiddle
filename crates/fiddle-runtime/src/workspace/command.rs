@@ -70,6 +70,14 @@ impl Workspace {
     }
 
     pub async fn run(&self, cmd: &WorkspaceCommand) -> Result<CommandResult, WorkspaceError> {
+        self.run_dated(cmd, None).await
+    }
+
+    pub async fn run_dated(
+        &self,
+        cmd: &WorkspaceCommand,
+        dated: Option<&str>,
+    ) -> Result<CommandResult, WorkspaceError> {
         if self.cancel.is_cancelled() {
             return Err(WorkspaceError::Cancelled);
         }
@@ -83,8 +91,8 @@ impl Workspace {
             .env("HOME", self.home())
             .env("PATH", &*TOOL_PATH)
             .env("LANG", "C")
-            .env(GIT_AUTHOR_DATE, self.stamp())
-            .env(GIT_COMMITTER_DATE, self.stamp());
+            .env(GIT_AUTHOR_DATE, dated.unwrap_or(self.stamp()))
+            .env(GIT_COMMITTER_DATE, dated.unwrap_or(self.stamp()));
         if let Ok(rustup_home) = std::env::var(RUSTUP_HOME) {
             command.env(RUSTUP_HOME, rustup_home);
         }

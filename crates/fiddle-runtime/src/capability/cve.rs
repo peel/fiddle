@@ -2079,6 +2079,7 @@ mod direction {
 
         let review = |commit: &str| Reviewed {
             id: 1,
+            submitted_at: None,
             author: ActorRef {
                 login: "peel".to_string(),
                 id: 1,

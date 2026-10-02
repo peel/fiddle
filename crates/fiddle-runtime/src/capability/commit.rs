@@ -14,6 +14,17 @@ pub(super) async fn commit_changed(
     message: &str,
     timeout: Duration,
 ) -> Result<String, CapabilityError> {
+    commit_described(workspace, changed, message, None, None, timeout).await
+}
+
+pub(super) async fn commit_described(
+    workspace: &Workspace,
+    changed: &[WorkspacePath],
+    subject: &str,
+    body: Option<&str>,
+    dated: Option<&str>,
+    timeout: Duration,
+) -> Result<String, CapabilityError> {
     let mut add = vec!["add".to_string(), "-f".to_string(), "--".to_string()];
     add.extend(changed.iter().map(|path| path.as_str().to_string()));
     run(workspace, add, timeout).await?;
@@ -26,9 +37,12 @@ pub(super) async fn commit_changed(
         "commit".to_string(),
         "-q".to_string(),
         "-m".to_string(),
-        message.to_string(),
+        subject.to_string(),
     ]);
-    run(workspace, commit, timeout).await?;
+    if let Some(body) = body.map(str::trim).filter(|body| !body.is_empty()) {
+        commit.extend(["-m".to_string(), body.to_string()]);
+    }
+    run_dated(workspace, commit, dated, timeout).await?;
 
     Ok(run(
         workspace,
@@ -45,12 +59,21 @@ pub(super) async fn run(
     args: Vec<String>,
     timeout: Duration,
 ) -> Result<String, CapabilityError> {
+    run_dated(workspace, args, None, timeout).await
+}
+
+async fn run_dated(
+    workspace: &Workspace,
+    args: Vec<String>,
+    dated: Option<&str>,
+    timeout: Duration,
+) -> Result<String, CapabilityError> {
     let command = WorkspaceCommand {
         program: "git".to_string(),
         args: args.clone(),
         timeout,
     };
-    let result = workspace.run(&command).await?;
+    let result = workspace.run_dated(&command, dated).await?;
     match result.exit_code {
         0 => Ok(result.stdout),
         _ => Err(CapabilityError::Workspace(WorkspaceError::Git {

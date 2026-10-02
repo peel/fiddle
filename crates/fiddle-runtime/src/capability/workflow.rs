@@ -302,6 +302,7 @@ struct SteeredBy {
     repo: String,
     pr: u64,
     head: String,
+    dated: Option<String>,
     answering: crate::github::Answered,
 }
 
@@ -592,6 +593,12 @@ where
         let earlier = crate::github::already_answered(&reviews, &conversation);
         let (reviews, conversation) = crate::github::unanswered(reviews, conversation);
         let answering = crate::github::Answered::of(&reviews, &conversation);
+        let dated = reviews
+            .iter()
+            .filter_map(|it| it.submitted_at.clone())
+            .chain(conversation.iter().map(|it| it.created_at.clone()))
+            .filter(|at| !at.trim().is_empty())
+            .max();
         let mut direction =
             crate::capability::Direction::read_from(reviews, conversation, &open.head_sha);
         let mut spoken = direction.spoken();
@@ -644,6 +651,7 @@ where
                 repo: repo.to_string(),
                 pr: open.number,
                 head: open.head_sha.clone(),
+                dated,
                 answering,
             }),
             None => Steered::Settled {
@@ -665,16 +673,43 @@ where
         Ok(workspace.move_to(head)?)
     }
 
-    async fn commit(&self, params: &mut StepParams) -> Result<bool, CapabilityError> {
+    async fn commit(
+        &self,
+        params: &mut StepParams,
+        steered: Option<&SteeredBy>,
+        reported: Option<&RepairReport>,
+    ) -> Result<bool, CapabilityError> {
         let workspace = Arc::clone(&self.ports.host.workspace);
         let changed = workspace.changed_files()?;
         if changed.is_empty() {
             return Ok(false);
         }
-        let head = commit::commit_changed(
+        let project = self.executor.project();
+        let invocation = self.executor.invocation_ref();
+        let (subject, body, dated) = match steered {
+            Some(by) => (
+                format!(
+                    "{project}: {invocation}, answering the direction on {}#{}",
+                    by.repo, by.pr
+                ),
+                reported.map(|it| it.summary.clone()),
+                by.dated.as_deref(),
+            ),
+            None => (
+                match params.title.as_deref() {
+                    Some(title) => format!("{project}: {title}"),
+                    None => commit::message(project, invocation),
+                },
+                Some(format!("Refs: {invocation}")),
+                None,
+            ),
+        };
+        let head = commit::commit_described(
             &workspace,
             &changed,
-            &commit::message(self.executor.project(), self.executor.invocation_ref()),
+            &subject,
+            body.as_deref(),
+            dated,
             self.ports.budget.tool_timeout,
         )
         .await?;
@@ -919,7 +954,9 @@ where
                 }
                 Ready::Check { command } => self.check(command).await?,
                 Ready::Commit => {
-                    let committed = self.commit(&mut params).await?;
+                    let committed = self
+                        .commit(&mut params, steered.as_ref(), reported.as_ref())
+                        .await?;
                     committed_for_direction = committed && steered.is_some();
                     if let (false, Some(by)) = (committed, steered.as_ref()) {
                         params.earned.record_head_sha(&by.head)?;
