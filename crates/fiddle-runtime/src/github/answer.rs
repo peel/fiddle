@@ -204,6 +204,22 @@ pub fn changed(summary: &str, answered: &Answered) -> String {
     format!("{CHANGED}\n\n{}\n\n{}", summary.trim(), answered.marker())
 }
 
+pub const REJECTED: &str =
+    "**fiddle published nothing for the direction above: its evaluation rejected the run.**";
+
+pub fn rejected(findings: &[String], answered: &Answered) -> String {
+    let listed: Vec<String> = findings
+        .iter()
+        .map(|finding| format!("- {}", finding.trim()))
+        .collect();
+    format!(
+        "{REJECTED}\n\nWhat the evaluation found:\n\n{}\n\nWrite on this pull request and \
+         fiddle will look again.\n\n{}",
+        listed.join("\n"),
+        answered.marker()
+    )
+}
+
 pub fn reply(summary: &str, answered: &Answered) -> String {
     format!("{NO_CHANGE}\n\n{}\n\n{}", summary.trim(), answered.marker())
 }

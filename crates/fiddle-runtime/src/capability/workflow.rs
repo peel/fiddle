@@ -1070,8 +1070,12 @@ where
                 break;
             }
         }
-        match params.earned.verdict() {
+        match params.earned.verdict().cloned() {
             Some(Verdict::Rejected { findings }) => {
+                if let Some(by) = steered.as_ref() {
+                    let body = crate::github::answer::rejected(&findings, &by.answering);
+                    self.answer(by, body, &mut params).await?;
+                }
                 let findings: Vec<Published> = findings.iter().map(Published::of).collect();
                 self.tell_the_work_item(|work_item| rejection_note(work_item, &findings))
                     .await;

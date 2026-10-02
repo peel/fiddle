@@ -1,7 +1,7 @@
 # 090 — A pull request's failing checks are a capability of their own
 
-Status: accepted
-Cites: CHECKS, CAPABILITIES, Selection, workflow_of, CHECKS_DOCUMENT, CHECKS_STAGE, Step, Ready, checks_task, CHECKS_FRAME, NOTHING_FAILS, with_checks, failing_checks, failing_section, behind_base, FailedCheck, LOG_SECTION_BYTES, api_text, without_escapes, workflows/checks.toml, workflows/prompts/checks.md, workflows/prompts/checks_evaluate.md, crates/fiddle-runtime/src/github/checks.rs, crates/fiddle-runtime/src/github/cli.rs, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-cli/src/main.rs, crates/fiddle-acceptance/tests/toil.rs, a_failing_check_reaches_the_agent_with_its_log_and_a_branch_behind_its_base_is_diagnosed, the_section_is_the_step_that_failed_last_without_timestamps, a_long_section_keeps_its_end, a_text_body_keeps_its_lines_and_loses_its_terminal_escapes
+Status: accepted; amended 2026-10-02 so a rejected steered run answers
+Cites: CHECKS, CAPABILITIES, Selection, workflow_of, CHECKS_DOCUMENT, CHECKS_STAGE, Step, Ready, checks_task, CHECKS_FRAME, NOTHING_FAILS, with_checks, failing_checks, failing_section, behind_base, FailedCheck, LOG_SECTION_BYTES, api_text, without_escapes, workflows/checks.toml, workflows/prompts/checks.md, workflows/prompts/checks_evaluate.md, crates/fiddle-runtime/src/github/checks.rs, crates/fiddle-runtime/src/github/cli.rs, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-cli/src/main.rs, crates/fiddle-acceptance/tests/toil.rs, a_failing_check_reaches_the_agent_with_its_log_and_a_branch_behind_its_base_is_diagnosed, the_section_is_the_step_that_failed_last_without_timestamps, a_long_section_keeps_its_end, a_text_body_keeps_its_lines_and_loses_its_terminal_escapes, rejected, REJECTED, crates/fiddle-runtime/src/github/answer.rs, a_steered_run_its_evaluation_rejects_answers_with_the_findings
 
 ## Context
 
@@ -34,3 +34,12 @@ For now, `fiddle run jira:ISP-263 --capability checks`. The run finds the ticket
 - A checks run makes one check-runs read, one log read per failing Actions job, and one comparison.
 - A check from another app carries its reported summary and no log.
 - `CAPABILITIES` holds seven ids, and a workflow step is one of seven kinds.
+
+## Amended 2026-10-02: a rejected steered run answers
+
+OBSERVED on 2026-10-02, live run 22 of `jira:ISP-263 --capability checks`. The agent changed nothing and diagnosed the branch as 9 commits behind `main`. The evaluation's findings said the same, but it returned rejected: it applied the rule that rejects a change made for a cause outside the files to a run that made no change. A rejected run posted nothing, so the diagnosis did not reach #275.
+
+- `checks_evaluate.md` now decides in order. A project that holds no change is accepted, and the cause of the failure is the reason the run changed nothing, not a reason to reject it. The reject rules name only a change.
+- A steered run that its evaluation rejects answers the direction with `rejected`: `REJECTED`, the findings as a list, and the marker. This holds for every capability the workflow engine runs, so direction on a pull request is never left without an answer.
+
+`a_steered_run_its_evaluation_rejects_answers_with_the_findings` replays run 22's verdict. Without the answer it fails.

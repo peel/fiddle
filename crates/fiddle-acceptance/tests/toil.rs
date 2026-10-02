@@ -4860,3 +4860,64 @@ fn a_failing_check_reaches_the_agent_with_its_log_and_a_branch_behind_its_base_i
         replies[0]
     );
 }
+
+const A_JUDGED_CAUSE: &str = "the branch is 9 commits behind `main`, which holds `pkg/manage`";
+
+#[test]
+fn a_steered_run_its_evaluation_rejects_answers_with_the_findings() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain([
+                support::accepted(support::reports(serde_json::json!({
+                    "changed_files": [],
+                    "summary": BEHIND_ITS_BASE,
+                    "claimed_complete": true,
+                }))),
+                support::accepted(support::reports(serde_json::json!({
+                    "verdict": "rejected",
+                    "findings": [A_JUDGED_CAUSE],
+                }))),
+            ])
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    world
+        .github()
+        .a_check_fails_on(&published, 501, "build", A_FAILING_SWAGGER_STEP);
+    world.github().the_branch_is_behind_its_base_by(9);
+    world
+        .github()
+        .a_member_commented(7_101, "Fix the CI failure");
+    world.forgets_that_the_work_was_completed();
+
+    let rejected = world.run_capability(REFERENCE, "checks");
+    let payload = payload_of(&rejected);
+
+    assert!(
+        payload["outcome"]["rejected"].is_object(),
+        "the evaluation rejected the run: {payload}"
+    );
+    assert_eq!(
+        world.github().head_of(&branch),
+        published,
+        "nothing was published"
+    );
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        1,
+        "a rejected run still answers the direction that steered it: {replies:?}"
+    );
+    assert!(
+        replies[0].starts_with(
+            "**fiddle published nothing for the direction above: its evaluation rejected the run.**"
+        ) && replies[0].contains(&format!("- {A_JUDGED_CAUSE}"))
+            && replies[0].contains("comments=7101 "),
+        "the answer carries the findings and names the comment it answers: {}",
+        replies[0]
+    );
+}
