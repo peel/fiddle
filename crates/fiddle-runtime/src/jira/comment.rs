@@ -138,6 +138,55 @@ pub fn marked_comment(
     }
 }
 
+pub fn marked_comment_or_holding(
+    issue: &str,
+    read: &serde_json::Value,
+    marker: &str,
+    holding: &str,
+) -> Result<Option<MarkedComment>, JiraError> {
+    if let Some(found) = marked_comment(issue, read, marker)? {
+        return Ok(Some(found));
+    }
+    let comments = read["fields"]["comment"]["comments"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    comments
+        .iter()
+        .find(|comment| {
+            let body = comment["body"].to_string();
+            body.contains(MARKER) && body.contains(holding)
+        })
+        .map(|comment| {
+            Ok(MarkedComment {
+                issue: issue.to_string(),
+                comment_id: named_id(issue, comment)?,
+            })
+        })
+        .transpose()
+}
+
+pub async fn read_marked_or_holding(
+    http: &JiraHttp,
+    issue: &str,
+    marker: &str,
+    holding: &str,
+    cancel: &CancellationToken,
+) -> Result<Option<MarkedComment>, JiraError> {
+    let path = format!("/rest/api/3/issue/{issue}?fields=comment");
+    let answered = http.api("GET", &path, None, cancel).await?;
+    match answered.status {
+        status if (200..300).contains(&status) => {
+            marked_comment_or_holding(issue, &answered.body, marker, holding)
+        }
+        status => Err(told_apart(failure_for(
+            status,
+            issue,
+            http.quoted(&answered.body).as_deref(),
+        ))),
+    }
+}
+
 fn named_id(issue: &str, comment: &serde_json::Value) -> Result<String, JiraError> {
     comment["id"]
         .as_str()
@@ -301,6 +350,53 @@ mod tests {
         let mut comment = marked_body("a person reads this", marker);
         comment["id"] = json!(id);
         comment
+    }
+
+    const LINK_URL: &str = "https://github.com/snowplow-incubator/snowplow-identities/pull/275";
+
+    fn holding(id: &str, text: &str, marker: Option<&str>) -> serde_json::Value {
+        let mut comment = match marker {
+            Some(marker) => marked_body(text, marker),
+            None => json!({"body": document(text)["body"].clone()}),
+        };
+        comment["id"] = json!(id);
+        comment
+    }
+
+    #[test]
+    fn a_link_fiddle_wrote_at_another_revision_is_found_by_what_it_links() {
+        let link = format!("pull request snowplow-incubator/snowplow-identities#275: {LINK_URL}");
+        let held = read(json!([holding("183759", &link, Some(MARKER_ONE))]), 1);
+        assert_eq!(
+            marked_comment_or_holding("ISP-263", &held, MARKER_TWO, LINK_URL).unwrap(),
+            Some(MarkedComment {
+                issue: "ISP-263".to_string(),
+                comment_id: "183759".to_string(),
+            }),
+            "the ticket moved between two runs, so the marker differs, and the pull request is \
+             already linked by fiddle"
+        );
+        assert_eq!(
+            marked_comment_or_holding(
+                "ISP-263",
+                &held,
+                MARKER_TWO,
+                "https://github.com/snowplow-incubator/snowplow-identities/pull/276"
+            )
+            .unwrap(),
+            None,
+            "a link to another pull request is not this one"
+        );
+    }
+
+    #[test]
+    fn a_link_a_person_pasted_is_not_one_fiddle_wrote() {
+        let held = read(json!([holding("1", &format!("see {LINK_URL}"), None)]), 1);
+        assert_eq!(
+            marked_comment_or_holding("ISP-263", &held, MARKER_TWO, LINK_URL).unwrap(),
+            None,
+            "a comment with no fiddle marker is a person's, so fiddle still writes its own link"
+        );
     }
 
     #[test]

@@ -3,8 +3,8 @@ use crate::effect::{
     StepParams,
 };
 use crate::jira::comment::{
-    agreed, canonical_updated, marker_for, post_marked_comment, read_marked_comment, MarkedComment,
-    UNBUILT,
+    agreed, canonical_updated, marker_for, post_marked_comment, read_marked_or_holding,
+    MarkedComment, UNBUILT,
 };
 use crate::jira::JiraError;
 use fiddle_core::{effect_id, EffectId, EffectName, JIRA_PULL_REQUEST_LINKED};
@@ -115,10 +115,11 @@ impl LinkPullRequest {
     }
 
     async fn inspect(&self, ctx: &EffectContext) -> Result<Option<MarkedComment>, JiraError> {
-        read_marked_comment(
+        read_marked_or_holding(
             ctx.jira_client()?,
             &self.issue_key,
             &self.marker(),
+            &pull_request_url(&self.repo, self.number),
             &ctx.cancel,
         )
         .await

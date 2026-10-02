@@ -212,15 +212,20 @@ async fn the_revision_a_run_observes_is_the_revision_the_link_builds_its_identit
          identity from, so the second run found its own marker and sent no write"
     );
 
+    assert_ne!(
+        a_link(AT_EIGHT).marker(),
+        a_link(&revision).marker(),
+        "a revision the run did not observe builds a second identity, so the count above is \
+         not one for every input this test could have given"
+    );
     link_pull_request(&server, AT_EIGHT)
         .await
-        .expect("a revision naming another state links again");
-
+        .expect("a revision naming another state is answered");
     assert_eq!(
         server.comment_requests_on(ISSUE).await,
-        2,
-        "a revision the run did not observe builds a second identity and writes a second time, \
-         so the count above is not one for every input this test could have given"
+        1,
+        "and that second identity still finds the link fiddle already wrote for this pull \
+         request, so the ticket is not linked twice because it moved between two runs"
     );
 }
 

@@ -1,7 +1,7 @@
 # 089 — A member's direction widens what a steered run may change, and the run works on the pull request's head
 
 Status: accepted
-Cites: STEERED_SCOPE, STEERED_EVALUATION, standing_on, NO_CHANGE, widened, CHANGED, changed, stand_on, move_to, InWorktree, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-runtime/src/capability/cve.rs, crates/fiddle-runtime/src/github/answer.rs, crates/fiddle-runtime/src/workspace/mod.rs, workflows/prompts/toil.md, workflows/prompts/change_evaluate.md, crates/fiddle-acceptance/tests/toil.rs, a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_answered, a_workspace_moves_to_a_commit_and_refuses_to_move_over_changes, a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail, a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_published
+Cites: marked_comment_or_holding, read_marked_or_holding, a_link_fiddle_wrote_at_another_revision_is_found_by_what_it_links, a_link_a_person_pasted_is_not_one_fiddle_wrote, the_revision_a_run_observes_is_the_revision_the_link_builds_its_identity_from, STEERED_SCOPE, STEERED_EVALUATION, standing_on, NO_CHANGE, widened, CHANGED, changed, stand_on, move_to, InWorktree, crates/fiddle-runtime/src/capability/workflow.rs, crates/fiddle-runtime/src/capability/cve.rs, crates/fiddle-runtime/src/github/answer.rs, crates/fiddle-runtime/src/workspace/mod.rs, workflows/prompts/toil.md, workflows/prompts/change_evaluate.md, crates/fiddle-acceptance/tests/toil.rs, a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_answered, a_workspace_moves_to_a_commit_and_refuses_to_move_over_changes, a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail, a_rerun_whose_tree_changed_is_not_forced_over_the_branch_the_first_run_published
 
 ## Context
 
@@ -34,6 +34,12 @@ OBSERVED on 2026-10-01, live run 15. The run completed, answered every ask with 
 
 - `NO_CHANGE` is now `**fiddle made no change for the direction above.**`, which is true whether the work was already there or an ask was declined. The agent's text says which.
 - The steered agent step carries `standing_on`, naming the pull request's head commit and saying it is what the pull request holds, not its base branch.
+
+## What run 18 showed
+
+OBSERVED on 2026-10-02, live run 18. The operator's reply `Yes, do Claude's comments 1 and 2.` steered the run with the review it replied to as context. The agent made both changes, the check passed, the evaluation accepted, commit `e04749c` was published onto #275, and the reply was answered by its id.
+
+The same run linked #275 on ISP-263 a second time, comment 183792 beside 183759. A link's identity is the issue at its revision, and run 15's transition had moved the revision. `inspect` now reads through `read_marked_or_holding`: when no comment carries this run's marker, a comment that carries a fiddle marker and the pull request's URL is the link already written. A link a person pasted carries no fiddle marker and does not count. The identity is unchanged, and `the_revision_a_run_observes_is_the_revision_the_link_builds_its_identity_from` now holds that a second revision builds a second identity and writes nothing. Comment 183792 was deleted by hand.
 
 ## The rows
 
