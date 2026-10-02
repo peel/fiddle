@@ -765,7 +765,8 @@ async fn the_fourth_capability_is_registered_and_names_its_own_stage() {
             "publish_change",
             "propose_change",
             "cve_mitigate",
-            "toil"
+            "toil",
+            "checks"
         ]
     );
 

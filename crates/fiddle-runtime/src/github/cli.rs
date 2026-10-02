@@ -163,6 +163,37 @@ impl GhCli {
         self.dispatch(&mut command, stdin, cancel).await
     }
 
+    pub async fn api_text(
+        &self,
+        path: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, GhError> {
+        let mut command = self.command();
+        command
+            .arg("--allow-escape-sequences")
+            .arg("--method")
+            .arg("GET")
+            .arg(path);
+        if cancel.is_cancelled() {
+            return Err(GhError::CancelledBeforeSpawn);
+        }
+        let bounded = run_bounded(&mut command, None, self.timeout, cancel)
+            .await
+            .map_err(|source| {
+                GhError::Malformed(self.redact(&format!(
+                    "{} could not be run: {source}",
+                    self.program.display()
+                )))
+            })?;
+        let output = match bounded {
+            Bounded::CancelledAfterSpawn => return Err(GhError::CancelledAfterSpawn),
+            Bounded::TimedOut => return Err(GhError::Timeout(self.timeout)),
+            Bounded::Finished(output) => output,
+        };
+        let response = self.parse_as(&output, Body::Text)?;
+        Ok(response.body.as_str().unwrap_or_default().to_string())
+    }
+
     pub async fn graphql(
         &self,
         query: &str,
@@ -241,11 +272,16 @@ impl GhCli {
         match bounded {
             Bounded::CancelledAfterSpawn => Err(GhError::CancelledAfterSpawn),
             Bounded::TimedOut => Err(GhError::Timeout(self.timeout)),
-            Bounded::Finished(output) => self.parse(&output),
+            Bounded::Finished(output) => self.parse_as(&output, Body::Json),
         }
     }
 
+    #[cfg(test)]
     fn parse(&self, output: &std::process::Output) -> Result<GhResponse, GhError> {
+        self.parse_as(output, Body::Json)
+    }
+
+    fn parse_as(&self, output: &std::process::Output, kind: Body) -> Result<GhResponse, GhError> {
         match output.status.code() {
             Some(0) => {}
             Some(2) => return Err(GhError::CancelledAfterSpawn),
@@ -296,7 +332,15 @@ impl GhCli {
             }
         }
 
-        let body = parse_body(body).map_err(|reason| GhError::Malformed(self.redact(&reason)))?;
+        let body = match kind {
+            Body::Json => {
+                parse_body(body).map_err(|reason| GhError::Malformed(self.redact(&reason)))?
+            }
+            Body::Text => match parse_body(body) {
+                Ok(json) if !json.is_string() && status >= 400 => json,
+                _ => serde_json::Value::String(self.redact(&without_escapes(body))),
+            },
+        };
 
         let response = GhResponse {
             status,
@@ -371,6 +415,32 @@ fn shape(body: &serde_json::Value) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Body {
+    Json,
+    Text,
+}
+
+pub fn without_escapes(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        kept.push(c);
+    }
+    kept
+}
+
 fn parse_body(body: &str) -> Result<serde_json::Value, String> {
     let body = body.trim();
     if body.is_empty() {
@@ -401,6 +471,17 @@ mod tests {
             PathBuf::from("/nonexistent"),
             Duration::from_secs(1),
         )
+    }
+
+    #[test]
+    fn a_text_body_keeps_its_lines_and_loses_its_terminal_escapes() {
+        let said = client()
+            .parse_as(
+                &answered("HTTP/2.0 200 OK", "\u{1b}[36;1mswag init\u{1b}[0m\nok"),
+                Body::Text,
+            )
+            .expect("a text body is not refused for not being JSON");
+        assert_eq!(said.body.as_str(), Some("swag init\nok"));
     }
 
     #[test]

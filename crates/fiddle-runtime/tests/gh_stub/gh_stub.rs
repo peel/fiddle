@@ -524,6 +524,24 @@ fn world_answer(dir: &Path, key: &str, path: &str) -> (u16, String) {
             .collect();
         return (200, serde_json::Value::Array(matches).to_string());
     }
+    if key.starts_with("GET_repos") && key.contains("_actions_jobs_") && key.ends_with("_logs") {
+        let job = key
+            .trim_end_matches("_logs")
+            .rsplit('_')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        return match std::fs::read_to_string(dir.join("job-logs").join(format!("{job}.txt"))) {
+            Ok(log) => (200, log),
+            Err(_) => (404, r#"{"message":"Not Found"}"#.to_string()),
+        };
+    }
+    if key.starts_with("GET_repos") && key.contains("_compare_") {
+        return match std::fs::read_to_string(dir.join("compare.json")) {
+            Ok(held) => (200, held),
+            Err(_) => (404, r#"{"message":"Not Found"}"#.to_string()),
+        };
+    }
     if key.starts_with("GET_repos") && key.contains("commits") && key.contains("check-runs") {
         if let Some(status) = unreadable(dir, "checks_unreadable") {
             return (status, format!(r#"{{"message":"scripted {status}"}}"#));

@@ -850,6 +850,35 @@ impl ToilForge {
         .unwrap();
     }
 
+    fn a_check_fails_on(&self, head: &str, job: u64, name: &str, log: &str) {
+        std::fs::write(
+            self.stub.join("checks_seed"),
+            serde_json::json!([{
+                "id": job,
+                "name": name,
+                "head_sha": head,
+                "status": "completed",
+                "conclusion": "failure",
+                "app": { "slug": "github-actions" },
+                "details_url": format!("https://github.com/acme/icecube/actions/runs/1/job/{job}"),
+                "output": { "title": null, "summary": null },
+            }])
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(self.stub.join("job-logs")).unwrap();
+        std::fs::write(self.stub.join("job-logs").join(format!("{job}.txt")), log).unwrap();
+    }
+
+    fn the_branch_is_behind_its_base_by(&self, commits: u64) {
+        std::fs::write(
+            self.stub.join("compare.json"),
+            serde_json::json!({ "behind_by": commits, "ahead_by": 3, "status": "diverged" })
+                .to_string(),
+        )
+        .unwrap();
+    }
+
     fn another_thread_holds(&self, pr: u64, conversation: serde_json::Value) {
         let thread = self.stub.join("issue-comments").join(format!("pr-{pr}"));
         std::fs::create_dir_all(&thread).unwrap();
@@ -1504,6 +1533,21 @@ impl ToilWorld {
             .unwrap()
     }
 
+    pub fn run_capability(&self, invocation_ref: &str, capability: &str) -> std::process::Output {
+        let mut command = self.scenario.spawnable_run_command(invocation_ref);
+        for name in support::CREDENTIAL_VARS {
+            command.env_remove(name);
+        }
+        command
+            .args(["--capability", capability, "--json"])
+            .env(MODEL_CREDENTIAL, MODEL_SENTINEL)
+            .env(FORGE_CREDENTIAL, FORGE_SENTINEL)
+            .env(JIRA_USER, "nobody@example.com")
+            .env(JIRA_TOKEN, JIRA_SENTINEL)
+            .output()
+            .unwrap()
+    }
+
     pub fn inspect_human(&self, invocation_ref: &str) -> String {
         let out = self.inspecting(invocation_ref, &[]);
         assert_eq!(
@@ -1565,6 +1609,7 @@ fn ship_the_workflow(into: &Path) {
     let to = into.join("workflows");
     std::fs::create_dir_all(to.join("prompts")).unwrap();
     std::fs::copy(from.join("toil.toml"), to.join("toil.toml")).unwrap();
+    std::fs::copy(from.join("checks.toml"), to.join("checks.toml")).unwrap();
     for prompt in support::walkdir_files(from.join("prompts")) {
         let name = prompt.file_name().expect("a prompt is a file");
         std::fs::copy(&prompt, to.join("prompts").join(name)).unwrap();
@@ -4718,5 +4763,100 @@ fn a_reply_to_answered_direction_is_read_with_the_direction_it_replies_to() {
             && replies[1].contains("comments=7001 "),
         "and the reply is answered by name: {}",
         replies[1]
+    );
+}
+
+const A_FAILING_SWAGGER_STEP: &str = "2026-10-02T11:36:20.0000000Z ##[group]Run swag init -g pkg/manage/api.go -o /tmp/docs/manage\n\
+2026-10-02T11:36:36.0000000Z pkg /home/runner/work/icecube/pkg/manage cannot find all dependencies, chdir: no such file or directory\n\
+2026-10-02T11:36:36.2532954Z ##[error]Process completed with exit code 1.\n\
+2026-10-02T11:36:37.0000000Z Post job cleanup.\n";
+
+const BEHIND_ITS_BASE: &str =
+    "Validate swagger needs `pkg/manage`, which `main` has and this branch lacks";
+
+fn a_diagnosis_that_changes_nothing() -> Vec<support::Reply> {
+    vec![
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": [],
+            "summary": BEHIND_ITS_BASE,
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::reports(
+            serde_json::json!({ "verdict": "accepted" }),
+        )),
+    ]
+}
+
+#[test]
+fn a_failing_check_reaches_the_agent_with_its_log_and_a_branch_behind_its_base_is_diagnosed() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(a_diagnosis_that_changes_nothing())
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    world
+        .github()
+        .a_check_fails_on(&published, 501, "build", A_FAILING_SWAGGER_STEP);
+    world.github().the_branch_is_behind_its_base_by(9);
+    world
+        .github()
+        .a_member_commented(7_101, "Fix the CI failure");
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let fixed = world.run_capability(REFERENCE, "checks");
+    let payload = payload_of(&fixed);
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    let carrying = |text: &str| briefs.iter().filter(|brief| brief.contains(text)).count();
+
+    assert_eq!(fixed.status.code(), Some(0), "{payload}");
+    assert_eq!(
+        briefs.len(),
+        2,
+        "the agent and the evaluation, and no eligibility review: a pull request's checks \
+         are not a ticket to qualify"
+    );
+    assert!(
+        carrying("Fix what a failing check on this pull request names") > 0,
+        "the checks capability runs its own prompt"
+    );
+    assert!(
+        carrying("`build` failed (github-actions)") > 0
+            && carrying("swag init -g pkg/manage/api.go") > 0
+            && carrying("pkg/manage cannot find all dependencies") > 0,
+        "the failing step reaches the agent from the job's log"
+    );
+    assert_eq!(
+        carrying("2026-10-02T11:36:36"),
+        0,
+        "without the log's timestamps"
+    );
+    assert!(
+        carrying("9 commits behind `main`") > 0,
+        "and so does how far the branch is behind its base, which is the cause here"
+    );
+    assert_eq!(
+        carrying("alongside the ticket"),
+        0,
+        "no ticket is quoted, so the toil scope sentence is not added"
+    );
+    assert_eq!(
+        world.github().head_of(&branch),
+        published,
+        "nothing in the files fixes a branch behind its base, so nothing was published"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].starts_with("**fiddle made no change for the direction above.**")
+            && replies[0].contains(BEHIND_ITS_BASE)
+            && replies[0].contains("comments=7101 "),
+        "the diagnosis is the answer, and it names the comment it answers: {}",
+        replies[0]
     );
 }

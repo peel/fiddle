@@ -10,7 +10,7 @@ pub mod published;
 pub mod report;
 
 pub use assessment::{
-    assess, correlation_key, derive_next, CapabilityAssessment, NextAction, CVE_MITIGATE,
+    assess, correlation_key, derive_next, CapabilityAssessment, NextAction, CHECKS, CVE_MITIGATE,
     FIXTURE_REPAIR, PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK, TOIL,
 };
 pub use decision::{

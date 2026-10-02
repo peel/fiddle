@@ -1,0 +1,40 @@
+version = 1
+name = "checks"
+stage = "checks"
+
+# Fix what a failing check on a pull request names, or say why no change to the
+# branch's files can. The run is steered: a person who speaks for the project
+# asked on the pull request, and the steer step reads what they asked and stands
+# the workspace on the pull request's head.
+[[steps]]
+kind = "steer"
+
+# Read the check runs that fail on that head, the failing step of each GitHub
+# Actions job from its log, and how far the branch is behind its base.
+[[steps]]
+kind = "checks"
+
+[[steps]]
+kind = "agent"
+prompt = "checks.md"
+max_turns = 40
+max_turns_when_steered = 24
+
+[[steps]]
+kind = "evaluate"
+prompt = "checks_evaluate.md"
+max_turns = 30
+
+# Commit what the agent changed. When it changed nothing, the pull request's
+# head stands as this run's commit, and after the steps below the run answers
+# the direction on the pull request with what it found.
+[[steps]]
+kind = "commit"
+
+[[steps]]
+kind = "effect"
+name = "ensure_branch_published"
+
+[[steps]]
+kind = "effect"
+name = "ensure_pull_request"

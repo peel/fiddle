@@ -405,6 +405,118 @@ fn blame(run: &serde_json::Value) -> BlamedCheck {
     }
 }
 
+pub const LOG_SECTION_BYTES: usize = 6_000;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailedCheck {
+    pub name: String,
+    pub app: String,
+    pub summary: Option<String>,
+    pub log: Option<String>,
+}
+
+pub async fn failing_checks(
+    gh: &GhCli,
+    repo: &str,
+    head_sha: &str,
+    cancel: &CancellationToken,
+) -> Result<Vec<FailedCheck>, GhError> {
+    let path = check_runs_path(repo, head_sha);
+    let response = gh.api("GET", &path, None, cancel).await?;
+    let Some(runs) = response.body["check_runs"].as_array() else {
+        return Err(GhError::Malformed(format!(
+            "{path} answered {} with no check_runs array",
+            response.status
+        )));
+    };
+    let mut failed = Vec::new();
+    for run in runs
+        .iter()
+        .filter(|run| tests_the_head(run, head_sha) && blames_the_change(run))
+    {
+        let app = run["app"]["slug"].as_str().unwrap_or_default().to_string();
+        let log = match (app.as_str(), run["id"].as_u64()) {
+            ("github-actions", Some(job)) => gh
+                .api_text(&format!("/repos/{repo}/actions/jobs/{job}/logs"), cancel)
+                .await
+                .ok()
+                .map(|log| failing_section(&log)),
+            _ => None,
+        };
+        let summary = run["output"]["summary"]
+            .as_str()
+            .or_else(|| run["output"]["title"].as_str())
+            .map(str::trim)
+            .filter(|it| !it.is_empty())
+            .map(str::to_string);
+        failed.push(FailedCheck {
+            name: run["name"].as_str().unwrap_or_default().to_string(),
+            app,
+            summary,
+            log,
+        });
+    }
+    Ok(failed)
+}
+
+fn without_timestamp(line: &str) -> &str {
+    match line.split_once(' ') {
+        Some((stamp, rest))
+            if stamp.len() >= 20
+                && stamp.ends_with('Z')
+                && stamp.as_bytes().get(4) == Some(&b'-')
+                && stamp.contains('T') =>
+        {
+            rest
+        }
+        _ => line,
+    }
+}
+
+pub fn failing_section(log: &str) -> String {
+    let lines: Vec<&str> = log.lines().map(without_timestamp).collect();
+    let failed = lines
+        .iter()
+        .rposition(|line| line.starts_with("##[error]"))
+        .unwrap_or(lines.len().saturating_sub(1));
+    let started = lines[..failed]
+        .iter()
+        .rposition(|line| line.starts_with("##[group]Run "))
+        .unwrap_or(0);
+    let section = lines[started..=failed.min(lines.len().saturating_sub(1))].join("\n");
+    match section.len() > LOG_SECTION_BYTES {
+        false => section,
+        true => {
+            let mut from = section.len() - LOG_SECTION_BYTES;
+            while !section.is_char_boundary(from) {
+                from += 1;
+            }
+            format!(
+                "[the start of this step's log is left out]\n{}",
+                &section[from..]
+            )
+        }
+    }
+}
+
+pub async fn behind_base(
+    gh: &GhCli,
+    repo: &str,
+    base: &str,
+    head: &str,
+    cancel: &CancellationToken,
+) -> Result<u64, GhError> {
+    let path = format!(
+        "/repos/{repo}/compare/{}...{}",
+        super::encode(base),
+        super::encode(head)
+    );
+    let response = gh.api("GET", &path, None, cancel).await?;
+    response.body["behind_by"]
+        .as_u64()
+        .ok_or_else(|| GhError::Malformed(format!("{path} answered with no behind_by")))
+}
+
 pub async fn observe_genuine_failure(
     gh: &GhCli,
     repo: &str,
@@ -450,5 +562,52 @@ pub async fn observe_genuine_failure(
         },
         source,
         revision: Some(head_sha.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod failing_logs {
+    use super::*;
+
+    const LOG: &str = "2026-10-02T11:36:20.0000000Z ##[group]Run go run golang.org/x/tools/cmd/deadcode@v0.49.0 -test .\n\
+2026-10-02T11:36:21.0000000Z ##[error]pkg/db/db.go:226:20: unreachable func: Postgres.WriteURI\n\
+2026-10-02T11:36:30.0000000Z ##[group]Run swag init -g pkg/manage/api.go\n\
+2026-10-02T11:36:36.0000000Z pkg /home/runner/work/x/pkg/manage cannot find all dependencies\n\
+2026-10-02T11:36:36.2532954Z ##[error]Process completed with exit code 1.\n\
+2026-10-02T11:36:37.0000000Z Post job cleanup.";
+
+    #[test]
+    fn the_section_is_the_step_that_failed_last_without_timestamps() {
+        let section = failing_section(LOG);
+        assert!(
+            section.starts_with("##[group]Run swag init -g pkg/manage/api.go"),
+            "the step whose error ended the job, not an earlier step's annotation: {section}"
+        );
+        assert!(section.contains("pkg/manage cannot find all dependencies"));
+        assert!(section.ends_with("##[error]Process completed with exit code 1."));
+        assert!(
+            !section.contains("2026-10-02T"),
+            "timestamps are noise: {section}"
+        );
+        assert!(
+            !section.contains("Post job cleanup"),
+            "and so is what ran after it"
+        );
+        assert!(
+            !section.contains("deadcode"),
+            "and an earlier step that passed: {section}"
+        );
+    }
+
+    #[test]
+    fn a_long_section_keeps_its_end() {
+        let long = format!(
+            "##[group]Run make\n{}\n##[error]the last line",
+            "x".repeat(LOG_SECTION_BYTES * 2)
+        );
+        let section = failing_section(&long);
+        assert!(section.len() <= LOG_SECTION_BYTES + 60, "{}", section.len());
+        assert!(section.ends_with("##[error]the last line"));
+        assert!(section.starts_with("[the start of this step's log is left out]"));
     }
 }

@@ -154,6 +154,7 @@ fn spelled(step: &Step) -> String {
         Step::Check { program, .. } => format!("check:{program}"),
         Step::Commit {} => "commit".to_string(),
         Step::Steer {} => "steer".to_string(),
+        Step::Checks {} => "checks".to_string(),
         Step::Effect {
             name,
             reaching: None,

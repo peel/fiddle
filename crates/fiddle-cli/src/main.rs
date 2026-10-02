@@ -143,6 +143,7 @@ enum Selection {
     Propose,
     Mitigate,
     Toil,
+    Checks,
 }
 
 impl Selection {
@@ -154,6 +155,7 @@ impl Selection {
             Selection::Propose => fiddle_core::PROPOSE_CHANGE,
             Selection::Mitigate => fiddle_core::CVE_MITIGATE,
             Selection::Toil => fiddle_core::TOIL,
+            Selection::Checks => fiddle_core::CHECKS,
         }
     }
 
@@ -174,6 +176,8 @@ impl Selection {
             Ok(Selection::Mitigate)
         } else if requested == fiddle_core::TOIL.0 {
             Ok(Selection::Toil)
+        } else if requested == fiddle_core::CHECKS.0 {
+            Ok(Selection::Checks)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -371,6 +375,17 @@ const TOIL_DOCUMENT: &str = "toil.toml";
 
 const TOIL_STAGE: &str = "toil";
 
+const CHECKS_DOCUMENT: &str = "checks.toml";
+
+const CHECKS_STAGE: &str = "checks";
+
+fn workflow_of(selection: Selection) -> (CapabilityId, &'static str, &'static str) {
+    match selection {
+        Selection::Checks => (fiddle_core::CHECKS, CHECKS_STAGE, CHECKS_DOCUMENT),
+        _ => (fiddle_core::TOIL, TOIL_STAGE, TOIL_DOCUMENT),
+    }
+}
+
 fn workflows_root(config_path: &Path) -> PathBuf {
     config_path
         .parent()
@@ -413,9 +428,10 @@ fn selected_workflow(
     config_path: &Path,
 ) -> Result<Option<SelectedWorkflow>, WorkflowDocumentUnusable> {
     match selection {
-        Selection::Toil => {
-            let document = workflows_root(config_path).join(TOIL_DOCUMENT);
-            let workflow = workflow_document(&document, TOIL_STAGE)?;
+        Selection::Toil | Selection::Checks => {
+            let (_, stage, named) = workflow_of(selection);
+            let document = workflows_root(config_path).join(named);
+            let workflow = workflow_document(&document, stage)?;
             Ok(Some(SelectedWorkflow { document, workflow }))
         }
         Selection::Mark
@@ -1040,7 +1056,7 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        Selection::Propose | Selection::Mitigate | Selection::Toil => {
+        Selection::Propose | Selection::Mitigate | Selection::Toil | Selection::Checks => {
             let workspace = config
                 .workspace
                 .as_ref()
@@ -1412,11 +1428,12 @@ fn build_capability<'a>(
             )))
         }
 
-        Selection::Toil => {
+        Selection::Toil | Selection::Checks => {
+            let (capability_id, stage, named) = workflow_of(selection);
             let SelectedWorkflow { document, workflow } =
                 selected.ok_or_else(|| WorkflowDocumentUnusable {
                     path: workflows_root(config_path)
-                        .join(TOIL_DOCUMENT)
+                        .join(named)
                         .display()
                         .to_string(),
                     reason: "this build reads the document before it resolves a \
@@ -1465,7 +1482,7 @@ fn build_capability<'a>(
             );
 
             let executor = Executor::new(
-                fiddle_core::TOIL,
+                capability_id,
                 config.project.name.clone(),
                 reference.as_str(),
                 &github.policy,
@@ -1475,8 +1492,8 @@ fn build_capability<'a>(
             );
 
             let capability = WorkflowCapability::new(
-                fiddle_core::TOIL,
-                TOIL_STAGE,
+                capability_id,
+                stage,
                 workflow,
                 executor,
                 StepParams {
@@ -1500,7 +1517,7 @@ fn build_capability<'a>(
                         document.display(),
                     )),
                     draft: true,
-                    ..StepParams::for_capability(fiddle_core::TOIL)
+                    ..StepParams::for_capability(capability_id)
                 },
                 WorkflowPorts {
                     model: gateway.model,
@@ -1690,7 +1707,11 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             )
             .await?;
             let forge = match selection {
-                Selection::Publish | Selection::Propose | Selection::Mitigate | Selection::Toil => {
+                Selection::Publish
+                | Selection::Propose
+                | Selection::Mitigate
+                | Selection::Toil
+                | Selection::Checks => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
                 Selection::Mark | Selection::Repair => None,

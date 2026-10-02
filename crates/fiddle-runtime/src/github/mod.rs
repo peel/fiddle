@@ -12,8 +12,9 @@ pub use answer::{
     already_answered, unanswered, AnswerPullRequest, Answered, AnsweredComment, Earlier,
 };
 pub use checks::{
-    check_request_target, classify, observe_checks, observe_genuine_failure, run_name, BlamedCheck,
-    CheckState, EnsureCheckRequested, GenuineFailure, Settlement, WorkflowRun,
+    behind_base, check_request_target, classify, failing_checks, failing_section, observe_checks,
+    observe_genuine_failure, run_name, BlamedCheck, CheckState, EnsureCheckRequested, FailedCheck,
+    GenuineFailure, Settlement, WorkflowRun,
 };
 pub use cli::{GhCli, GhError, GhResponse};
 pub use comments::{

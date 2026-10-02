@@ -131,13 +131,14 @@ fn the_rust_constructor_refuses_what_the_file_path_refuses() {
 }
 
 #[test]
-fn a_step_is_one_of_exactly_six_kinds() {
+fn a_step_is_one_of_exactly_seven_kinds() {
     let named = |step: &Step| match step {
         Step::Agent { .. } => "agent",
         Step::Evaluate { .. } => "evaluate",
         Step::Check { .. } => "check",
         Step::Commit {} => "commit",
         Step::Steer {} => "steer",
+        Step::Checks {} => "checks",
         Step::Effect { .. } => "effect",
     };
     let kinds: Vec<&str> = canonical().to_file().steps.iter().map(named).collect();

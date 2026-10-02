@@ -1956,7 +1956,8 @@ fn the_registry_holds_every_capability_this_build_offers() {
             "publish_change",
             "propose_change",
             "cve_mitigate",
-            "toil"
+            "toil",
+            "checks"
         ]
     );
 }
