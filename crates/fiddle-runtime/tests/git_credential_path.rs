@@ -61,7 +61,7 @@ fn offered_credential(dir: &Path) -> Option<String> {
         .unwrap()
         .iter()
         .map(|entry| entry.as_str().unwrap().to_string())
-        .find(|entry| entry.starts_with("GIT_CONFIG_VALUE_0="))
+        .find(|entry| entry.starts_with("GIT_CONFIG_VALUE_1="))
 }
 
 #[tokio::test]
@@ -177,5 +177,80 @@ async fn the_local_runner_refuses_every_subcommand_that_reaches_a_remote() {
         offered_credential(&repository),
         None,
         "a refusal must happen before anything is spawned"
+    );
+}
+
+fn authorizations_git_sends(repository: &Path, reset_first: bool) -> Vec<String> {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}/");
+    git_setup(
+        repository,
+        &[
+            "config",
+            &format!("http.{base}.extraheader"),
+            "AUTHORIZATION: basic persisted-by-the-checkout",
+        ],
+    );
+    let heard = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !request.windows(4).any(|it| it == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        String::from_utf8_lossy(&request).to_string()
+    });
+    let key = format!("http.{base}.extraHeader");
+    let mut entries = Vec::new();
+    if reset_first {
+        entries.push((key.clone(), String::new()));
+    }
+    entries.push((key, "Authorization: Basic fiddle".to_string()));
+    let mut command = std::process::Command::new("git");
+    command
+        .args(["ls-remote", &format!("{base}r.git")])
+        .current_dir(repository)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_COUNT", entries.len().to_string());
+    for (at, (key, value)) in entries.iter().enumerate() {
+        command
+            .env(format!("GIT_CONFIG_KEY_{at}"), key)
+            .env(format!("GIT_CONFIG_VALUE_{at}"), value);
+    }
+    let _ = command.output().expect("git runs");
+    heard
+        .join()
+        .unwrap()
+        .lines()
+        .filter(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn an_empty_extra_header_drops_the_one_a_checkout_persisted_so_one_authorization_is_sent() {
+    let without = TempDir::new().unwrap();
+    let doubled = authorizations_git_sends(&repository_with_one_commit(without.path()), false);
+    assert_eq!(
+        doubled.len(),
+        2,
+        "without the reset git sends the persisted header beside fiddle's, which GitHub refuses \
+         as a duplicate: {doubled:?}"
+    );
+
+    let with = TempDir::new().unwrap();
+    let sent = authorizations_git_sends(&repository_with_one_commit(with.path()), true);
+    assert_eq!(
+        sent,
+        vec!["Authorization: Basic fiddle".to_string()],
+        "an empty value first resets the list, so only fiddle's header reaches the server"
     );
 }

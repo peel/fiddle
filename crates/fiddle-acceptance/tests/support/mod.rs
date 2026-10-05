@@ -138,12 +138,52 @@ fn executable_from(build_log: &[u8], name: &str) -> Option<PathBuf> {
         .find_map(|message| Some(PathBuf::from(message["executable"].as_str()?)))
 }
 
-pub const CREDENTIAL_VARS: [&str; 4] = [
+pub const CREDENTIAL_VARS: [&str; 9] = [
     "GITHUB_TOKEN",
     "GH_TOKEN",
     "ANTHROPIC_API_KEY",
     "JIRA_API_TOKEN",
+    "JIRA_USER_EMAIL",
+    "FIDDLE_GITHUB_TOKEN",
+    "LITELLM_API_KEY",
+    "WIZ_CLIENT_ID",
+    "WIZ_CLIENT_SECRET",
 ];
+
+pub fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("the repository root resolves")
+}
+
+pub fn secrets_the_host_exports(patch: &str) -> Vec<String> {
+    patch
+        .lines()
+        .filter(|line| !line.starts_with('-'))
+        .filter_map(|line| {
+            let (name, value) = line.trim_start_matches('+').trim().split_once(':')?;
+            let named = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|it| it.is_ascii_uppercase() || it.is_ascii_digit() || it == '_');
+            (named && value.trim().starts_with("${{ secrets.")).then(|| name.to_string())
+        })
+        .collect()
+}
+
+pub fn variables_a_document_names(text: &str) -> Vec<String> {
+    text.match_indices("env = \"")
+        .filter_map(|(at, opening)| {
+            let rest = &text[at + opening.len()..];
+            let name: String = rest
+                .chars()
+                .take_while(|it| it.is_ascii_uppercase() || it.is_ascii_digit() || *it == '_')
+                .collect();
+            (!name.is_empty() && rest[name.len()..].starts_with('"')).then_some(name)
+        })
+        .collect()
+}
 
 pub const BROKEN_FIXTURE: &str = "pub fn last_index(len: usize) -> usize { len }\n";
 

@@ -180,10 +180,22 @@ fn config_check_accepts_a_named_endpoint_that_nothing_exports() {
     );
 }
 
+fn resolved(path: &str) -> String {
+    std::path::absolute(path)
+        .expect("the test's working directory is readable")
+        .display()
+        .to_string()
+}
+
 #[test]
 fn config_check_reports_the_workspace_table_it_accepted() {
     let workspace = checked(AGENTIC)["workspace"].clone();
-    assert_eq!(workspace["root"], ".fiddle/workspaces", "{workspace}");
+    assert_eq!(
+        workspace["root"],
+        resolved(".fiddle/workspaces"),
+        "a relative root is reported as the path the run will use, resolved against where \
+         fiddle runs: {workspace}"
+    );
     assert_eq!(workspace["isolation"], "git-worktree", "{workspace}");
     assert_eq!(workspace["command_timeout"], "15m", "{workspace}");
     assert_eq!(workspace["cleanup"], "always", "{workspace}");
@@ -199,7 +211,11 @@ fn config_check_reports_the_fixture_under_repair_and_the_check_that_judges_it() 
          check = { program = \"cargo\", args = [\"test\", \"--offline\"] }",
     ))["workspace"]
         .clone();
-    assert_eq!(workspace["fixture"], "fixtures/m1-demo", "{workspace}");
+    assert_eq!(
+        workspace["fixture"],
+        resolved("fixtures/m1-demo"),
+        "{workspace}"
+    );
     assert_eq!(workspace["check"]["program"], "cargo", "{workspace}");
     assert_eq!(
         workspace["check"]["args"],
@@ -284,7 +300,7 @@ fn config_check_reports_the_credentials_variable_name_and_never_its_value() {
 }
 
 #[test]
-fn an_m0_shaped_document_produces_exactly_the_payload_it_always_did() {
+fn an_m0_shaped_document_produces_exactly_its_payload_with_its_paths_resolved() {
     let payload =
         checked("[project]\nname = \"icecube\"\n\n[stub]\nroot = \".\"\n\n[report]\ndir = \".\"\n");
     assert_eq!(
@@ -293,11 +309,11 @@ fn an_m0_shaped_document_produces_exactly_the_payload_it_always_did() {
             "schema": "fiddle.config_check.v0",
             "status": "valid",
             "project": { "name": "icecube" },
-            "stub": { "root": "." },
-            "report": { "dir": "." },
+            "stub": { "root": resolved(".") },
+            "report": { "dir": resolved(".") },
         }),
-        "a document describing no agent and no workspace must report exactly \
-         what it always has"
+        "a document describing no agent and no workspace reports its project and its two \
+         paths, resolved against where fiddle runs, and nothing else"
     );
 }
 

@@ -1072,6 +1072,13 @@ pub enum ConfigError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     Invalid(#[from] Box<InvalidConfig>),
+
+    #[error(
+        "the configuration names the relative path {path}, and fiddle cannot read its working \
+         directory to resolve it: {reason}"
+    )]
+    #[diagnostic(code(fiddle::config::unresolvable))]
+    Unresolvable { path: PathBuf, reason: String },
 }
 
 pub const THINKING_NEEDS_MESSAGES: &str = "`thinking = \"disabled\"` is sent as a field of the \
@@ -1081,7 +1088,7 @@ pub const THINKING_NEEDS_MESSAGES: &str = "`thinking = \"disabled\"` is sent as 
 pub fn load(path: &Path) -> Result<Config, ConfigError> {
     let text =
         std::fs::read_to_string(path).map_err(|_| ConfigError::NotFound(path.to_path_buf()))?;
-    let config = parsed(path, text.clone())?;
+    let config = absolutized(parsed(path, text.clone())?)?;
     let refused = config.agent.as_ref().is_some_and(|agent| {
         agent.thinking == fiddle_runtime::Thinking::Disabled
             && agent.protocol != fiddle_runtime::Protocol::Messages
@@ -1095,6 +1102,33 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
         })));
     }
     Ok(config)
+}
+
+fn absolutized(mut config: Config) -> Result<Config, ConfigError> {
+    absolute(&mut config.stub.root)?;
+    absolute(&mut config.report.dir)?;
+    if let Some(workspace) = config.workspace.as_mut() {
+        absolute(&mut workspace.root)?;
+        if let Some(fixture) = workspace.fixture.as_mut() {
+            absolute(fixture)?;
+        }
+    }
+    if let Some(github) = config.github.as_mut() {
+        absolute(&mut github.config_dir)?;
+        if let Some(work) = github.work.as_mut() {
+            absolute(work)?;
+        }
+    }
+    Ok(config)
+}
+
+fn absolute(path: &mut PathBuf) -> Result<(), ConfigError> {
+    let resolved = std::path::absolute(&*path).map_err(|error| ConfigError::Unresolvable {
+        path: path.clone(),
+        reason: error.to_string(),
+    })?;
+    *path = resolved;
+    Ok(())
 }
 
 fn parsed(path: &Path, text: String) -> Result<Config, ConfigError> {

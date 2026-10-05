@@ -549,6 +549,13 @@ remediate.** The `remediate` job's `if` requires `on_default_branch == 'true'`,
 and the `ref` input says the same thing in its own description. Point `ref` at a
 release tag to report on that tag, and expect no pull request from it.
 
+**Check out with `persist-credentials: false`.** `actions/checkout` otherwise
+writes a token that can push into `.git/config`, and the workspace's checks run
+repository code that can read it. fiddle supplies its own credential to each
+push and fetch and resets any persisted `http.extraHeader` first, so a
+persisted header no longer breaks the push with `Duplicate header:
+"Authorization"`. That reset does not hide the file from the code the checks run.
+
 Establish this state before a dispatch that is meant to remediate.
 
 ```sh

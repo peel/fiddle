@@ -8,6 +8,8 @@ for TOOL in nix git jq beans; do
   command -v "$TOOL" >/dev/null 2>&1 || { echo "GATE: CANNOT RUN  ($TOOL is not on the PATH, so the gate cannot answer)"; exit 2; }
 done
 
+scripts/check-free-space.sh . target || { echo "GATE: CANNOT RUN  (too little free disk for a build, as the line above says)"; exit 2; }
+
 LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fiddle-gate-XXXXXX") || exit 2
 trap 'rm -rf "$LOG_DIR"' EXIT INT TERM
 echo "logs: $LOG_DIR"

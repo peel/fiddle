@@ -148,6 +148,9 @@ Two rules follow, and neither needs a constant.
 - **Check free space against a measured lane before opening a wave.** Take the
   size from a lane that has run a full gate in this repository, today, and
   multiply by the wave.
+- **The gate refuses a short disk itself.** `scripts/check-free-space.sh` runs
+  first and exits 2 when free space is below this tree's `target/` or a floor,
+  so a full disk reads as `GATE: CANNOT RUN`, not as a red build.
 
 The reason this section exists: a milestone here reached 100 percent disk across
 eleven worktrees. Three lanes had finished their work and one had not yet

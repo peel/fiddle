@@ -9,16 +9,17 @@ const INVOCATION_REF: &str = "beans:fiddle-m0-demo";
 fn m0_executable_skeleton_scenario() {
     let s = Scenario::new();
 
-    assert_eq!(
-        support::CREDENTIAL_VARS,
-        [
-            "GITHUB_TOKEN",
-            "GH_TOKEN",
-            "ANTHROPIC_API_KEY",
-            "JIRA_API_TOKEN"
-        ],
-        "the M0 lane must stay credential-free"
-    );
+    for name in [
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "JIRA_API_TOKEN",
+    ] {
+        assert!(
+            support::CREDENTIAL_VARS.contains(&name),
+            "the M0 lane must stay credential-free, so {name} is poisoned"
+        );
+    }
 
     let checked = s.config_check();
     assert_eq!(
@@ -310,5 +311,85 @@ fn m0_executable_skeleton_scenario() {
     assert!(
         !s.dir().join("pwned").exists(),
         "the escape landed here; nothing may be created outside the configured roots"
+    );
+}
+
+#[test]
+fn every_credential_the_host_or_a_runbook_names_is_poisoned_and_removed() {
+    let root = support::repository_root();
+    let read = |path: &std::path::Path| {
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{} reads: {e}", path.display()))
+    };
+    let mut sources: Vec<(String, Vec<String>)> = vec![(
+        "docs/technical/host-workflow-m4b.patch".to_string(),
+        support::secrets_the_host_exports(&read(
+            &root.join("docs/technical/host-workflow-m4b.patch"),
+        )),
+    )];
+    sources.push((
+        "docs/technical/RUNBOOKS.md".to_string(),
+        support::variables_a_document_names(&read(&root.join("docs/technical/RUNBOOKS.md"))),
+    ));
+    let scripts: Vec<std::path::PathBuf> = std::fs::read_dir(root.join("scripts"))
+        .expect("scripts/ lists")
+        .filter_map(|entry| entry.ok().map(|it| it.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|it| it.to_str())
+                .is_some_and(|name| name.starts_with("live-") && name.ends_with(".sh"))
+        })
+        .collect();
+    assert!(
+        !scripts.is_empty(),
+        "the live scripts are found, or this row reads nothing"
+    );
+    for script in scripts {
+        sources.push((
+            script.display().to_string(),
+            support::variables_a_document_names(&read(&script)),
+        ));
+    }
+
+    let mut named = 0;
+    for (source, names) in &sources {
+        if source.ends_with(".patch") || source.ends_with("RUNBOOKS.md") {
+            assert!(
+                !names.is_empty(),
+                "{source} names no credential, so this row would check nothing"
+            );
+        }
+        for name in names {
+            named += 1;
+            assert!(
+                support::CREDENTIAL_VARS.contains(&name.as_str()),
+                "{source} names {name}, and the gate neither poisons nor removes it, so a \
+                 developer who exports it runs a gate that is not proven credential-free"
+            );
+        }
+    }
+    assert!(
+        named >= 6,
+        "the sources name at least the six credentials a deployment exports today, found {named}"
+    );
+}
+
+#[test]
+fn the_credential_readers_find_what_they_are_shown_and_nothing_else() {
+    assert_eq!(
+        support::secrets_the_host_exports(
+            "+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}\n\
+             -          OLD_KEY: ${{ secrets.OLD_KEY }}\n\
+                       client-id: ${{ secrets.WIZ_CLIENT_ID }}\n\
+                       RUST_LOG: info\n"
+        ),
+        vec!["LITELLM_API_KEY".to_string()],
+        "an exported secret is read; a removed line, a lower-case input and a plain value are not"
+    );
+    assert_eq!(
+        support::variables_a_document_names(
+            "token = { env = \"FIDDLE_GITHUB_TOKEN\" }\nuser = { env = \"lower\" }\nx = 1\n"
+        ),
+        vec!["FIDDLE_GITHUB_TOKEN".to_string()],
+        "a named variable is read, and nothing else is"
     );
 }
