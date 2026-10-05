@@ -57,6 +57,8 @@ The same run linked #275 on ISP-263 a second time, comment 183792 beside 183759.
 
 ## Amended 2026-10-02: a commit says what it is, and a steered one is dated at its direction
 
+ADR 091 replaces the messages below for a report that carries a `commit_message`. They remain for a run whose report carries none. The date rule is unchanged.
+
 OBSERVED on 2026-10-02: the operator read #275 as holding no commit from run 18. `e04749c` was there, but it read exactly as `3acb655`: `fiddle <fiddle@invalid> 2026-09-01T14:09:11Z identities: jira:ISP-263`. Every commit carried the fixed subject `<project>: <invocation>` and the workspace's base date.
 
 - A first run's commit is `<project>: [<ticket>] <ticket summary>` with `Refs: <invocation>` as its body, built from the ticket and nothing the model wrote, so a retry still rebuilds one commit. `a_retry_over_a_branch_this_invocation_already_published_reaches_the_effect_tail` still holds that.

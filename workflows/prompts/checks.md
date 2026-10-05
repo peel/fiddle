@@ -36,3 +36,12 @@ quoted above. Write it in Markdown for them: one sentence that says what failed
 and why, then one short bullet for each failing check, saying what you changed
 or why no change to the files fixes it and what a person has to do instead.
 Put file paths, commands and symbols in backticks.
+
+When you changed a file, send `commit_message` too. It is the message of the
+commit that holds your change. Its `title` is an imperative phrase of at most
+70 characters with no period, such as `Pass the merged identities to
+planOperations in the merge limit tests`. Its `previously` is one paragraph
+that opens with `Previously` and says how the project behaved before the
+change. Its `now` is one paragraph that opens with `Now` and says how it behaves
+after. Write both technically and factually, with no bullet points, statistics
+or attribution.

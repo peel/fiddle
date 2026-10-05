@@ -1018,6 +1018,7 @@ fn reading_the_file_before_it_answers() -> support::Reply {
 fn a_report_that_built_the_option_the_description_suggested() -> support::Reply {
     support::accepted(support::reports(serde_json::json!({
         "changed_files": ["src/lib.rs"],
+        "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
         "summary": THE_RUNS_OWN_ACCOUNT_OF_WHY_IT_BUILT_A,
         "claimed_complete": true,
     })))
@@ -1055,6 +1056,7 @@ fn a_change_the_ticket_chooses() -> Vec<Answering> {
         ),
         Answering::Always(support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
             "summary": "made the change the ticket decided on",
             "claimed_complete": true,
         })))),
@@ -1073,6 +1075,7 @@ fn an_accepted_change_whose_judge_reads_before_it_answers() -> Vec<support::Repl
         )),
         support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
             "summary": "corrected the off-by-one the ticket named",
             "claimed_complete": true,
         }))),
@@ -1116,6 +1119,7 @@ fn a_change_the_judge_rejects() -> Vec<support::Reply> {
         )),
         support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
             "summary": "corrected the off-by-one the ticket named",
             "claimed_complete": true,
         }))),
@@ -1126,7 +1130,25 @@ fn a_change_the_judge_rejects() -> Vec<support::Reply> {
     ]
 }
 
+const A_STEERED_TITLE: &str = "Add the constructor the review asked for";
+
+const A_STEERED_PREVIOUSLY: &str = "Previously the module had no way to build the value directly.";
+
+const A_STEERED_NOW: &str = "Now a constructor builds it, as the review asked.";
+
 fn an_accepted_change_writing(contents: &str) -> Vec<support::Reply> {
+    an_accepted_change_described(
+        contents,
+        [
+            "Correct the off-by-one the ticket names",
+            "Previously the function returned one past the end.",
+            "Now it returns the last element.",
+        ],
+    )
+}
+
+fn an_accepted_change_described(contents: &str, described: [&str; 3]) -> Vec<support::Reply> {
+    let [title, previously, now] = described;
     vec![
         a_review_that_reads_a_change(),
         support::accepted(support::calls(
@@ -1135,6 +1157,7 @@ fn an_accepted_change_writing(contents: &str) -> Vec<support::Reply> {
         )),
         support::accepted(support::reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": title, "previously": previously, "now": now},
             "summary": "corrected the off-by-one the ticket named",
             "claimed_complete": true,
         }))),
@@ -1217,6 +1240,7 @@ impl ToilWorld {
                 ),
                 Answering::Always(support::accepted(support::reports(serde_json::json!({
                     "changed_files": ["src/lib.rs"],
+                    "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
                     "summary": "emitted the sample under the name the ticket named",
                     "claimed_complete": true,
                     "quoted_from_a_comment": ISP_263_CHOOSES_OPTION_B,
@@ -1234,6 +1258,7 @@ impl ToilWorld {
                 Answering::Always(writing(OPTION_A_A_RUN_SUBSTITUTED)),
                 Answering::Always(support::accepted(support::reports(serde_json::json!({
                     "changed_files": ["src/lib.rs"],
+                    "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
                     "summary": THE_RUNS_OWN_ACCOUNT_OF_WHY_IT_BUILT_A,
                     "claimed_complete": true,
                     "quoted_from_a_comment": ISP_263_CHOOSES_OPTION_B,
@@ -1269,6 +1294,7 @@ impl ToilWorld {
                 reads_again(),
                 support::accepted(support::reports(serde_json::json!({
                     "changed_files": ["src/lib.rs"],
+                    "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
                     "summary": "corrected the off-by-one the ticket named",
                     "claimed_complete": true,
                 }))),
@@ -1299,6 +1325,7 @@ impl ToilWorld {
                 )),
                 support::accepted(support::reports(serde_json::json!({
                     "changed_files": ["src/lib.rs"],
+                    "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
                     "summary": "corrected the off-by-one the ticket named",
                     "claimed_complete": true,
                 }))),
@@ -1321,6 +1348,7 @@ impl ToilWorld {
                 )),
                 support::accepted(support::reports(serde_json::json!({
                     "changed_files": ["src/lib.rs"],
+                    "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
                     "summary": "corrected the off-by-one the ticket named",
                     "claimed_complete": true,
                 }))),
@@ -4594,7 +4622,10 @@ fn a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_an
     let world = ToilWorld::serving(
         an_accepted_change()
             .into_iter()
-            .chain(an_accepted_change_writing(&widened))
+            .chain(an_accepted_change_described(
+                &widened,
+                [A_STEERED_TITLE, A_STEERED_PREVIOUSLY, A_STEERED_NOW],
+            ))
             .collect(),
     );
     world.jira().holds_eligible_ticket(TICKET);
@@ -4657,19 +4688,19 @@ fn a_member_review_widens_the_change_and_the_change_it_earns_is_published_and_an
         "and it is the change the agent made"
     );
     let first_message = world.github().message_of(&published);
-    assert!(
-        first_message.starts_with("icecube: [ISP-42] Rename the deprecated helper")
-            && first_message.contains("Refs: jira:ISP-42"),
-        "a first run's commit names the ticket it changes, from what the ticket says: \
-         {first_message}"
+    assert_eq!(
+        first_message.trim(),
+        "Correct the off-by-one the ticket names\n\nPreviously the function returned one past \
+         the end.\n\nNow it returns the last element.",
+        "a first run's commit is the message the agent wrote: an imperative title, then what \
+         was so before and what is so now"
     );
     let head = world.github().head_of(&branch);
     let message = world.github().message_of(&head);
-    assert!(
-        message.starts_with("icecube: jira:ISP-42, answering the direction on acme/icecube#7")
-            && message.contains("corrected the off-by-one the ticket named"),
-        "a steered commit says what it answers and carries what the agent changed, so it \
-         cannot be mistaken for the first one: {message}"
+    assert_eq!(
+        message.trim(),
+        format!("{A_STEERED_TITLE}\n\n{A_STEERED_PREVIOUSLY}\n\n{A_STEERED_NOW}"),
+        "and so is a steered commit, which says what it changed for the review"
     );
     assert!(
         world
@@ -4954,5 +4985,51 @@ fn a_hook_installed_in_the_clone_does_not_stop_fiddle_committing() {
     assert!(
         !world.github().head_of(&branch).is_empty(),
         "and the commit was published"
+    );
+}
+
+#[test]
+fn a_report_that_changes_files_without_a_commit_message_is_returned_and_the_message_it_sends_is_the_commit(
+) {
+    let world = ToilWorld::serving(vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": A_STEERED_TITLE, "previously": A_STEERED_PREVIOUSLY, "now": A_STEERED_NOW},
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::reports(
+            serde_json::json!({ "verdict": "accepted" }),
+        )),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+
+    assert_eq!(run.status.code(), Some(0), "{payload}");
+    assert!(
+        world
+            .model_prompts()
+            .iter()
+            .any(|prompt| prompt.contains("it names changed files and carries no commit_message")),
+        "the report without a message is returned to the model, saying what it lacks"
+    );
+    let branch = world.github().only_branch();
+    let message = world.github().message_of(&world.github().head_of(&branch));
+    assert_eq!(
+        message.trim(),
+        format!("{A_STEERED_TITLE}\n\n{A_STEERED_PREVIOUSLY}\n\n{A_STEERED_NOW}"),
+        "and the message the second report sent is the commit's"
     );
 }

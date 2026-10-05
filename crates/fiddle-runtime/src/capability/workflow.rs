@@ -523,6 +523,7 @@ where
             Held {
                 shown: &[],
                 declarations: Declarations::Unchecked,
+                described: true,
             },
             self.ports.transcripts.as_ref(),
         )
@@ -767,22 +768,23 @@ where
         }
         let project = self.executor.project();
         let invocation = self.executor.invocation_ref();
-        let (subject, body, dated) = match steered {
-            Some(by) => (
+        let dated = steered.and_then(|by| by.dated.as_deref());
+        let described = reported.and_then(|it| it.commit_message.as_ref());
+        let (subject, body) = match (described, steered) {
+            (Some(message), _) => (message.subject(), Some(message.body())),
+            (None, Some(by)) => (
                 format!(
                     "{project}: {invocation}, answering the direction on {}#{}",
                     by.repo, by.pr
                 ),
                 reported.map(|it| it.summary.clone()),
-                by.dated.as_deref(),
             ),
-            None => (
+            (None, None) => (
                 match params.title.as_deref() {
                     Some(title) => format!("{project}: {title}"),
                     None => commit::message(project, invocation),
                 },
                 Some(format!("Refs: {invocation}")),
-                None,
             ),
         };
         let head = commit::commit_described(

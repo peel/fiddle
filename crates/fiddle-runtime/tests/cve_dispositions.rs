@@ -362,6 +362,7 @@ fn attempted_group(cve: &str, status: GroupStatus, claimed_complete: bool) -> At
                 }],
                 quoted_from_a_comment: None,
                 stopped_by_this_question: None,
+                commit_message: None,
             },
             changed: vec![WorkspacePath::parse("go.mod").expect("a workspace-relative path")],
             undeclared: None,

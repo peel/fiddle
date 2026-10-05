@@ -17,6 +17,22 @@ pub const ACCOUNTING: &str = "accounting";
 
 pub const DECLARATION: &str = "declaration";
 
+pub const DESCRIPTION: &str = "description";
+
+const DESCRIBE_THE_WORK: &str = "Send the same report again with a commit_message whose title is \
+                                 an imperative phrase of at most 70 characters, whose previously \
+                                 opens with Previously, and whose now opens with Now.";
+
+pub fn description(report: &RepairReport) -> Option<String> {
+    if report.changed_files.is_empty() {
+        return None;
+    }
+    match &report.commit_message {
+        None => Some("it names changed files and carries no commit_message".to_string()),
+        Some(message) => message.fault(),
+    }
+}
+
 pub const UNOFFERED: &str = "unoffered_tool";
 
 const REFUSED: &str = "fiddle refused that report:";
@@ -118,6 +134,8 @@ pub struct Held<'a> {
     pub shown: &'a [&'a str],
 
     pub declarations: Declarations,
+
+    pub described: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -225,6 +243,7 @@ pub struct ReturnHook {
     answer: Answer,
     shown: Arc<Vec<String>>,
     declarations: Declarations,
+    described: bool,
     bound: usize,
     spent: Arc<Mutex<Spent>>,
     transcripts: Option<Transcripts>,
@@ -242,6 +261,7 @@ impl ReturnHook {
             answer: Answer::Report,
             shown: Arc::new(held.shown.iter().map(|cve| cve.to_string()).collect()),
             declarations: held.declarations.clone(),
+            described: held.described,
             bound,
             spent: Arc::new(Mutex::new(Spent::default())),
             transcripts: transcripts.cloned(),
@@ -254,6 +274,7 @@ impl ReturnHook {
             answer: Answer::Verdict,
             shown: Arc::new(Vec::new()),
             declarations: Declarations::Unchecked,
+            described: false,
             bound,
             spent: Arc::new(Mutex::new(Spent::default())),
             transcripts: transcripts.cloned(),
@@ -332,11 +353,22 @@ impl ReturnHook {
                 sentence,
             });
         }
-        let breach = self.declaration_failure(&report)?;
+        if let Some(breach) = self.declaration_failure(&report) {
+            return Some(Refusal {
+                rule: DECLARATION,
+                reason: breach.to_string(),
+                sentence: declaration_returned(&breach),
+            });
+        }
+        if !self.described {
+            return None;
+        }
+        let reason = description(&report)?;
+        let sentence = format!("{REFUSED} {reason}. {DESCRIBE_THE_WORK}");
         Some(Refusal {
-            rule: DECLARATION,
-            reason: breach.to_string(),
-            sentence: declaration_returned(&breach),
+            rule: DESCRIPTION,
+            reason,
+            sentence,
         })
     }
 }
@@ -420,6 +452,7 @@ mod tests {
                 .collect(),
             quoted_from_a_comment: None,
             stopped_by_this_question: None,
+            commit_message: None,
         }
     }
 
@@ -432,6 +465,7 @@ mod tests {
             &Held {
                 shown,
                 declarations: Declarations::Unchecked,
+                described: false,
             },
             RETURNS,
             &Redaction::unknown(),

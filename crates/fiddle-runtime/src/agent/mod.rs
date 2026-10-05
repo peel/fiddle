@@ -212,6 +212,67 @@ pub struct RepairReport {
     /// you cannot read, and this field does not excuse one you made.
     #[serde(default)]
     pub stopped_by_this_question: Option<String>,
+
+    /// The message of the commit that holds your change. Send it whenever
+    /// changed_files names a file, and leave it out when you changed nothing.
+    #[serde(default)]
+    pub commit_message: Option<CommitMessage>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct CommitMessage {
+    /// An imperative verb phrase that says what the change does, at most 70
+    /// characters, with no period at the end. For example: Pass the merged
+    /// identities to planOperations in the merge limit tests
+    pub title: String,
+
+    /// One paragraph that opens with the word Previously and says how the
+    /// project behaved before this change, and why that was wrong. Technical
+    /// and factual, with no bullet points and no statistics.
+    pub previously: String,
+
+    /// One paragraph that opens with the word Now and says how the project
+    /// behaves after this change, and what a reader needs to know about it.
+    /// Technical and factual, with no bullet points and no statistics.
+    pub now: String,
+}
+
+pub const TITLE_LIMIT: usize = 70;
+
+impl CommitMessage {
+    pub fn fault(&self) -> Option<String> {
+        let title = self.title.trim();
+        let count = title.chars().count();
+        if title.is_empty() {
+            return Some("its commit_message has no title".to_string());
+        }
+        if count > TITLE_LIMIT {
+            return Some(format!(
+                "its commit_message title is {count} characters, and a title is at most \
+                 {TITLE_LIMIT}"
+            ));
+        }
+        if title.ends_with('.') || title.contains('\n') {
+            return Some(
+                "its commit_message title is one line with no period at the end".to_string(),
+            );
+        }
+        if !self.previously.trim_start().starts_with("Previously") {
+            return Some("its commit_message previously does not open with Previously".to_string());
+        }
+        if !self.now.trim_start().starts_with("Now") {
+            return Some("its commit_message now does not open with Now".to_string());
+        }
+        None
+    }
+
+    pub fn subject(&self) -> String {
+        self.title.trim().to_string()
+    }
+
+    pub fn body(&self) -> String {
+        format!("{}\n\n{}", self.previously.trim(), self.now.trim())
+    }
 }
 
 impl RepairReport {
@@ -410,6 +471,7 @@ where
         Held {
             shown: &[],
             declarations: Declarations::Unchecked,
+            described: false,
         },
         transcripts,
     )

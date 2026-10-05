@@ -1449,6 +1449,7 @@ fn changing(files: usize, lines: usize) -> Vec<support::Reply> {
         .collect();
     script.push(support::accepted(support::reports(serde_json::json!({
         "changed_files": planted,
+        "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
         "summary": "wrote the files this row measures",
         "claimed_complete": true,
     }))));

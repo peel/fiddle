@@ -1066,7 +1066,7 @@ fn reporting_then(verdict: serde_json::Value) -> MockCompletionModel {
     MockCompletionModel::new([
         MockTurn::tool_call("c1", "run_check", json!({})),
         MockTurn::text(
-            json!({"changed_files": ["src/lib.rs"], "summary": "made the change", "claimed_complete": true})
+            json!({"changed_files": ["src/lib.rs"], "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."}, "summary": "made the change", "claimed_complete": true})
                 .to_string(),
         ),
         MockTurn::text(verdict.to_string()),
@@ -1096,7 +1096,7 @@ fn accepting_turns() -> Vec<MockTurn> {
     vec![
         MockTurn::tool_call("c1", "run_check", json!({})),
         MockTurn::text(
-            json!({"changed_files": ["src/lib.rs"], "summary": "made the change", "claimed_complete": true})
+            json!({"changed_files": ["src/lib.rs"], "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."}, "summary": "made the change", "claimed_complete": true})
                 .to_string(),
         ),
         MockTurn::text(json!({"verdict": "accepted"}).to_string()),
@@ -1879,7 +1879,7 @@ async fn the_pull_request_body_carries_the_log_of_the_work_the_agent_did() {
         MockTurn::tool_call("c2", "run_check", json!({})),
         MockTurn::tool_call("c3", "run_check", json!({})),
         MockTurn::text(
-            json!({"changed_files": ["src/lib.rs"], "summary": "made the change",
+            json!({"changed_files": ["src/lib.rs"], "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."}, "summary": "made the change",
                    "claimed_complete": true})
             .to_string(),
         ),

@@ -1293,6 +1293,7 @@ pub fn a_real_repair() -> Vec<Reply> {
         )),
         accepted(reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
             "summary": "corrected the off-by-one",
             "claimed_complete": true,
         }))),
@@ -1313,6 +1314,7 @@ pub fn a_second_repair() -> Vec<Reply> {
         )),
         accepted(reports(serde_json::json!({
             "changed_files": ["src/lib.rs"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
             "summary": "did it the other way",
             "claimed_complete": true,
         }))),

@@ -787,6 +787,7 @@ where
             Held {
                 shown: &shown,
                 declarations: Declarations::held(workspace, &bumped),
+                described: false,
             },
             self.config.transcripts.as_ref(),
         )
