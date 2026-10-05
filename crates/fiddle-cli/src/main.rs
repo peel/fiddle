@@ -535,7 +535,11 @@ fn exit_code_for(termination: &Termination) -> u8 {
             EXIT_RETRYABLE
         }
         Termination::Rejected(
-            CliError::Config(ConfigError::NotFound(_) | ConfigError::Invalid(_))
+            CliError::Config(
+                ConfigError::NotFound(_)
+                | ConfigError::Invalid(_)
+                | ConfigError::Unresolvable { .. },
+            )
             | CliError::InvocationRef(_)
             | CliError::UnknownCapability(_)
             | CliError::Unconfigured(_)

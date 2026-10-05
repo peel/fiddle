@@ -1560,6 +1560,35 @@ impl ToilWorld {
             .expect("the hook is executable");
     }
 
+    pub fn names_its_workspace_root_relative_to_its_directory(&self) {
+        let path = self.scenario.config_path();
+        let absolute = support::toml_string(&self.scenario.dir().join("workspaces"));
+        let text = std::fs::read_to_string(&path).expect("the document is readable");
+        assert_eq!(
+            text.matches(&absolute).count(),
+            1,
+            "the document names its workspace root once, absolutely, before this rewrite"
+        );
+        std::fs::write(&path, text.replace(&absolute, "\"workspaces\""))
+            .expect("the document is rewritten");
+    }
+
+    pub fn run_toil_from_its_directory(&self, invocation_ref: &str) -> std::process::Output {
+        let mut command = self.scenario.spawnable_run_command(invocation_ref);
+        for name in support::CREDENTIAL_VARS {
+            command.env_remove(name);
+        }
+        command
+            .args(["--json"])
+            .current_dir(self.scenario.dir())
+            .env(MODEL_CREDENTIAL, MODEL_SENTINEL)
+            .env(FORGE_CREDENTIAL, FORGE_SENTINEL)
+            .env(JIRA_USER, "nobody@example.com")
+            .env(JIRA_TOKEN, JIRA_SENTINEL)
+            .output()
+            .unwrap()
+    }
+
     pub fn run_toil(&self, invocation_ref: &str) -> std::process::Output {
         let mut command = self.scenario.spawnable_run_command(invocation_ref);
         for name in support::CREDENTIAL_VARS {
@@ -5032,4 +5061,36 @@ fn a_report_that_changes_files_without_a_commit_message_is_returned_and_the_mess
         format!("{A_STEERED_TITLE}\n\n{A_STEERED_PREVIOUSLY}\n\n{A_STEERED_NOW}"),
         "and the message the second report sent is the commit's"
     );
+}
+
+#[test]
+fn a_relative_workspace_root_lists_the_change_an_absolute_one_lists() {
+    let relative = ToilWorld::start();
+    relative.names_its_workspace_root_relative_to_its_directory();
+    relative.jira().holds_eligible_ticket(TICKET);
+    let absolute = ToilWorld::start();
+    absolute.jira().holds_eligible_ticket(TICKET);
+
+    let from_relative = relative.run_toil_from_its_directory(REFERENCE);
+    let from_absolute = absolute.run_toil_from_its_directory(REFERENCE);
+
+    for (name, world, run) in [
+        ("relative", &relative, &from_relative),
+        ("absolute", &absolute, &from_absolute),
+    ] {
+        assert_eq!(
+            run.status.code(),
+            Some(0),
+            "a {name} root: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let branch = world.github().only_branch();
+        assert!(
+            world
+                .github()
+                .file_at(&world.github().head_of(&branch), "src/lib.rs")
+                .contains(REPAIRED.trim()),
+            "a {name} root lists the agent's change, and the change is published"
+        );
+    }
 }
