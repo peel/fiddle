@@ -1,7 +1,7 @@
 # 029 — A locator may be inherited, an authority may not
 
 Status: accepted
-Cites: fiddle_runtime::process::run_bounded, workspace/command.rs, github/cli.rs, git/publish.rs, workspace::a_workspace_command_inherits_no_credential, github_cli::the_gh_environment_is_exactly_five_names_and_no_home, git_publish::the_push_environment_is_exactly_seven_names_and_no_home
+Cites: fiddle_runtime::process::run_bounded, workspace/command.rs, github/cli.rs, git/publish.rs, workspace::a_workspace_command_inherits_no_credential, github_cli::the_gh_environment_is_exactly_five_names_and_no_home, git_publish::the_push_environment_is_exactly_nine_names_and_no_home
 
 ## Context
 

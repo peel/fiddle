@@ -238,11 +238,7 @@ fn authorizations_git_sends(repository: &Path, reset_first: bool) -> Vec<String>
 #[test]
 fn an_empty_extra_header_drops_the_one_a_checkout_persisted_so_one_authorization_is_sent() {
     let without = TempDir::new().unwrap();
-    let doubled = authorizations_git_sends(
-        &repository_with_one_commit(without.path()),
-        "extraHeader",
-        false,
-    );
+    let doubled = authorizations_git_sends(&repository_with_one_commit(without.path()), false);
     assert_eq!(
         doubled.len(),
         2,
@@ -251,11 +247,7 @@ fn an_empty_extra_header_drops_the_one_a_checkout_persisted_so_one_authorization
     );
 
     let with = TempDir::new().unwrap();
-    let sent = authorizations_git_sends(
-        &repository_with_one_commit(with.path()),
-        "extraHeader",
-        true,
-    );
+    let sent = authorizations_git_sends(&repository_with_one_commit(with.path()), true);
     assert_eq!(
         sent,
         vec!["Authorization: Basic fiddle".to_string()],
