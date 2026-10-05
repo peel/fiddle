@@ -257,11 +257,13 @@ impl GitCli {
     }
 
     fn offer_credential(&self, command: &mut tokio::process::Command) {
-        command.env("GIT_CONFIG_COUNT", "2");
+        command.env("GIT_CONFIG_COUNT", "3");
         command.env("GIT_CONFIG_KEY_0", CREDENTIAL_HOST);
-        command.env("GIT_CONFIG_VALUE_0", self.authorization());
-        command.env("GIT_CONFIG_KEY_1", "credential.helper");
-        command.env("GIT_CONFIG_VALUE_1", "");
+        command.env("GIT_CONFIG_VALUE_0", "");
+        command.env("GIT_CONFIG_KEY_1", CREDENTIAL_HOST);
+        command.env("GIT_CONFIG_VALUE_1", self.authorization());
+        command.env("GIT_CONFIG_KEY_2", "credential.helper");
+        command.env("GIT_CONFIG_VALUE_2", "");
     }
 
     fn authorization(&self) -> String {

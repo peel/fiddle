@@ -188,7 +188,7 @@ async fn the_token_never_appears_in_the_pushed_command_line() {
     );
     let header = push
         .env
-        .get("GIT_CONFIG_VALUE_0")
+        .get("GIT_CONFIG_VALUE_1")
         .expect("it must have reached git somehow — through the environment");
     let encoded = header
         .strip_prefix("Authorization: Basic ")
@@ -221,24 +221,32 @@ async fn the_credential_arrives_as_an_env_injected_extra_header() {
     let (push, _) = push_against_recording_git("tok").await;
     assert_eq!(
         push.env.get("GIT_CONFIG_COUNT").map(String::as_str),
-        Some("2")
+        Some("3")
     );
+    for key in ["GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1"] {
+        assert_eq!(
+            push.env.get(key).map(String::as_str),
+            Some("http.https://github.com/.extraHeader")
+        );
+    }
     assert_eq!(
-        push.env.get("GIT_CONFIG_KEY_0").map(String::as_str),
-        Some("http.https://github.com/.extraHeader")
+        push.env.get("GIT_CONFIG_VALUE_0").map(String::as_str),
+        Some(""),
+        "an empty extra header first resets every header a checkout persisted in .git/config, \
+         so the request carries one Authorization and GitHub does not refuse it as duplicate"
     );
-    assert!(push.env["GIT_CONFIG_VALUE_0"].starts_with("Authorization: Basic "));
+    assert!(push.env["GIT_CONFIG_VALUE_1"].starts_with("Authorization: Basic "));
 }
 
 #[tokio::test]
 async fn the_credential_helper_is_emptied_so_no_keychain_is_reachable() {
     let (push, _) = push_against_recording_git("tok").await;
     assert_eq!(
-        push.env.get("GIT_CONFIG_KEY_1").map(String::as_str),
+        push.env.get("GIT_CONFIG_KEY_2").map(String::as_str),
         Some("credential.helper")
     );
     assert_eq!(
-        push.env.get("GIT_CONFIG_VALUE_1").map(String::as_str),
+        push.env.get("GIT_CONFIG_VALUE_2").map(String::as_str),
         Some("")
     );
     assert_eq!(
@@ -320,7 +328,7 @@ async fn the_emptied_helper_clears_a_helper_that_is_configured_elsewhere() {
 }
 
 #[tokio::test]
-async fn the_push_environment_is_exactly_seven_names_and_no_home() {
+async fn the_push_environment_is_exactly_nine_names_and_no_home() {
     let (push, _) = push_against_recording_git("tok").await;
     let names: Vec<&str> = push.env.keys().map(String::as_str).collect();
     assert_eq!(
@@ -329,12 +337,14 @@ async fn the_push_environment_is_exactly_seven_names_and_no_home() {
             "GIT_CONFIG_COUNT",
             "GIT_CONFIG_KEY_0",
             "GIT_CONFIG_KEY_1",
+            "GIT_CONFIG_KEY_2",
             "GIT_CONFIG_VALUE_0",
             "GIT_CONFIG_VALUE_1",
+            "GIT_CONFIG_VALUE_2",
             "GIT_TERMINAL_PROMPT",
             "PATH",
         ],
-        "an eighth name here is a change to the security boundary, and HOME \
+        "a tenth name here is a change to the security boundary, and HOME \
          is the one that would undo the whole of it"
     );
 }
@@ -355,7 +365,7 @@ async fn the_fetch_offers_the_credential_the_push_offers() {
 
     let header = fetch
         .env
-        .get("GIT_CONFIG_VALUE_0")
+        .get("GIT_CONFIG_VALUE_1")
         .expect("it must have reached git somehow — through the environment");
     let encoded = header
         .strip_prefix("Authorization: Basic ")
@@ -488,7 +498,7 @@ async fn a_failed_push_reports_stderr_with_the_credential_removed() {
         !rendered.contains(SENTINEL),
         "the token survived into a diagnostic: {rendered}"
     );
-    let encoded = recorded(dir.path(), "push").env["GIT_CONFIG_VALUE_0"]
+    let encoded = recorded(dir.path(), "push").env["GIT_CONFIG_VALUE_1"]
         .strip_prefix("Authorization: Basic ")
         .unwrap()
         .to_string();

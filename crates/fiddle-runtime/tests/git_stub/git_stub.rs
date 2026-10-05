@@ -45,7 +45,7 @@ fn main() {
         "leaks_the_header" => {
             eprintln!(
                 "fatal: unable to access remote: {}",
-                std::env::var("GIT_CONFIG_VALUE_0").unwrap_or_default()
+                std::env::var("GIT_CONFIG_VALUE_1").unwrap_or_default()
             );
             std::process::exit(128);
         }
