@@ -1,6 +1,6 @@
 # 081 — A question is published through the channel the invocation named
 
-Status: accepted
+Status: accepted; amended 2026-10-05 to say which questions it governs
 
 Cites: DecisionChannel, DecisionChannel::named_by, DecisionChannel::asked_by, authoritative, publish, PublishedAsk, PublishError, ChannelError, CapabilityError::Unasked, ProposeChange, HumanInteractionPort, JiraConversation, GitHubConversation, AskOnIssue, AskedOnIssue, PublishDecisionRequest, asked_already, Decider, resolve, DecisionResolution, WorkItemState, InvocationScheme, JIRA_COMMENT_ADDED, PUBLISH_DECISION_REQUEST, a_jira_run_asks_on_the_issue_and_leaves_the_pull_request_unwritten, a_pull_request_run_asks_on_the_pull_request_and_leaves_the_issue_unwritten, a_jira_run_that_observed_no_revision_asks_nobody_and_names_the_rule, a_jira_run_whose_revision_is_not_a_time_asks_nobody_and_names_the_issue, the_two_refusals_the_channel_rule_gives_are_not_one_refusal, no_invocation_names_two_channels, the_effect_name_the_evidence_line_spells_follows_the_channel, a_pull_request_run_asks_on_the_pull_request_although_it_observed_an_issue, a_second_run_carrying_the_snapshot_it_started_with_recognises_its_own_question, a_run_that_re_reads_the_issue_after_the_write_asks_no_second_time, the_port_and_the_channel_router_name_one_comment_and_write_it_once, the_port_reads_back_every_reply_beside_the_account_that_wrote_it, the_question_the_issue_is_asked_is_identified_by_the_request_and_not_by_the_revision, a_jira_run_reads_the_reply_on_its_own_question_and_proceeds, a_jira_reply_from_an_account_this_deployment_did_not_nominate_decides_nothing, a_jira_account_id_equal_to_an_allowed_github_id_is_not_that_decider, a_jira_account_id_spelled_like_an_allowed_github_id_is_not_that_decider, a_github_author_id_spelled_like_an_allowed_jira_account_is_not_that_decider, JiraDecision, deciders, a_jira_account_the_document_names_reaches_the_allowlist_as_a_jira_decider, one_number_written_in_both_decision_tables_resolves_to_two_deciders, a_jira_decision_table_that_names_nobody_is_refused, an_email_address_is_not_a_jira_account_id, a_mistyped_key_in_the_jira_decision_table_is_refused, config_check_reports_the_jira_accounts_that_may_decide, an_ignored_reply_is_visible_in_what_the_run_published, every_registered_descriptor_builds_the_operation_its_name_means_or_refuses_in_its_name, WorkflowCapability, StepParams, DecisionWalk, orchestration::observe, crates/fiddle-cli/src/config.rs, crates/fiddle-cli/src/render.rs, crates/fiddle-acceptance/tests/config_check.rs, crates/fiddle-runtime/src/human/mod.rs, crates/fiddle-runtime/src/capability/propose.rs, crates/fiddle-runtime/tests/propose_capability.rs, crates/fiddle-runtime/tests/jira_conversation.rs, crates/fiddle-runtime/tests/registry_resolution.rs, crates/fiddle-runtime/tests/workflow_capability.rs, authorized_commenters, authorized_comments, quoted_ticket, within_scope, Eligible, jira.decision, the_gate_and_the_implementer_read_one_text, an_authorized_comment_directs_the_change_the_description_suggested_against
 
@@ -381,3 +381,15 @@ asserts `publish_decision_request` is among the six descriptors that build from
 today, and only the absence of a production caller keeps a run off it. When a
 document is given that step, it has to be routed through the selector or it will
 ask on the wrong channel.
+
+## Amended 2026-10-05: this rule governs a decision request, and toil talks on the pull request
+
+This record's rule is the rule of `publish`, whose one caller is `ProposeChange`. A `jira:`-invoked `ProposeChange` run still asks on the issue, and every other invocation asks on the pull request.
+
+The toil and checks workflows do not ask through `publish`. Once a pull request exists, they read direction from it and answer on it, whatever the invocation named:
+
+- ADR 087: a steered run answers the direction on the pull request, and a question a steered run stops on is asked there. A run with no pull request asks it on the ticket.
+- ADR 088 and ADR 089: direction is read from the pull request and from the threads it names, and a steered run works on the pull request's head.
+- ADR 090: a checks run answers on the pull request, also when its evaluation rejects it.
+
+So for those runs the channel follows the phase, not the invocation. Making `publish` follow the phase too is open in `fiddle-k2uh`.
