@@ -649,8 +649,8 @@ where
         .await
         .map_err(CapabilityError::Forge)?;
 
-        let earlier = crate::github::already_answered(&reviews, &conversation);
-        let (reviews, conversation) = crate::github::unanswered(reviews, conversation);
+        let earlier = crate::github::already_answered(&reviews, &conversation, None);
+        let (reviews, conversation) = crate::github::unanswered(reviews, conversation, None);
         let answering = crate::github::Answered::of(&reviews, &conversation);
         let dated = reviews
             .iter()

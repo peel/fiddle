@@ -90,10 +90,11 @@ fn ids(value: &str) -> Option<BTreeSet<u64>> {
 pub fn unanswered(
     reviews: Vec<Reviewed>,
     conversation: Vec<HumanResponse>,
+    account: Option<&str>,
 ) -> (Vec<Reviewed>, Vec<HumanResponse>) {
     let mut before = Answered::default();
     for comment in &conversation {
-        if !entitled(&comment.author_association) {
+        if !trusted(comment, account) {
             continue;
         }
         if let Some(answered) = Answered::read_from(&comment.body) {
@@ -102,14 +103,28 @@ pub fn unanswered(
     }
     let reviews = reviews
         .into_iter()
+        .filter(|it| !is_account(&it.author.login, account))
         .filter(|it| !before.reviews.contains(&it.id))
         .collect();
     let conversation = conversation
         .into_iter()
+        .filter(|it| !written_by(it, account))
         .filter(|it| Answered::read_from(&it.body).is_none())
         .filter(|it| !before.comments.contains(&it.comment))
         .collect();
     (reviews, conversation)
+}
+
+fn is_account(login: &str, account: Option<&str>) -> bool {
+    account.is_some_and(|it| login.eq_ignore_ascii_case(it))
+}
+
+fn written_by(comment: &HumanResponse, account: Option<&str>) -> bool {
+    is_account(&comment.author.login, account)
+}
+
+fn trusted(comment: &HumanResponse, account: Option<&str>) -> bool {
+    entitled(&comment.author_association) || written_by(comment, account)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,10 +143,14 @@ fn without_marker(body: &str) -> String {
         .to_string()
 }
 
-pub fn already_answered(reviews: &[Reviewed], conversation: &[HumanResponse]) -> Vec<Earlier> {
+pub fn already_answered(
+    reviews: &[Reviewed],
+    conversation: &[HumanResponse],
+    account: Option<&str>,
+) -> Vec<Earlier> {
     let mut before = Answered::default();
     for comment in conversation {
-        if entitled(&comment.author_association) {
+        if trusted(comment, account) {
             if let Some(answered) = Answered::read_from(&comment.body) {
                 before.extend(answered);
             }
@@ -148,7 +167,7 @@ pub fn already_answered(reviews: &[Reviewed], conversation: &[HumanResponse]) ->
         });
     let said = conversation
         .iter()
-        .filter(|it| entitled(&it.author_association))
+        .filter(|it| trusted(it, account))
         .filter_map(|it| match Answered::read_from(&it.body) {
             Some(_) => Some(Earlier {
                 author: it.author.login.clone(),
@@ -158,7 +177,7 @@ pub fn already_answered(reviews: &[Reviewed], conversation: &[HumanResponse]) ->
             None if before.comments.contains(&it.comment) => Some(Earlier {
                 author: it.author.login.clone(),
                 body: it.body.trim().to_string(),
-                by_fiddle: false,
+                by_fiddle: written_by(it, account),
             }),
             None => None,
         });
@@ -461,7 +480,7 @@ mod tests {
     fn a_review_fiddle_answered_steers_no_more_and_one_after_it_still_does() {
         let answered = Answered::of(&[review(1)], &[]);
         let reply = comment(9, "MEMBER", &reply("already here", &answered));
-        let (reviews, conversation) = unanswered(vec![review(1), review(2)], vec![reply]);
+        let (reviews, conversation) = unanswered(vec![review(1), review(2)], vec![reply], None);
 
         assert_eq!(
             reviews.iter().map(|it| it.id).collect::<Vec<_>>(),
@@ -478,7 +497,7 @@ mod tests {
     fn a_marker_from_someone_the_project_does_not_entitle_silences_nothing() {
         let forged = Answered::of(&[review(1)], &[]);
         let outsider = comment(9, "NONE", &reply("nothing to see", &forged));
-        let (reviews, _) = unanswered(vec![review(1)], vec![outsider]);
+        let (reviews, _) = unanswered(vec![review(1)], vec![outsider], None);
         assert_eq!(
             reviews.len(),
             1,
@@ -494,6 +513,7 @@ mod tests {
         let (_, conversation) = unanswered(
             vec![],
             vec![comment(3, "MEMBER", "do the rename too"), reply, later],
+            None,
         );
         assert_eq!(
             conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
@@ -513,6 +533,7 @@ mod tests {
                 comment(4, "NONE", "an outsider"),
                 comment(5, "MEMBER", "Yes, do them."),
             ],
+            None,
         );
         let kept: Vec<(&str, bool)> = earlier
             .iter()
@@ -529,6 +550,146 @@ mod tests {
                 && kept[2].0.contains("already here")
                 && !kept[2].0.contains("fiddle:answered"),
             "fiddle's own answer is kept without its marker: {kept:?}"
+        );
+    }
+
+    fn said(id: u64, association: &str, body: &str) -> HumanResponse {
+        comment(id, association, body)
+    }
+
+    fn said_by(id: u64, login: &str, association: &str, body: &str) -> HumanResponse {
+        HumanResponse {
+            author: ActorRef {
+                login: login.to_string(),
+                id: 2,
+            },
+            ..comment(id, association, body)
+        }
+    }
+
+    #[test]
+    fn a_marker_the_configured_account_wrote_is_trusted_though_its_association_is_none() {
+        let marker = Answered {
+            reviews: BTreeSet::new(),
+            comments: BTreeSet::from([4]),
+        }
+        .marker();
+        let conversation = vec![
+            said(4, "MEMBER", "@fiddle-ai fix CI"),
+            said_by(
+                5,
+                "fiddle-ai[bot]",
+                "NONE",
+                &format!("**fiddle changed this pull request**\n\n{marker}"),
+            ),
+        ];
+        let (_, unanswered_with_account) =
+            unanswered(vec![], conversation.clone(), Some("fiddle-ai[bot]"));
+        assert!(
+            unanswered_with_account.iter().all(|it| it.comment != 4),
+            "the answered mention is answered"
+        );
+        let (_, unanswered_without) = unanswered(vec![], conversation, None);
+        assert!(
+            unanswered_without.iter().any(|it| it.comment == 4),
+            "without the account, a NONE author's marker is not trusted, as today"
+        );
+    }
+
+    #[test]
+    fn the_configured_account_is_matched_whatever_the_case_of_its_login() {
+        let marker = Answered::of(&[], &[said(4, "MEMBER", "@fiddle-ai fix CI")]).marker();
+        let conversation = vec![
+            said(4, "MEMBER", "@fiddle-ai fix CI"),
+            said_by(5, "Fiddle-AI[bot]", "NONE", &marker),
+        ];
+        let (_, kept) = unanswered(vec![], conversation.clone(), Some("fiddle-ai[bot]"));
+        assert!(
+            kept.is_empty(),
+            "a login differing only in case is the account, so its marker is trusted: {kept:?}"
+        );
+        let (_, kept) = unanswered(vec![], conversation, Some("someone-else[bot]"));
+        assert_eq!(
+            kept.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![4],
+            "another account's name does not make this NONE author trusted"
+        );
+    }
+
+    #[test]
+    fn the_configured_accounts_comments_are_never_direction() {
+        let (_, kept) = unanswered(
+            vec![],
+            vec![said_by(9, "fiddle-ai[bot]", "MEMBER", "@fiddle-ai x")],
+            Some("fiddle-ai[bot]"),
+        );
+        assert!(
+            kept.is_empty(),
+            "the account's own comment does not steer: {kept:?}"
+        );
+        let (_, kept) = unanswered(
+            vec![],
+            vec![said_by(9, "fiddle-ai[bot]", "MEMBER", "@fiddle-ai x")],
+            None,
+        );
+        assert_eq!(
+            kept.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![9],
+            "without the account, the same comment is direction, as today"
+        );
+    }
+
+    #[test]
+    fn a_review_the_configured_account_wrote_is_never_direction() {
+        let by_account = Reviewed {
+            author: ActorRef {
+                login: "fiddle-ai[bot]".to_string(),
+                id: 2,
+            },
+            ..review(7)
+        };
+        let (kept, _) = unanswered(
+            vec![by_account.clone(), review(8)],
+            vec![],
+            Some("fiddle-ai[bot]"),
+        );
+        assert_eq!(
+            kept.iter().map(|it| it.id).collect::<Vec<_>>(),
+            vec![8],
+            "the account's review is dropped and a member's review beside it is kept"
+        );
+        let (kept, _) = unanswered(vec![by_account, review(8)], vec![], None);
+        assert_eq!(
+            kept.iter().map(|it| it.id).collect::<Vec<_>>(),
+            vec![7, 8],
+            "without the account, both reviews are direction, as today"
+        );
+    }
+
+    #[test]
+    fn what_the_configured_account_answered_is_context_and_its_reply_is_fiddles() {
+        let answered = Answered::of(&[], &[said(4, "MEMBER", "@fiddle-ai fix CI")]);
+        let conversation = vec![
+            said(4, "MEMBER", "@fiddle-ai fix CI"),
+            said_by(5, "fiddle-ai[bot]", "NONE", &changed("fixed it", &answered)),
+        ];
+        let with_account = already_answered(&[], &conversation, Some("fiddle-ai[bot]"));
+        let kept: Vec<(&str, &str, bool)> = with_account
+            .iter()
+            .map(|it| (it.author.as_str(), it.body.as_str(), it.by_fiddle))
+            .collect();
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert_eq!(kept[0], ("peel", "@fiddle-ai fix CI", false));
+        assert!(
+            kept[1].0 == "fiddle-ai[bot]"
+                && kept[1].2
+                && kept[1].1.contains("fixed it")
+                && !kept[1].1.contains("fiddle:answered"),
+            "the account's reply is fiddle's and is kept without its marker: {kept:?}"
+        );
+        assert!(
+            already_answered(&[], &conversation, None).is_empty(),
+            "without the account, a NONE author's reply answers nothing, as today"
         );
     }
 

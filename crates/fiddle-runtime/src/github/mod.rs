@@ -2,6 +2,7 @@ pub mod answer;
 pub mod checks;
 pub mod cli;
 pub mod comments;
+pub mod mentions;
 pub mod pulls;
 pub mod ready;
 pub mod references;
@@ -21,6 +22,7 @@ pub use comments::{
     read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated,
     HumanResponse, Reviewed, APPROVED, CHANGES_REQUESTED,
 };
+pub use mentions::{mentioning, mentions};
 pub use pulls::{
     find_labelled_pull_request, open_pull_request_on, pull_request_body_target,
     pull_request_target, read_pull_request, read_pull_request_body, EnsurePullRequest,
