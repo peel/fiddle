@@ -824,7 +824,7 @@ fn served_pull_request(
     config_path: &Path,
     selection: Selection,
     reference: &InvocationRef,
-) -> Result<Option<fiddle_core::PullRequestRef>, CliError> {
+) -> Result<Option<(fiddle_core::PullRequestRef, String)>, CliError> {
     if !selection.runs_a_workflow() {
         return Ok(None);
     }
@@ -837,8 +837,8 @@ fn served_pull_request(
         path: config_path.display().to_string(),
     })?;
     let served = github.repo.to_string();
-    match named.full_name() == served {
-        true => Ok(Some(named)),
+    match named.full_name().eq_ignore_ascii_case(&served) {
+        true => Ok(Some((named, served))),
         false => Err(ForeignPullRequest {
             reference: reference.as_str().to_string(),
             named: named.full_name(),
@@ -850,10 +850,10 @@ fn served_pull_request(
 
 async fn open_on_the_served_repository(
     named: &fiddle_core::PullRequestRef,
+    served: &str,
     forge: &Forge,
     cancel: &CancellationToken,
 ) -> Result<fiddle_runtime::github::PullRequestFacts, CliError> {
-    let served = named.full_name();
     let pull_request = format!("{served}#{}", named.number);
     let unread = |reason: String| PullRequestUnread {
         pull_request: pull_request.clone(),
@@ -863,7 +863,7 @@ async fn open_on_the_served_repository(
         .ctx
         .gh_client()
         .map_err(|error| unread(error.to_string()))?;
-    let facts = fiddle_runtime::github::read_pull_request(gh, &served, named.number, cancel)
+    let facts = fiddle_runtime::github::read_pull_request(gh, served, named.number, cancel)
         .await
         .map_err(|error| unread(error.to_string()))?;
     let refused = |reason: String, remedy: &str| PullRequestRefused {
@@ -888,7 +888,7 @@ async fn open_on_the_served_repository(
         .into());
     }
     match facts.head_repo.as_deref() {
-        Some(head) if head == served => Ok(facts),
+        Some(head) if head.eq_ignore_ascii_case(served) => Ok(facts),
         Some(fork) => Err(refused(
             format!(
                 "has its head branch `{}` in {fork}, and fiddle cannot push to a fork",
@@ -1921,8 +1921,8 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 Selection::Mark | Selection::Repair => None,
             };
             let pull_request = match (named, forge.as_ref()) {
-                (Some(named), Some(forge)) => {
-                    Some(open_on_the_served_repository(&named, forge, &cancel).await?)
+                (Some((named, served)), Some(forge)) => {
+                    Some(open_on_the_served_repository(&named, &served, forge, &cancel).await?)
                 }
                 _ => None,
             };

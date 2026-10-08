@@ -704,3 +704,41 @@ fn a_branch_that_moved_during_the_run_is_not_forced() {
         "and no other branch was opened in its place"
     );
 }
+
+#[test]
+fn a_reference_and_a_head_repository_spelled_in_another_case_are_the_served_repository() {
+    let world = PullRequestWorld::with(Pr::Open);
+    let run = world.run("pr:Acme/IceCube#7");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "GitHub names are case-insensitive, so `pr:Acme/IceCube#7` names the repository this \
+         deployment serves: {}",
+        stderr_of(&run)
+    );
+    assert!(
+        world
+            .github()
+            .requests_naming("/repos/acme/icecube/pulls/7")
+            > 0,
+        "and the pull request is read on the repository the deployment names"
+    );
+
+    let world = PullRequestWorld::with(Pr::FromFork("ACME/icecube"));
+    let run = world.run(REFERENCE);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "a head repository `ACME/icecube` is the served repository and not a fork: {}",
+        stderr_of(&run)
+    );
+
+    let world = PullRequestWorld::with(Pr::FromFork("acme/icecube-fork"));
+    let run = world.run(REFERENCE);
+    assert_eq!(
+        run.status.code(),
+        Some(AN_INVALID_INPUT_EXIT),
+        "while a name that differs by more than case is still a fork: {}",
+        stderr_of(&run)
+    );
+}
