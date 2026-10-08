@@ -161,10 +161,10 @@ fn is_the_handle(login: &str, handle: &str) -> bool {
 pub fn with_the_bots_they_cite(
     reviews: Vec<Reviewed>,
     conversation: Vec<HumanResponse>,
+    directed: (&[Reviewed], &[HumanResponse]),
     handle: &str,
 ) -> (Vec<Reviewed>, Vec<HumanResponse>) {
-    let (directed_reviews, directed_conversation) =
-        directing(reviews.clone(), conversation.clone(), handle);
+    let (directed_reviews, directed_conversation) = directed;
     let citing: Vec<String> = directed_reviews
         .iter()
         .map(|it| it.body.clone())
@@ -470,9 +470,24 @@ mod tests {
         }
     }
 
+    fn cited_from(
+        reviews: Vec<Reviewed>,
+        conversation: Vec<HumanResponse>,
+        handle: &str,
+    ) -> (Vec<Reviewed>, Vec<HumanResponse>) {
+        let (directed_reviews, directed_conversation) =
+            directing(reviews.clone(), conversation.clone(), handle);
+        with_the_bots_they_cite(
+            reviews,
+            conversation,
+            (&directed_reviews, &directed_conversation),
+            handle,
+        )
+    }
+
     #[test]
     fn a_bot_comment_an_entitled_mention_names_is_read_and_one_nobody_names_is_not() {
-        let (_, conversation) = with_the_bots_they_cite(
+        let (_, conversation) = cited_from(
             vec![],
             vec![
                 by_a_bot(1, "claude[bot]", "1. rename it 2. add a test"),
@@ -492,7 +507,7 @@ mod tests {
 
     #[test]
     fn a_bot_comment_with_no_mention_naming_it_is_not_read() {
-        let (reviews, conversation) = with_the_bots_they_cite(
+        let (reviews, conversation) = cited_from(
             vec![],
             vec![
                 by_a_bot(1, "claude[bot]", "1. rename it"),
@@ -509,7 +524,7 @@ mod tests {
 
     #[test]
     fn fiddles_own_account_is_never_read_as_a_cited_bot() {
-        let (_, conversation) = with_the_bots_they_cite(
+        let (_, conversation) = cited_from(
             vec![],
             vec![
                 by_a_bot(1, "fiddle-ai[bot]", "an earlier note"),
@@ -549,7 +564,7 @@ mod tests {
             is_bot: true,
             ..said(3, "NONE", "a person posting through an App")
         };
-        let (reviews, conversation) = with_the_bots_they_cite(
+        let (reviews, conversation) = cited_from(
             vec![claudes_review, named_like_a_bot],
             vec![
                 through_an_app,

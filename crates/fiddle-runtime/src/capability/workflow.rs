@@ -674,10 +674,17 @@ where
         let (reviews, conversation) = crate::github::unanswered(reviews, conversation, account);
         let ((directed_reviews, directed_conversation), (reviews, conversation)) =
             match self.params.mention.as_deref() {
-                Some(handle) => (
-                    crate::github::directing(reviews.clone(), conversation.clone(), handle),
-                    crate::github::with_the_bots_they_cite(reviews, conversation, handle),
-                ),
+                Some(handle) => {
+                    let (directed_reviews, directed_conversation) =
+                        crate::github::directing(reviews.clone(), conversation.clone(), handle);
+                    let read = crate::github::with_the_bots_they_cite(
+                        reviews,
+                        conversation,
+                        (&directed_reviews, &directed_conversation),
+                        handle,
+                    );
+                    ((directed_reviews, directed_conversation), read)
+                }
                 None => (
                     (reviews.clone(), conversation.clone()),
                     (reviews, conversation),
