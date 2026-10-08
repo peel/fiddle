@@ -787,7 +787,7 @@ checkout carries every one of them across.
 A person who speaks for the project mentions `@fiddle-ai` on a pull request.
 The target repository's workflow runs `fiddle run "pr:<owner>/<repo>#<n>"` for
 that pull request. fiddle does what the mention asks, pushes onto the pull
-request's own branch, and answers the mention. ADR 093 records the decision.
+request's own branch when it changed something, and answers the mention. ADR 093 records the decision.
 
 The workflow lives in the target repository, not here.
 `docs/technical/host-workflow-fiddle-ai.yml` is its template, and
@@ -803,7 +803,8 @@ Creating an App on an organisation needs an organisation admin. Create it under
 **Settings → Developer settings → GitHub Apps → New GitHub App**.
 
 - Name: `fiddle-ai`. The name decides the login fiddle writes as,
-  `fiddle-ai[bot]`, and the handle people mention.
+  `fiddle-ai[bot]`. The handle fiddle reads, `@fiddle-ai`, is fixed in fiddle
+  as `MENTION`, so name the App `fiddle-ai` and the two agree.
 - Webhook: off. The workflow receives the events, not the App.
 - Repository permissions, and nothing else:
 
@@ -815,10 +816,10 @@ Creating an App on an organisation needs an organisation admin. Create it under
 | Checks | Read | read the failing check runs on the head |
 | Actions | Read | read a failing Actions job's log |
 
-- Subscribe to events: Issue comment and Pull request review. These are the two
-  the workflow runs on. A mention in an inline review comment, on a line of the
-  diff, starts no run: fiddle reads the conversation and the reviews, and no
-  inline comment.
+- Subscribe to no event. The webhook is off, and the workflow receives the
+  events from the repository: an issue comment and a pull request review. A
+  mention in an inline review comment, on a line of the diff, starts no run:
+  fiddle reads the conversation and the reviews, and no inline comment.
 - Where it can be installed: only on this account.
 
 Generate a private key and note the App id. Then read the id of the App's bot
@@ -897,14 +898,14 @@ fails on its first run and says so.
 | --- | --- |
 | `issue_comment` on a pull request, `pull_request_review` | the two places fiddle reads a mention of `@fiddle-ai`: the conversation and a review's body |
 | `if`: the text mentions `@fiddle-ai`, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
-| `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a run is never stopped between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment or review that mentions nobody, and fiddle's own answer, are skipped before they queue, so none of them replaces a mention that waits |
+| `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a later run never cancels a running one between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment or review that mentions nobody, and fiddle's own answer, are skipped before they queue, so none of them replaces a mention that waits |
 | checkout with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false` | without `ref`, a review event checks out the pull request's merge ref, so the pull request would supply the deployment document, the workflow documents and the prompts, and a pull request that conflicts with its base has no merge ref to check out. With it, every event reads them from the default branch. The workspace's checks, which run the pull request's code, cannot read a persisted token |
 
 The `if` is a filter, not the rule. fiddle applies its own rule again to every
 comment and review it reads: a mention inside code, a fence or a quote asks for
 nothing, a bot never steers, and a bot a mention names is quoted and not
-followed. So a wrong `if` costs a run that finds nothing to do. It cannot widen
-who steers.
+followed. So a wrong `if` can start a run it should not, and that run answers
+only the mentions fiddle's own rule admits. It cannot widen who steers.
 
 ### What a run refuses
 

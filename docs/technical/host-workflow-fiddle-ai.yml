@@ -18,7 +18,8 @@
 #   checks: read           read the failing check runs on the head
 #   actions: read          read a failing Actions job's log
 #
-# It subscribes to these events, which are the two this workflow runs on:
+# The App subscribes to no event: its webhook is off, and this workflow
+# receives the events from the repository. It runs on two:
 #
 #   issue_comment
 #   pull_request_review
@@ -50,8 +51,9 @@
 # One run at a time per pull request. The queue is on the job, not on the
 # workflow, so only a run that passed the `if` enters it. Every other comment or
 # review this workflow receives, fiddle's own answer included, is skipped before
-# it queues, so it cannot replace a mention that waits. A run is never cancelled, because a
-# cancelled run can stop between its push and its answer. A later mention waits.
+# it queues, so it cannot replace a mention that waits. A later run never
+# cancels a running one, because a cancelled run can stop between its push and
+# its answer. A later mention waits.
 # GitHub keeps one waiting run per group, so a third mention replaces the second
 # while the first runs; the run that follows answers every mention not yet
 # answered, the second included.
@@ -63,8 +65,8 @@
 # out. With it, every event reads them from the default branch. GitHub still
 # reads this workflow file from the merge commit for a review event, and gives a
 # review event from a fork no secrets. Beyond that, the pull request's code runs
-# only inside fiddle's workspace, as its checks. fiddle refuses a pull request
-# whose head is in a fork.
+# only inside fiddle's workspace, as the check and the commands the deployment
+# document declares. fiddle refuses a pull request whose head is in a fork.
 #
 # FIDDLE_TAG and FIDDLE_SHA256 move together. FIDDLE_SHA256 is a placeholder no
 # digest matches, so a copy that was not edited fails on its first run and says
