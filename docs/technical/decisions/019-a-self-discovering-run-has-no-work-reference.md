@@ -24,7 +24,7 @@ Let a scheme stand alone as a complete invocation reference when its orchestrati
 
 **Bare is per-scheme, not general.** `beans` and `jira` name a work item and still require a value, and `scanner` names a finding and still requires one. Whether a scheme may stand alone is a property of the scheme, which `InvocationScheme::stands_alone` holds.
 
-**`cve:` remains an error.** A scheme with no colon is the bare form, and a colon with nothing after it is still `EmptyValue`. The four rejection diagnostics stay pairwise distinct, which `inspect_ref.rs` asserts.
+**`cve:` remains an error.** A scheme with no colon is the bare form, and a colon with nothing after it is still `EmptyValue`. The rejection diagnostics stay pairwise distinct, which `inspect_ref.rs` asserts; ADR 011 counts them.
 
 **The slug of a bare reference is the scheme.** Artifacts land under `.fiddle/reports/cve/<attempt-id>/`. ADR 011 records the slug as `<scheme>-<value>`; with no value there is no separator, and a valued reference cannot collide with a bare one because a present value is never empty.
 

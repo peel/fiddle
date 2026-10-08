@@ -2936,7 +2936,7 @@ mod tests {
             rows,
             InvocationScheme::ALL.len(),
             "the row above passes by matching every scheme this build has, so a help \
-             text that names four of five must red: {help}"
+             text that names one scheme fewer than this build has must red: {help}"
         );
     }
 
