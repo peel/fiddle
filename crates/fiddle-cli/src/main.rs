@@ -1880,6 +1880,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
+            toil_works_no_pull_request(selection, &reference)?;
             let config = config::load(&cli.config)?;
             let cancel = CancellationToken::new();
             cancel_on_interrupt(&cancel);

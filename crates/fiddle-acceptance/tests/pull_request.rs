@@ -425,6 +425,10 @@ impl PullRequestWorld {
     }
 
     fn inspect(&self, invocation_ref: &str) -> std::process::Output {
+        self.inspect_with(invocation_ref, &[])
+    }
+
+    fn inspect_with(&self, invocation_ref: &str, extra: &[&str]) -> std::process::Output {
         let mut command = std::process::Command::new(support::fiddle_binary());
         command.args([
             "inspect",
@@ -433,6 +437,7 @@ impl PullRequestWorld {
             self.scenario.config_path().to_str().unwrap(),
             "--json",
         ]);
+        command.args(extra);
         for name in support::CREDENTIAL_VARS {
             command.env_remove(name);
         }
@@ -1284,4 +1289,39 @@ fn a_bot_review_a_mention_names_is_quoted_and_never_read_as_work_to_do() {
         replies[0]
     );
     every_answered_item_reached_the_brief(&world, &prompts, &replies[0]);
+}
+
+#[test]
+fn inspect_refuses_toil_over_a_pull_request_as_run_does() {
+    let world = PullRequestWorld::serving(vec![]);
+
+    let inspected = world.inspect_with(REFERENCE, &["--capability", "toil"]);
+    let run = world.run_capability(REFERENCE, "toil");
+
+    assert_eq!(
+        inspected.status.code(),
+        Some(AN_INVALID_INPUT_EXIT),
+        "inspect selects as run does, so it refuses toil over a pull request: {}",
+        stderr_of(&inspected)
+    );
+    assert_eq!(
+        stderr_of(&inspected),
+        stderr_of(&run),
+        "and it refuses in the same words as run"
+    );
+    assert!(
+        stderr_of(&inspected).contains("works a tracker ticket"),
+        "which name the refusal: {}",
+        stderr_of(&inspected)
+    );
+
+    for allowed in ["pull_request", "checks"] {
+        let inspected = world.inspect_with(REFERENCE, &["--capability", allowed]);
+        assert_eq!(
+            inspected.status.code(),
+            Some(0),
+            "inspect previews `{allowed}` over a pull request: {}",
+            stderr_of(&inspected)
+        );
+    }
 }
