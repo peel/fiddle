@@ -915,27 +915,32 @@ who steers.
 `--capability toil` over a `pr:` reference is refused, because toil works a
 ticket and a pull request names none. `--capability checks` runs.
 
-### Run a mention again on your own machine
+### Run a mention again
 
-A completed run writes `<[stub] root>/changes/<owner>+<repo>+<n>.json`, and a
-second run over the same pull request reads it and reaches no step. A runner
-starts with an empty filesystem, so it never has that record. To make a local
-rerun behave as a runner does, forget the record. Run the script from the
-directory you run fiddle from, because a relative `[stub] root` is resolved
-against it.
+A run writes `<[stub] root>/changes/<owner>+<repo>+<n>.json`, and that record
+does not stop the next run. A pull request is not a work item, so a marker over
+it is not a completion, and a second run over the same pull request reads the
+pull request again. What decides whether there is work is the answer on the
+pull request: each run answers only the mentions not yet answered, and with
+every mention answered it completes with nothing to do and pays for no agent.
+
+So a local run and a runner behave the same, and nothing on the machine needs
+forgetting. To run a mention again, delete fiddle's answer comment or post a new
+mention.
+
+`scripts/local-toil-rerun.sh` shows the record and prints the run for you to
+type, and does not run it. Run it from the directory you run fiddle from,
+because a relative `[stub] root` is resolved against it.
 
 ```sh
 scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
-  --ref 'pr:snowplow-incubator/snowplow-identities#275' --forget
+  --ref 'pr:snowplow-incubator/snowplow-identities#275'
 ```
 
-It prints the run for you to type, and does not run it. Quote the reference: `#`
-starts a comment in some shells and a glob in others. A malformed reference is
-refused with the form it should take, `pr:<owner>/<repo>#<number>`.
-
-The record is not what decides whether a mention is answered. The answer on the
-pull request is. A forgotten record with every mention answered runs and
-completes with nothing to do.
+Quote the reference: `#` starts a comment in some shells and a glob in others.
+A malformed reference, or a number above 18446744073709551615, is refused with
+the form it should take, `pr:<owner>/<repo>#<number>`. `--forget` removes the
+record, which changes nothing for a `pr:` run.
 
 ## Record what the model was sent and what it returned
 

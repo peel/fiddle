@@ -16,6 +16,10 @@ record, so a second run here reports `completed` and never reaches a step. This
 script shows that record and, with --forget, removes it, which is the only
 difference between a local rerun and a runner's.
 
+A pr: reference names a pull request, which is not a work item, so its record
+does not stop a run. Each run answers only the mentions not yet answered. To
+run a mention again, delete fiddle's answer comment or post a new mention.
+
 Run it from the directory you run fiddle from. fiddle resolves a relative
 [stub] root against its working directory (ADR 092), and so does this script.
 
@@ -40,6 +44,7 @@ fail() { echo "local-toil-rerun: FAIL: $*" >&2; exit 1; }
 [ -f "$CONFIG" ] || fail "$CONFIG does not exist"
 [ -n "$REFERENCE" ] || fail "--ref is required, for example jira:ISP-263 or pr:acme/icecube#7"
 
+PULL=0
 PR_FORM='^pr:([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)#([1-9][0-9]*)$'
 
 case "$REFERENCE" in
@@ -50,7 +55,13 @@ case "$REFERENCE" in
   pr:*)
     [[ "$REFERENCE" =~ $PR_FORM ]] \
       || fail "'$REFERENCE' does not name a pull request; write pr:<owner>/<repo>#<number>, where owner and repo hold ASCII letters, digits, '-', '_' and '.', and the number has no leading zero"
-    TICKET="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}+${BASH_REMATCH[3]}"
+    NUMBER="${BASH_REMATCH[3]}"
+    TICKET="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}+$NUMBER"
+    LARGEST=18446744073709551615
+    if [ "${#NUMBER}" -gt "${#LARGEST}" ] || { [ "${#NUMBER}" -eq "${#LARGEST}" ] && [[ "$NUMBER" > "$LARGEST" ]]; }; then
+      fail "'$REFERENCE' does not name a pull request; write pr:<owner>/<repo>#<number>, and the number is at most $LARGEST"
+    fi
+    PULL=1
     ;;
   *) fail "--ref must name a jira ticket or a pull request, and this one is '$REFERENCE'" ;;
 esac
@@ -77,7 +88,21 @@ esac
 RECORD="$ROOT/changes/$TICKET.json"
 echo "local-toil-rerun: completion record for $TICKET is $RECORD"
 
-if [ -f "$RECORD" ]; then
+if [ "$PULL" -eq 1 ]; then
+  if [ -f "$RECORD" ]; then
+    MARKER=$(sed -n 's/.*"marker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RECORD" | head -1)
+    echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
+  else
+    echo "local-toil-rerun: it does not exist"
+  fi
+  echo "local-toil-rerun: a record does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
+  echo "local-toil-rerun: each run answers only the mentions not yet answered on the pull request"
+  echo "local-toil-rerun: to run a mention again, delete fiddle's answer comment or post a new mention"
+  if [ "$FORGET" -eq 1 ] && [ -f "$RECORD" ]; then
+    rm -f "$RECORD" || fail "could not remove $RECORD"
+    echo "local-toil-rerun: removed; this changes nothing for a pr: run"
+  fi
+elif [ -f "$RECORD" ]; then
   MARKER=$(sed -n 's/.*"marker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RECORD" | head -1)
   echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
   echo "local-toil-rerun: while it exists this run reports completed and reaches no step, which a runner never does"

@@ -18,6 +18,14 @@ check() {
   esac
 }
 
+lacks() {
+  CHECKED=$((CHECKED + 1))
+  local what="$1" unexpected="$2" haystack="$3"
+  case "$haystack" in
+    *"$unexpected"*) fail "$what (did not expect '$unexpected' in: $haystack)" ;;
+  esac
+}
+
 refuses() {
   CHECKED=$((CHECKED + 1))
   local what="$1"; shift
@@ -110,12 +118,23 @@ check "a relative --config is read from the working directory too" "record for I
 echo "a pr: reference names the record <owner>+<repo>+<n>"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#7')
 check "it names the pull request's record" "state/changes/acme+icecube+7.json" "$OUT"
-check "and says it is absent" "already behaves as a runner" "$OUT"
+check "it says a record does not stop a pr: run" "does not stop a pr: run" "$OUT"
 printf '{"marker":"pr000007"}' > "$DIR/state/changes/acme+icecube+7.json"
 printf '{"marker":"other"}' > "$DIR/state/changes/acme-icecube-7.json"
-OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#7' --forget)
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#7')
 check "it reads the pull request record's marker" "pr000007" "$OUT"
+check "a present record does not stop a pr: run either" "does not stop a pr: run" "$OUT"
+check "fiddle answers only the mentions not yet answered" "answers only the mentions not yet answered" "$OUT"
+check "it says how to run a mention again" "delete fiddle's answer comment or post a new mention" "$OUT"
+lacks "it never claims a pr: run stops at the record" "reaches no step" "$OUT"
+lacks "it never claims a pr: run reports completed" "reports completed" "$OUT"
+lacks "it never offers --forget as the way to run a pr: mention again" "pass --forget" "$OUT"
+CHECKED=$((CHECKED + 1))
+[ -f "$DIR/state/changes/acme+icecube+7.json" ] \
+  || fail "the record was removed without --forget"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#7' --forget)
 check "it says it removed the record" "removed" "$OUT"
+check "and that the removal changes nothing for a pr: run" "changes nothing for a pr: run" "$OUT"
 CHECKED=$((CHECKED + 1))
 [ -f "$DIR/state/changes/acme+icecube+7.json" ] \
   && fail "--forget reported a removal and changes/acme+icecube+7.json is still there"
@@ -123,6 +142,8 @@ CHECKED=$((CHECKED + 1))
 [ -f "$DIR/state/changes/acme-icecube-7.json" ] \
   || fail "--forget removed a record joined with dashes, which names another pull request"
 check "it prints the pr: run quoted, so no shell reads # as a comment or a glob" 'fiddle run "pr:acme/icecube#7"' "$OUT"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#18446744073709551615')
+check "the largest number a pull request can carry is accepted" "state/changes/acme+icecube+18446744073709551615.json" "$OUT"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:Acme.io/ice_cube-2#10')
 check "a name with a dot, an underscore and a dash is a GitHub name" "state/changes/Acme.io+ice_cube-2+10.json" "$OUT"
 
@@ -143,6 +164,8 @@ refuses_saying "a second number" "$FORM" --config "$CONFIG" --ref 'pr:acme/icecu
 refuses_saying "a name holding a letter outside ASCII" "$FORM" --config "$CONFIG" --ref 'pr:acmé/icecube#7'
 refuses_saying "a number of digits outside ASCII" "$FORM" --config "$CONFIG" --ref 'pr:acme/icecube#７'
 refuses_saying "a reference that runs onto a second line" "$FORM" --config "$CONFIG" --ref $'pr:acme/icecube#7\nx'
+refuses_saying "a number above the largest a pull request number can be" "$FORM" --config "$CONFIG" --ref 'pr:acme/icecube#18446744073709551616'
+refuses_saying "a number of twenty-one digits" "$FORM" --config "$CONFIG" --ref 'pr:acme/icecube#100000000000000000000'
 refuses_saying "a pr: reference with no value" "$FORM" --config "$CONFIG" --ref 'pr:'
 refuses_saying "it quotes the reference it refused" "'pr:acme#7'" --config "$CONFIG" --ref 'pr:acme#7'
 
