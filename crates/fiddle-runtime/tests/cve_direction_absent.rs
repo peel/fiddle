@@ -7,6 +7,7 @@ use fiddle_runtime::capability::{ChangesRequested, HumanSaid};
 use fiddle_runtime::cve::verdict::Budget;
 use fiddle_runtime::effect::{EffectContext, EffectTrace, ExecutionStep, Executor, ReadRetry};
 use fiddle_runtime::evaluate::{Check, Success};
+use fiddle_runtime::github::Reviewed;
 use fiddle_runtime::scanner::{ScanError, ScanReport, Scanner};
 use fiddle_runtime::workspace::WorkspaceCommand;
 use fiddle_runtime::{
@@ -224,7 +225,7 @@ fn fresh() -> Approved {
 }
 
 struct Asked {
-    reviews: Result<(Vec<ChangesRequested>, Vec<HumanSaid>), CapabilityError>,
+    reviews: Result<(Vec<ChangesRequested>, Vec<Reviewed>), CapabilityError>,
     conversation: Result<Vec<HumanSaid>, CapabilityError>,
 }
 
@@ -372,5 +373,71 @@ async fn a_plan_that_opens_a_fresh_pull_request_asks_no_forge_and_refuses_nothin
     assert!(
         requested.is_empty() && said_in_reviews.is_empty() && said.is_empty(),
         "and what it reads is nothing: {requested:?} {said_in_reviews:?} {said:?}"
+    );
+}
+
+const CLAUDES_POINT: &str = "the bump leaves the vendored copy in third_party on the old version";
+
+fn a_bot_review(body: &str) -> serde_json::Value {
+    json!({
+        "state": "COMMENTED",
+        "body": body,
+        "author_association": "NONE",
+        "commit_id": HEAD,
+        "user": { "login": "claude[bot]", "id": 41, "type": "Bot" },
+    })
+}
+
+async fn direction_over(conversation: &str) -> Vec<HumanSaid> {
+    let forge = Forge::answering(
+        json!([a_bot_review(CLAUDES_POINT)]),
+        json!([comment("MEMBER", conversation)]),
+    );
+    let ctx = forge_context(&forge);
+    let deployment = Deployment(DeploymentRule::Allow);
+    let trace = Silent;
+    let paths = Reading::new();
+    let executor = Executor::new(
+        CVE_MITIGATE,
+        PROJECT.to_string(),
+        INVOCATION_REF.to_string(),
+        &deployment,
+        &ctx,
+        &trace,
+        ReadRetry::none(),
+    );
+    let capability = CveMitigate::new(
+        executor,
+        &ctx,
+        NeverScans,
+        MockCompletionModel::new(Vec::new()),
+        paths.config(),
+    );
+    let (asked, said) = capability
+        .direction(&reused(), &fresh())
+        .await
+        .expect("a forge that answers is read");
+    assert!(
+        asked.is_empty(),
+        "a bot's review is never work to do: {asked:?}"
+    );
+    said
+}
+
+#[tokio::test]
+async fn a_bot_review_a_person_names_in_the_conversation_is_quoted_and_one_nobody_names_is_not() {
+    let named = direction_over("please do what Claude raised about the vendored copy").await;
+    assert!(
+        named
+            .iter()
+            .any(|it| it.author == "claude[bot]" && it.body == CLAUDES_POINT && !it.entitled),
+        "a member's comment names claude[bot], so its review is quoted, as one that does not \
+         speak for the project: {named:?}"
+    );
+
+    let unnamed = direction_over("the rescan reads clean on my machine too").await;
+    assert!(
+        unnamed.iter().all(|it| it.body != CLAUDES_POINT),
+        "a bot review nobody names is not quoted: {unnamed:?}"
     );
 }
