@@ -676,8 +676,9 @@ fn a_pull_request_on_another_repository_is_refused_before_any_request() {
             "`{reference}` is a configuration error: {stderr}"
         );
         assert!(
-            stderr.contains("acme/icecube"),
-            "the refusal names the repository this deployment serves: {stderr}"
+            stderr.contains(&format!("this deployment serves {REPO}")),
+            "the refusal names the repository this deployment serves, in words the echoed \
+             reference cannot supply: {stderr}"
         );
         assert_eq!(
             world.github().requests_naming("/repos/"),
