@@ -484,9 +484,8 @@ fn names_the_account(text: &str, named: &str) -> bool {
 }
 
 pub fn steers(review: &crate::github::Reviewed, head: &str) -> bool {
-    !review.author_kind.is_a_bot()
+    speaks(review.author_kind, &review.author_association)
         && !review.state.eq_ignore_ascii_case(crate::github::APPROVED)
-        && entitled(&review.author_association)
         && review.commit_id == head
 }
 

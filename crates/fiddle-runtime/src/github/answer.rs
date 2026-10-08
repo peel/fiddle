@@ -1,4 +1,4 @@
-use crate::capability::entitled;
+use crate::capability::{entitled, speaks};
 use crate::effect::{
     required, AuthorizedEffect, EffectContext, EffectError, Executor, FromStepParams,
     IntegrationOperation, ObservedState, StepParams,
@@ -167,7 +167,7 @@ pub fn already_answered(
     let reviewed = reviews
         .iter()
         .filter(|it| before.reviews.contains(&it.id))
-        .filter(|it| entitled(&it.author_association) && !it.body.trim().is_empty())
+        .filter(|it| speaks(it.author_kind, &it.author_association) && !it.body.trim().is_empty())
         .map(|it| Earlier {
             author: it.author.login.clone(),
             body: it.body.trim().to_string(),
@@ -766,6 +766,36 @@ mod tests {
             }
             .marker(),
             "a bot's review and comment are left out of the marker, and a person's are kept"
+        );
+    }
+
+    #[test]
+    fn a_bot_review_a_marker_names_is_never_quoted_as_earlier_direction() {
+        let bot_review = Reviewed {
+            author_kind: crate::github::AuthorKind::Bot,
+            author_association: "MEMBER".to_string(),
+            ..review(9)
+        };
+        let marker = Answered {
+            reviews: [8, 9].into_iter().collect(),
+            comments: Default::default(),
+        }
+        .marker();
+        let earlier = already_answered(
+            &[review(8), bot_review],
+            &[comment(1, "OWNER", &format!("done\n{marker}"))],
+            None,
+        );
+        let quoted: Vec<&str> = earlier
+            .iter()
+            .filter(|it| !it.by_fiddle)
+            .map(|it| it.body.as_str())
+            .collect();
+        assert_eq!(
+            quoted.len(),
+            1,
+            "the person's answered review is quoted as earlier direction and the MEMBER \
+             bot's is not, though a marker names both: {earlier:?}"
         );
     }
 }

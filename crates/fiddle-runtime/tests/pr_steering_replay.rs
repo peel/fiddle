@@ -1,4 +1,4 @@
-use fiddle_runtime::capability::{cited, entitled, steers, Direction};
+use fiddle_runtime::capability::{cited, entitled, speaks, steers, Direction};
 use fiddle_runtime::github::{
     read_conversation, read_reviews, GhCli, HumanResponse, Reviewed, CHANGES_REQUESTED,
 };
@@ -163,12 +163,12 @@ async fn the_bot_carrying_the_findings_is_admitted_because_an_entitled_human_nam
 
     let citing: Vec<String> = reviews
         .iter()
-        .filter(|it| entitled(&it.author_association))
+        .filter(|it| speaks(it.author_kind, &it.author_association))
         .map(|it| it.body.clone())
         .chain(
             conversation
                 .iter()
-                .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
+                .filter(|it| speaks(it.author_kind, &it.author_association))
                 .map(|it| it.body.clone()),
         )
         .collect();

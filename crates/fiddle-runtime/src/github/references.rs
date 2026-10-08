@@ -1,4 +1,4 @@
-use crate::capability::{cited, entitled};
+use crate::capability::{cited, speaks};
 use crate::github::HumanResponse;
 
 pub const MAX_REFERENCED: usize = 3;
@@ -73,7 +73,7 @@ pub fn admitted(conversation: Vec<HumanResponse>, citing: &[String]) -> Vec<Huma
         .filter(|it| !it.body.contains(FIDDLE_MARKER))
         .filter(|it| match it.author_kind.is_a_bot() {
             true => cited(&it.author.login, citing),
-            false => entitled(&it.author_association),
+            false => speaks(it.author_kind, &it.author_association),
         })
         .collect()
 }
