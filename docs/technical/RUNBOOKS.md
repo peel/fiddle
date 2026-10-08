@@ -791,11 +791,11 @@ request's own branch, and answers the mention. ADR 093 records the decision.
 
 The workflow lives in the target repository, not here.
 `docs/technical/host-workflow-fiddle-ai.yml` is its template, and
-`scripts/test-host-workflow-fiddle-ai.sh` holds a reviewed copy of it,
-`docs/technical/host-workflow-fiddle-ai.expected.json`. The template must equal
-the reviewed copy the suite holds; any edit fails the gate until that copy is
-changed in the same commit. The suite needs python3 with PyYAML, and refuses
-without them.
+`scripts/test-host-workflow-fiddle-ai.sh` holds it in the gate: the template's
+bytes must equal the reviewed copy's (its sha256 is held beside it, in
+`docs/technical/host-workflow-fiddle-ai.sha256`); any edit to the template, a
+comment included, fails the gate until the held sha256 is changed. The suite
+needs python3 with PyYAML, and refuses without them.
 
 ### 1. Create the App
 
