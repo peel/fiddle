@@ -80,6 +80,25 @@ impl PullRequestForge {
         support::git_says(&self.remote, &["log", "-1", "--format=%B", commit])
     }
 
+    fn author_of(&self, commit: &str) -> String {
+        support::git_says(&self.remote, &["log", "-1", "--format=%an <%ae>", commit])
+    }
+
+    fn committer_of(&self, commit: &str) -> String {
+        support::git_says(&self.remote, &["log", "-1", "--format=%cn <%ce>", commit])
+    }
+
+    fn holds_a_hook_that_refuses_every_commit(&self) {
+        let hooks = self.fixture.join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks).expect("the fixture has a hooks directory");
+        let hook = hooks.join("pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho 'a hook ran' >&2\nexit 1\n")
+            .expect("the hook is written");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+            .expect("the hook is executable");
+    }
+
     fn commit_on_the_head_branch(&self, path: &str, contents: &str) -> String {
         let fixture = &self.fixture;
         support::git(fixture, &["checkout", "-q", HEAD_REF]);
@@ -390,6 +409,12 @@ impl PullRequestWorld {
         .unwrap();
     }
 
+    fn signs_its_commits_as(&self, name: &str, email: &str) {
+        self.scenario.append_config(&format!(
+            "[github.author]\nname = \"{name}\"\nemail = \"{email}\"\n"
+        ));
+    }
+
     fn github(&self) -> &PullRequestForge {
         &self.forge
     }
@@ -593,6 +618,75 @@ fn a_member_mention_steers_a_pull_request_run_onto_its_own_branch() {
         "the tracker this deployment names records a request when one is made, so the \
          emptiness above is the run's: {}",
         String::from_utf8_lossy(&inspected.stderr)
+    );
+}
+
+fn a_renaming_change() -> Vec<support::Reply> {
+    an_accepted_change_described(
+        &format!("{REPAIRED}// renamed\n"),
+        [
+            "Rename the helper the mention names",
+            "Previously the helper had its old name.",
+            "Now it has the name the mention asked for.",
+        ],
+    )
+}
+
+fn published_head(world: &PullRequestWorld) -> String {
+    let run = world.run(REFERENCE);
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "the run completes: {}",
+        stderr_of(&run)
+    );
+    let head = world.github().head_of(HEAD_REF);
+    assert_eq!(
+        world.github().parent_of(&head),
+        world.opened_at,
+        "the run published one commit onto the pull request's head"
+    );
+    head
+}
+
+#[test]
+fn a_configured_author_signs_the_commit_and_without_one_fiddle_does() {
+    let configured = PullRequestWorld::serving(a_renaming_change());
+    configured.signs_its_commits_as(
+        "fiddle-ai[bot]",
+        "1+fiddle-ai[bot]@users.noreply.github.com",
+    );
+    configured.github().holds_a_hook_that_refuses_every_commit();
+    configured.github().a_member_commented(8_001, THE_MENTION);
+
+    let head = published_head(&configured);
+
+    assert_eq!(
+        configured.github().author_of(&head),
+        "fiddle-ai[bot] <1+fiddle-ai[bot]@users.noreply.github.com>",
+        "a deployment that names an author writes its commits as that author"
+    );
+    assert_eq!(
+        configured.github().committer_of(&head),
+        "fiddle-ai[bot] <1+fiddle-ai[bot]@users.noreply.github.com>",
+        "and commits them as that author, so no fiddle identity remains on the commit"
+    );
+
+    let plain = PullRequestWorld::serving(a_renaming_change());
+    plain.github().holds_a_hook_that_refuses_every_commit();
+    plain.github().a_member_commented(8_001, THE_MENTION);
+
+    let head = published_head(&plain);
+
+    assert_eq!(
+        plain.github().author_of(&head),
+        "fiddle <fiddle@invalid>",
+        "a deployment that names no author writes its commits as fiddle"
+    );
+    assert_eq!(
+        plain.github().committer_of(&head),
+        "fiddle <fiddle@invalid>",
+        "and commits them as fiddle"
     );
 }
 

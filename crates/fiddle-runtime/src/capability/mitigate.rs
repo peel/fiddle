@@ -13,7 +13,7 @@ use crate::cve::verdict::{
     disposition, ticket_proposals, Attempted, BoundReached, Budget, Disposition, FiledTickets,
     InProgress, Run, TicketFiled, TicketFiling, TicketProposal, Verdict,
 };
-use crate::effect::{EffectContext, Executor, IntegrationOperation};
+use crate::effect::{CommitAuthor, EffectContext, Executor, IntegrationOperation};
 use crate::evaluate::{
     evaluate, Check, Contract, Evaluation, InWorkspace, Outcome, Repair, Rescan,
 };
@@ -83,6 +83,8 @@ pub struct MitigateConfig {
     pub settle: Duration,
 
     pub filing: Option<TicketFiling>,
+
+    pub author: Option<CommitAuthor>,
 
     pub cancel: CancellationToken,
 }
@@ -347,6 +349,7 @@ where
                         &group.status,
                         &group.attempt.changed,
                         onto,
+                        self.config.author.as_ref(),
                     )
                     .await?;
                     if landing == Landed::CommittedForJudgement {

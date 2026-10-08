@@ -35,9 +35,9 @@ pub use capability::{
     PublishConfig, RepairConfig, StubMark, CAPABILITIES,
 };
 pub use effect::{
-    AdapterError, AuthorizedEffect, DeploymentPolicy, EffectContext, EffectError, EffectOutcome,
-    EffectPhase, EffectReceipt, EffectTrace, ExecutionStep, Executor, IntegrationOperation,
-    ObservedState, ResolvedDecision,
+    AdapterError, AuthorizedEffect, CommitAuthor, DeploymentPolicy, EffectContext, EffectError,
+    EffectOutcome, EffectPhase, EffectReceipt, EffectTrace, ExecutionStep, Executor,
+    IntegrationOperation, ObservedState, ResolvedDecision,
 };
 pub use evidence::{EvidenceError, BUNDLE_FILE};
 pub use fiddle_core as core;

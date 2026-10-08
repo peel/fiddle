@@ -1,12 +1,28 @@
 use super::CapabilityError;
+use crate::effect::CommitAuthor;
 use crate::workspace::{Workspace, WorkspaceCommand, WorkspaceError, WorkspacePath};
 use std::time::Duration;
 
-pub(super) const COMMITTER: [&str; 3] = [
-    "user.name=fiddle",
-    "user.email=fiddle@invalid",
-    "core.hooksPath=/dev/null",
-];
+const FIDDLE_NAME: &str = "fiddle";
+
+const FIDDLE_EMAIL: &str = "fiddle@invalid";
+
+const HOOKS_DISABLED: &str = "core.hooksPath=/dev/null";
+
+pub(super) fn committer(author: Option<&CommitAuthor>) -> Vec<String> {
+    let (name, email) = match author {
+        Some(author) => (author.name.as_str(), author.email.as_str()),
+        None => (FIDDLE_NAME, FIDDLE_EMAIL),
+    };
+    [
+        format!("user.name={name}"),
+        format!("user.email={email}"),
+        HOOKS_DISABLED.to_string(),
+    ]
+    .into_iter()
+    .flat_map(|setting| ["-c".to_string(), setting])
+    .collect()
+}
 
 pub(super) fn message(project: &str, invocation_ref: &str) -> String {
     format!("{project}: {invocation_ref}")
@@ -16,9 +32,10 @@ pub(super) async fn commit_changed(
     workspace: &Workspace,
     changed: &[WorkspacePath],
     message: &str,
+    author: Option<&CommitAuthor>,
     timeout: Duration,
 ) -> Result<String, CapabilityError> {
-    commit_described(workspace, changed, message, None, None, timeout).await
+    commit_described(workspace, changed, message, None, None, author, timeout).await
 }
 
 pub(super) async fn commit_described(
@@ -27,16 +44,14 @@ pub(super) async fn commit_described(
     subject: &str,
     body: Option<&str>,
     dated: Option<&str>,
+    author: Option<&CommitAuthor>,
     timeout: Duration,
 ) -> Result<String, CapabilityError> {
     let mut add = vec!["add".to_string(), "-f".to_string(), "--".to_string()];
     add.extend(changed.iter().map(|path| path.as_str().to_string()));
     run(workspace, add, timeout).await?;
 
-    let mut commit: Vec<String> = COMMITTER
-        .iter()
-        .flat_map(|setting| ["-c".to_string(), (*setting).to_string()])
-        .collect();
+    let mut commit = committer(author);
     commit.extend([
         "commit".to_string(),
         "-q".to_string(),

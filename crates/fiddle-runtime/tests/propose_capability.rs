@@ -13,7 +13,7 @@ use fiddle_runtime::capability::{
     ProposeChange, ProposeConfig,
 };
 use fiddle_runtime::effect::{
-    EffectContext, EffectError, EffectOutcome, EffectTrace, ExecutionStep, Executor,
+    CommitAuthor, EffectContext, EffectError, EffectOutcome, EffectTrace, ExecutionStep, Executor,
     IntegrationOperation, ReadRetry, Recurrence, ResolvedDecision,
 };
 use fiddle_runtime::git::GitCli;
@@ -523,6 +523,7 @@ fn config_deciding(
         transcripts: None,
         deciders,
         interpretation: patient_interpretation(),
+        author: None,
         cancel: CancellationToken::new(),
     }
 }
@@ -661,6 +662,20 @@ async fn execute_against(
     Vec<EvidenceRef>,
     Option<fiddle_core::Publication>,
 ) {
+    execute_configured(world, ctx, model, config(world, check), bound_to).await
+}
+
+async fn execute_configured(
+    world: &World,
+    ctx: &EffectContext,
+    model: MockCompletionModel,
+    config: ProposeConfig,
+    bound_to: fiddle_core::CapabilityId,
+) -> (
+    Result<Executed, CapabilityError>,
+    Vec<EvidenceRef>,
+    Option<fiddle_core::Publication>,
+) {
     let deployment = Deployment(DeploymentRule::Allow);
     let executor = Executor::new(
         bound_to,
@@ -671,7 +686,7 @@ async fn execute_against(
         world,
         ReadRetry::none(),
     );
-    let capability = ProposeChange::new(executor, ctx, world, model, config(world, check));
+    let capability = ProposeChange::new(executor, ctx, world, model, config);
 
     let outcome = capability
         .execute(ExecutionInput::unobserved(
@@ -906,6 +921,57 @@ fn dated_base_commit(repo: &Path, date: &str) {
         .status()
         .expect("git runs");
     assert!(status.success(), "the fixture takes a dated base commit");
+}
+
+async fn identity_of_a_proposal(author: Option<CommitAuthor>) -> (String, String) {
+    let world = World::fresh();
+    let config = ProposeConfig {
+        author,
+        ..config(&world, the_projects_own_check())
+    };
+    let (outcome, _, _) = execute_configured(
+        &world,
+        &world.ctx(),
+        MockCompletionModel::new(repairs()),
+        config,
+        PROPOSE_CHANGE,
+    )
+    .await;
+    assert!(
+        matches!(outcome, Err(CapabilityError::AwaitingDecision { .. })),
+        "the attempt published and then waited: {outcome:?}"
+    );
+    let published = world.published_sha();
+    (
+        world.git_says(
+            &world.remote,
+            &["log", "-1", "--format=%an <%ae>", &published],
+        ),
+        world.git_says(
+            &world.remote,
+            &["log", "-1", "--format=%cn <%ce>", &published],
+        ),
+    )
+}
+
+#[tokio::test]
+async fn a_proposed_commit_carries_the_configured_author_and_fiddle_without_one() {
+    let signed = "fiddle-ai[bot] <1+fiddle-ai[bot]@users.noreply.github.com>";
+    assert_eq!(
+        identity_of_a_proposal(Some(CommitAuthor {
+            name: "fiddle-ai[bot]".to_string(),
+            email: "1+fiddle-ai[bot]@users.noreply.github.com".to_string(),
+        }))
+        .await,
+        (signed.to_string(), signed.to_string()),
+        "a configured author is both the author and the committer of a proposed commit"
+    );
+    let fiddle = "fiddle <fiddle@invalid>";
+    assert_eq!(
+        identity_of_a_proposal(None).await,
+        (fiddle.to_string(), fiddle.to_string()),
+        "and without one fiddle is both"
+    );
 }
 
 #[tokio::test]

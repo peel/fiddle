@@ -1,4 +1,4 @@
-use super::commit::COMMITTER;
+use super::commit::committer;
 use super::CapabilityError;
 use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, Declarations, FindingDisposition, Held,
@@ -6,7 +6,7 @@ use crate::agent::{
 };
 use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
-use crate::effect::{Executor, IntegrationOperation};
+use crate::effect::{CommitAuthor, Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
 use crate::gateway::Redaction;
 use crate::git::{GitCli, GitError};
@@ -987,6 +987,7 @@ pub async fn land<G>(
     status: &GroupStatus,
     changed: &[WorkspacePath],
     onto: Option<&str>,
+    author: Option<&CommitAuthor>,
 ) -> Result<Landed, CapabilityError>
 where
     G: Git + ?Sized,
@@ -999,7 +1000,7 @@ where
             stage(git, changed).await?;
             let subject = commit_subject(advisories);
             let body = commit_body(advisories);
-            commit(git, &["commit", "-q", "-m", &subject, "-m", &body]).await?;
+            commit(git, author, &["commit", "-q", "-m", &subject, "-m", &body]).await?;
             Ok(Landed::Committed)
         }
         GroupStatus::NeedsWork { .. } if changed.is_empty() => Ok(Landed::NothingToLand),
@@ -1011,6 +1012,7 @@ where
             let subject = judgement_subject(advisories);
             commit(
                 git,
+                author,
                 &[
                     "commit",
                     "-q",
@@ -1037,14 +1039,16 @@ where
     git.run(&add).await.map(|_output| ())
 }
 
-async fn commit<G>(git: &G, arguments: &[&str]) -> Result<(), CapabilityError>
+async fn commit<G>(
+    git: &G,
+    author: Option<&CommitAuthor>,
+    arguments: &[&str],
+) -> Result<(), CapabilityError>
 where
     G: Git + ?Sized,
 {
-    let mut spelled: Vec<&str> = COMMITTER
-        .iter()
-        .flat_map(|setting| ["-c", setting])
-        .collect();
+    let identity = committer(author);
+    let mut spelled: Vec<&str> = identity.iter().map(String::as_str).collect();
     spelled.extend_from_slice(arguments);
     git.run(&spelled).await.map(|_output| ())
 }

@@ -8,7 +8,7 @@ use fiddle_runtime::capability::{
 use fiddle_runtime::cve::dedup::FixedInCommits;
 use fiddle_runtime::evaluate::{evaluate, Evaluation, RescanVerdict};
 use fiddle_runtime::workspace::{Content, FileEdit, WorkspacePath};
-use fiddle_runtime::Redaction;
+use fiddle_runtime::{CommitAuthor, Redaction};
 use rig_core::test_utils::{MockCompletionModel, MockTurn};
 use serde_json::json;
 use std::time::Duration;
@@ -1415,6 +1415,7 @@ async fn run_group_clean(cves: &[&str]) -> (LandingWorld, Landed) {
         &GroupStatus::Clean,
         &world.changed,
         None,
+        None,
     )
     .await
     .expect("a clean group lands");
@@ -1428,6 +1429,7 @@ async fn run_group_needs_work(cves: &[&str]) -> (LandingWorld, Landed) {
         &advisories_of(&world.findings),
         &refused(),
         &world.changed,
+        None,
         None,
     )
     .await
@@ -1616,6 +1618,7 @@ async fn an_undeclared_edit_over_green_checks_is_judged_rather_than_landed_as_a_
         &status,
         &world.changed,
         None,
+        None,
     )
     .await
     .expect("a refused group is committed for a person to judge");
@@ -1654,6 +1657,7 @@ async fn a_file_the_attempt_created_reaches_the_commit_a_person_judges() {
         &refused(),
         &world.changed,
         None,
+        None,
     )
     .await
     .expect("a needs-work group is committed for a person to judge");
@@ -1684,6 +1688,7 @@ async fn a_clean_group_that_changed_nothing_commits_nothing_and_says_so() {
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &[],
+        None,
         None,
     )
     .await
@@ -1720,6 +1725,50 @@ async fn history_is_never_rewritten() {
     }
 }
 
+async fn identity_of_a_landing(author: Option<&CommitAuthor>) -> (String, String) {
+    let world = landing_world(&LANDED);
+    let attempt = landing_worktree(&world);
+    land(
+        &InWorktree::new(
+            &attempt.workspace,
+            Duration::from_secs(60),
+            &support::unreachable_git(),
+        ),
+        &advisories_of(&world.findings),
+        &GroupStatus::Clean,
+        &attempt.changed,
+        None,
+        author,
+    )
+    .await
+    .expect("a clean group lands in a real worktree");
+    let root = attempt.workspace.root();
+    (
+        ask_git(root, &["log", "-1", "--format=%an <%ae>"]),
+        ask_git(root, &["log", "-1", "--format=%cn <%ce>"]),
+    )
+}
+
+#[tokio::test]
+async fn a_cve_commit_carries_the_configured_author_and_fiddle_without_one() {
+    let author = CommitAuthor {
+        name: "fiddle-ai[bot]".to_string(),
+        email: "1+fiddle-ai[bot]@users.noreply.github.com".to_string(),
+    };
+    let signed = "fiddle-ai[bot] <1+fiddle-ai[bot]@users.noreply.github.com>";
+    assert_eq!(
+        identity_of_a_landing(Some(&author)).await,
+        (signed.to_string(), signed.to_string()),
+        "a configured author is both the author and the committer of a CVE commit"
+    );
+    let fiddle = "fiddle <fiddle@invalid>";
+    assert_eq!(
+        identity_of_a_landing(None).await,
+        (fiddle.to_string(), fiddle.to_string()),
+        "and without one fiddle is both"
+    );
+}
+
 #[tokio::test]
 async fn the_production_seam_lands_a_group_in_a_real_worktree() {
     let world = landing_world(&LANDED);
@@ -1735,6 +1784,7 @@ async fn the_production_seam_lands_a_group_in_a_real_worktree() {
         &advisories_of(&world.findings),
         &GroupStatus::Clean,
         &attempt.changed,
+        None,
         None,
     )
     .await

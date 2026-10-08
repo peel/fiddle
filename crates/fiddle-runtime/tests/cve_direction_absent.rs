@@ -202,6 +202,7 @@ impl Reading {
             today: "2026-08-26".to_string(),
             settle: Duration::ZERO,
             filing: None,
+            author: None,
             cancel: CancellationToken::new(),
         }
     }

@@ -3,8 +3,8 @@ use super::stub::write_atomically;
 use super::{Capability, CapabilityError, Executed, ExecutionGrant, ExecutionInput};
 use crate::agent::{attempt, AgentBudget, Direction, ToolHost, ToolReceipts, Transcripts};
 use crate::effect::{
-    AdapterError, EffectContext, EffectOutcome, EffectReceipt, Executor, IntegrationOperation,
-    ObservedState, ResolvedDecision,
+    AdapterError, CommitAuthor, EffectContext, EffectOutcome, EffectReceipt, Executor,
+    IntegrationOperation, ObservedState, ResolvedDecision,
 };
 use crate::gateway::Redaction;
 use crate::github::{
@@ -82,6 +82,8 @@ pub struct ProposeConfig {
     pub deciders: Vec<Decider>,
 
     pub interpretation: InterpretationBounds,
+
+    pub author: Option<CommitAuthor>,
 
     pub cancel: tokio_util::sync::CancellationToken,
 }
@@ -375,6 +377,7 @@ where
             &workspace,
             &changed,
             &commit::message(&self.config.project, self.executor.invocation_ref()),
+            self.config.author.as_ref(),
             self.config.budget.tool_timeout,
         )
         .await?;

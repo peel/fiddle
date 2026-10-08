@@ -1528,6 +1528,7 @@ fn build_capability<'a>(
                     transcripts: transcripts.cloned(),
                     deciders,
                     interpretation: interpretation_bounds(agent),
+                    author: github.author.as_ref().map(config::Author::resolved),
                     cancel: cancel.clone(),
                 },
             )))
@@ -1644,6 +1645,7 @@ fn build_capability<'a>(
                         .jira
                         .as_ref()
                         .and_then(|jira| jira.filing.as_ref().map(config::JiraFiling::resolved)),
+                    author: github.author.as_ref().map(config::Author::resolved),
                     cancel: cancel.clone(),
                 },
             )))
@@ -1727,6 +1729,7 @@ fn build_capability<'a>(
                         pull_request: Some(facts.number),
                         mention: Some(MENTION.to_string()),
                         account: github.account.clone(),
+                        author: github.author.as_ref().map(config::Author::resolved),
                         ..StepParams::for_capability(capability_id)
                     },
                     None => StepParams {
@@ -1751,6 +1754,7 @@ fn build_capability<'a>(
                         )),
                         draft: true,
                         account: github.account.clone(),
+                        author: github.author.as_ref().map(config::Author::resolved),
                         ..StepParams::for_capability(capability_id)
                     },
                 },

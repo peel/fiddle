@@ -263,6 +263,12 @@ pub trait IntegrationOperation: Send + Sync + Sized {
     ) -> Result<(), Self::Error>;
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitAuthor {
+    pub name: String,
+    pub email: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct StepParams {
     pub capability: CapabilityId,
@@ -282,6 +288,7 @@ pub struct StepParams {
     pub reaching: Option<String>,
     pub mention: Option<String>,
     pub account: Option<String>,
+    pub author: Option<CommitAuthor>,
     pub earned: StepOutputs,
 }
 
@@ -305,6 +312,7 @@ impl StepParams {
             reaching: None,
             mention: None,
             account: None,
+            author: None,
             earned: StepOutputs::default(),
         }
     }

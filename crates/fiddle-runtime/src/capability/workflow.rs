@@ -835,6 +835,7 @@ where
             &subject,
             body.as_deref(),
             dated,
+            params.author.as_ref(),
             self.ports.budget.tool_timeout,
         )
         .await?;
