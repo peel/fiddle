@@ -16,9 +16,11 @@ record, so a second run here reports `completed` and never reaches a step. This
 script shows that record and, with --forget, removes it, which is the only
 difference between a local rerun and a runner's.
 
-A pr: reference names a pull request, which is not a work item, so its record
-does not stop a run. Each run answers only the mentions not yet answered. To
-run a mention again, delete fiddle's answer comment or post a new mention.
+A pr: reference names a pull request, which is not a work item, so a record
+fiddle wrote does not stop a run. Each run answers only the mentions not yet
+answered. To run a mention again, delete fiddle's answer comment or post a new
+mention. A record fiddle cannot read blocks a run over its reference, whatever
+the reference, until it is removed, and --forget removes it.
 
 Run it from the directory you run fiddle from. fiddle resolves a relative
 [stub] root against its working directory (ADR 092), and so does this script.
@@ -88,14 +90,100 @@ esac
 RECORD="$ROOT/changes/$TICKET.json"
 echo "local-toil-rerun: completion record for $TICKET is $RECORD"
 
-if [ "$PULL" -eq 1 ]; then
-  if [ -f "$RECORD" ]; then
-    MARKER=$(sed -n 's/.*"marker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RECORD" | head -1)
-    echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
-  else
-    echo "local-toil-rerun: it does not exist"
+read_record() {
+  python3 - "$1" <<'PYTHON'
+import json
+import sys
+
+
+class Pairs(dict):
+    markers = 0
+
+
+def pairs(items):
+    held = Pairs(items)
+    held.markers = sum(1 for key, _ in items if key == "marker")
+    return held
+
+
+def constant(name):
+    raise ValueError(f"{name} is not JSON")
+
+
+def depth(value):
+    if isinstance(value, dict):
+        return 1 + max((depth(item) for item in value.values()), default=0)
+    if isinstance(value, list):
+        return 1 + max((depth(item) for item in value), default=0)
+    return 0
+
+
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from strings(item)
+
+
+def unreadable(reason):
+    print(f"unreadable\t{reason}")
+    sys.exit(0)
+
+
+try:
+    text = open(sys.argv[1], "rb").read().decode("utf-8")
+    value = json.loads(text, parse_constant=constant, object_pairs_hook=pairs)
+    for string in strings(value):
+        string.encode("utf-8")
+except (UnicodeError, ValueError) as error:
+    unreadable(f"it is not JSON: {error}")
+if depth(value) >= 128:
+    unreadable("it nests deeper than fiddle reads")
+if isinstance(value, dict):
+    if value.markers > 1:
+        unreadable("it names marker twice")
+    marker = value.get("marker")
+elif isinstance(value, list) and len(value) == 1:
+    marker = value[0]
+else:
+    unreadable("it is not an object holding a marker")
+if marker is not None and not isinstance(marker, str):
+    unreadable("its marker is not a string")
+print(f"readable\t{marker or ''}")
+PYTHON
+}
+
+READABLE=1
+if [ -f "$RECORD" ]; then
+  command -v python3 >/dev/null 2>&1 \
+    || { echo "local-toil-rerun: python3 is not on the PATH, so whether fiddle can read $RECORD cannot be said" >&2; exit 2; }
+  VERDICT=$(read_record "$RECORD") || fail "could not read $RECORD"
+  case "$VERDICT" in
+    readable$'\t'*) MARKER="${VERDICT#readable$'\t'}" ;;
+    unreadable$'\t'*) READABLE=0; WHY="${VERDICT#unreadable$'\t'}" ;;
+    *) fail "the reading of $RECORD said neither readable nor unreadable: $VERDICT" ;;
+  esac
+fi
+
+if [ -f "$RECORD" ] && [ "$READABLE" -eq 0 ]; then
+  echo "local-toil-rerun: it exists, and $WHY"
+  echo "local-toil-rerun: fiddle cannot read this record, so a run over this reference is blocked until it is removed; --forget removes it"
+  if [ "$FORGET" -eq 1 ]; then
+    rm -f "$RECORD" || fail "could not remove $RECORD"
+    echo "local-toil-rerun: removed, so a run over this reference is no longer blocked by it"
   fi
-  echo "local-toil-rerun: a record does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
+elif [ "$PULL" -eq 1 ]; then
+  if [ -f "$RECORD" ]; then
+    echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
+    echo "local-toil-rerun: fiddle can read this record, and a record fiddle can read does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
+  else
+    echo "local-toil-rerun: it does not exist, and a record does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
+  fi
   echo "local-toil-rerun: each run answers only the mentions not yet answered on the pull request"
   echo "local-toil-rerun: to run a mention again, delete fiddle's answer comment or post a new mention"
   if [ "$FORGET" -eq 1 ] && [ -f "$RECORD" ]; then
@@ -103,7 +191,6 @@ if [ "$PULL" -eq 1 ]; then
     echo "local-toil-rerun: removed; this changes nothing for a pr: run"
   fi
 elif [ -f "$RECORD" ]; then
-  MARKER=$(sed -n 's/.*"marker"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$RECORD" | head -1)
   echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
   echo "local-toil-rerun: while it exists this run reports completed and reaches no step, which a runner never does"
   if [ "$FORGET" -eq 1 ]; then

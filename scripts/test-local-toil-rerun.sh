@@ -147,6 +147,41 @@ check "the largest number a pull request can carry is accepted" "state/changes/a
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:Acme.io/ice_cube-2#10')
 check "a name with a dot, an underscore and a dash is a GitHub name" "state/changes/Acme.io+ice_cube-2+10.json" "$OUT"
 
+echo "a record fiddle cannot read blocks a run, and is said to"
+BLOCKED="fiddle cannot read this record, so a run over this reference is blocked until it is removed; --forget removes it"
+unreadable_pr() {
+  local what="$1" body="$2"
+  printf '%s' "$body" > "$DIR/state/changes/acme+icecube+9.json"
+  OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
+  check "$what is said to block the run" "$BLOCKED" "$OUT"
+  lacks "$what is not said to leave a pr: run alone" "does not stop a pr: run" "$OUT"
+}
+unreadable_pr "text that is not JSON" 'not json'
+unreadable_pr "a marker that is a number" '{"marker":7}'
+unreadable_pr "a marker named twice" '{"marker":"a","marker":"b"}'
+unreadable_pr "a NaN" '{"marker":NaN}'
+unreadable_pr "a JSON value that is not an object" '"marker"'
+unreadable_pr "two JSON values" '{"marker":"a"} {"marker":"b"}'
+unreadable_pr "a lone surrogate" '{"marker":"\ud800"}'
+CHECKED=$((CHECKED + 1))
+[ -f "$DIR/state/changes/acme+icecube+9.json" ] \
+  || fail "an unreadable record was removed without --forget"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9' --forget)
+check "--forget removes an unreadable record and says so" "no longer blocked by it" "$OUT"
+CHECKED=$((CHECKED + 1))
+[ -f "$DIR/state/changes/acme+icecube+9.json" ] \
+  && fail "--forget left an unreadable record in place"
+printf '{}' > "$DIR/state/changes/acme+icecube+9.json"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
+check "an object without a marker is a record fiddle can read" "fiddle can read this record, and a record fiddle can read does not stop a pr: run" "$OUT"
+printf '{"marker":null,"other":[1,2]}' > "$DIR/state/changes/acme+icecube+9.json"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
+check "a null marker beside another key is readable too" "does not stop a pr: run" "$OUT"
+printf '[1,2]' > "$DIR/state/changes/ISP-3.json"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref jira:ISP-3)
+check "an unreadable record blocks a jira run too" "$BLOCKED" "$OUT"
+lacks "and is not said to complete it" "reports completed" "$OUT"
+
 echo "a malformed pr: reference is refused with the form it should take"
 FORM='pr:<owner>/<repo>#<number>'
 refuses_saying "a pull request without a repository" "$FORM" --config "$CONFIG" --ref 'pr:acme#7'
