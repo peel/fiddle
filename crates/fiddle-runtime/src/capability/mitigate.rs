@@ -563,7 +563,7 @@ where
         let reviewed: Vec<crate::github::Reviewed> =
             reviewed.into_iter().chain(also_reviewed).collect();
         let speaks = |it: &crate::github::Reviewed| {
-            !it.author_kind.is_a_bot() && crate::capability::entitled(&it.author_association)
+            crate::capability::speaks(it.author_kind, &it.author_association)
         };
 
         let mut citing: Vec<String> = asked
@@ -672,8 +672,7 @@ where
                     conversation
                         .iter()
                         .filter(|it| {
-                            !it.author_kind.is_a_bot()
-                                && crate::capability::entitled(&it.author_association)
+                            crate::capability::speaks(it.author_kind, &it.author_association)
                         })
                         .map(|it| it.body.clone()),
                 );
@@ -684,8 +683,7 @@ where
                             || crate::capability::cited(&it.author.login, &citing)
                     })
                     .map(|it| HumanSaid {
-                        entitled: !it.author_kind.is_a_bot()
-                            && crate::capability::entitled(&it.author_association),
+                        entitled: crate::capability::speaks(it.author_kind, &it.author_association),
                         author: it.author.login,
                         body: it.body,
                     })

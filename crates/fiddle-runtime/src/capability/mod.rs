@@ -8,9 +8,10 @@ pub mod stub;
 pub mod workflow;
 
 pub use cve::{
-    breached, cited, entitled, land, steers, undeclared, ChangesRequested, DeclarationBreach,
-    Direction, FailedCheck, Followed, Git, GroupMigration, GroupStatus, HumanSaid, InRepository,
-    InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork, Referenced, Unproved,
+    breached, cited, entitled, land, speaks, steers, undeclared, ChangesRequested,
+    DeclarationBreach, Direction, FailedCheck, Followed, Git, GroupMigration, GroupStatus,
+    HumanSaid, InRepository, InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork,
+    Referenced, Unproved,
 };
 pub use mitigate::{CveMitigate, MitigateConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};

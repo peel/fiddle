@@ -137,16 +137,16 @@ pub fn directing(
     conversation: Vec<HumanResponse>,
     handle: &str,
 ) -> (Vec<Reviewed>, Vec<HumanResponse>) {
-    let entitled = crate::capability::entitled;
+    let speaks = crate::capability::speaks;
     let (reviews, conversation) = mentioning(reviews, conversation, handle);
     (
         reviews
             .into_iter()
-            .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
+            .filter(|it| speaks(it.author_kind, &it.author_association))
             .collect(),
         conversation
             .into_iter()
-            .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
+            .filter(|it| speaks(it.author_kind, &it.author_association))
             .collect(),
     )
 }

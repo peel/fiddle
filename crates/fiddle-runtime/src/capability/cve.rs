@@ -295,6 +295,10 @@ pub fn entitled(author_association: &str) -> bool {
     ENTITLED.contains(&author_association.to_ascii_uppercase().as_str())
 }
 
+pub fn speaks(kind: crate::github::AuthorKind, author_association: &str) -> bool {
+    !kind.is_a_bot() && entitled(author_association)
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Direction {
     pub asked: Vec<ChangesRequested>,
@@ -379,10 +383,6 @@ impl Direction {
                     .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED),
             })
             .collect();
-        let speaks = |kind: crate::github::AuthorKind, association: &str| {
-            !kind.is_a_bot() && entitled(association)
-        };
-
         let mut citing: Vec<String> = asked.iter().map(|it| it.body.clone()).collect();
         citing.extend(
             spoken
@@ -2109,6 +2109,24 @@ mod direction {
             head,
             "and one written on an older commit has been answered by the push since, so \
              it must not start a run every night for ever"
+        );
+    }
+
+    #[test]
+    fn a_person_speaks_for_the_project_through_an_app_and_a_bot_never_does() {
+        use crate::github::AuthorKind;
+        assert!(speaks(AuthorKind::Person, "MEMBER"));
+        assert!(
+            speaks(AuthorKind::PersonThroughAnApp, "owner"),
+            "a person posting through an App still speaks, whatever the case of the association"
+        );
+        assert!(
+            !speaks(AuthorKind::Bot, "MEMBER"),
+            "a bot never speaks for the project, even with an entitled association"
+        );
+        assert!(
+            !speaks(AuthorKind::Person, "NONE"),
+            "and a person outside the project does not"
         );
     }
 
