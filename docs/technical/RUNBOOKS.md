@@ -15,6 +15,8 @@ literal secret does not load.
 | `FIDDLE_GITHUB_TOKEN` | the local live forge lane | opt-in, writes to a disposable repository |
 | `FIDDLE_EFFECTS_TOKEN` | the dispatched forge lane | the same value, as a repository secret |
 | `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
+| `FIDDLE_AI_APP_ID` | the target's `@fiddle-ai` trigger | the target repository's secret; the id of the `fiddle-ai` App |
+| `FIDDLE_AI_PRIVATE_KEY` | the target's `@fiddle-ai` trigger | the target repository's secret; the App's private key. The workflow mints the installation token from it and passes that as `FIDDLE_GITHUB_TOKEN` |
 | `WIZ_CLIENT_ID` | the host's `setup-wiz` step | the host repository's secret; the Wiz service account the scan runs as |
 | `WIZ_CLIENT_SECRET` | the host's `setup-wiz` step | the host repository's secret; that account's secret |
 | `JIRA_USER_EMAIL` | every live Jira lane, and the toil route | opt-in; the account the read or the write is performed as |
@@ -779,6 +781,161 @@ completion, so the next run works the ticket again. And where `[stub] root`
 points decides what a fresh checkout inherits: a root inside the working copy
 leaves its completions behind, and a root on an absolute path outside the
 checkout carries every one of them across.
+
+## The @fiddle-ai trigger, which works one pull request
+
+A person who speaks for the project mentions `@fiddle-ai` on a pull request.
+The target repository's workflow runs `fiddle run "pr:<owner>/<repo>#<n>"` for
+that pull request. fiddle does what the mention asks, pushes onto the pull
+request's own branch, and answers the mention. ADR 093 records the decision.
+
+The workflow lives in the target repository, not here.
+`docs/technical/host-workflow-fiddle-ai.yml` is its template, and
+`scripts/test-host-workflow-fiddle-ai.sh` holds its guard, so an edit to the
+template cannot widen who steers without failing the gate.
+
+### 1. Create the App
+
+Creating an App on an organisation needs an organisation admin. Create it under
+**Settings → Developer settings → GitHub Apps → New GitHub App**.
+
+- Name: `fiddle-ai`. The name decides the login fiddle writes as,
+  `fiddle-ai[bot]`, and the handle people mention.
+- Webhook: off. The workflow receives the events, not the App.
+- Repository permissions, and nothing else:
+
+| permission | access | what fiddle spends it on |
+| --- | --- | --- |
+| Contents | Read and write | fetch the head branch and push onto it |
+| Pull requests | Read and write | read the pull request, its reviews and review comments |
+| Issues | Read and write | read the conversation and post the answer |
+| Checks | Read | read the failing check runs on the head |
+| Actions | Read | read a failing Actions job's log |
+
+- Subscribe to events: Issue comment, Pull request review, Pull request review
+  comment. These are the three the workflow runs on.
+- Where it can be installed: only on this account.
+
+Generate a private key and note the App id. Then read the id of the App's bot
+user, which the commit author's address needs.
+
+```sh
+gh api 'users/fiddle-ai%5Bbot%5D' --jq .id
+```
+
+### 2. Install it on the repository
+
+Install the App on the target repository alone, not on every repository of the
+organisation. The installation token the workflow mints is scoped to the
+repository the event came from in any case.
+
+### 3. The secrets
+
+```sh
+host=snowplow-incubator/snowplow-identities
+
+gh secret set FIDDLE_AI_APP_ID --repo "$host" --body "<app id>"
+gh secret set FIDDLE_AI_PRIVATE_KEY --repo "$host" < fiddle-ai.private-key.pem
+gh secret set LITELLM_API_KEY --repo "$host" < litellm.txt
+gh secret list --repo "$host"
+```
+
+No personal token is involved. The workflow mints an installation token on
+every run with `actions/create-github-app-token` and passes it to fiddle as
+`FIDDLE_GITHUB_TOKEN`. Its own `GITHUB_TOKEN` reads contents and nothing else.
+
+### 4. The deployment document
+
+The template reads `.github/fiddle-ai/deployment.toml`, and
+`.github/fiddle-ai/workflows/pull_request.toml` with `workflows/prompts/`
+beside it, because the workflow document is read beside the deployment
+document. Ship this repository's `workflows/` there. Paths in the document are
+resolved against the working directory, which is the checkout (ADR 092).
+
+Two settings belong to the App.
+
+```toml
+[github]
+repo = "snowplow-incubator/snowplow-identities"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+account = "fiddle-ai[bot]"
+
+[github.author]
+name = "fiddle-ai[bot]"
+email = "<app-user-id>+fiddle-ai[bot]@users.noreply.github.com"
+```
+
+`account` is the login fiddle writes as. An App's comment carries the author
+association `NONE`, so without `account` fiddle trusts no answer it wrote and
+answers every mention again on every run. With it, a marker in that login's
+comment is trusted, and that login's comments never steer.
+
+`[github.author]` is the author and committer of every commit fiddle makes.
+Without it the commits carry `fiddle <fiddle@invalid>`. With the noreply address
+GitHub shows the App's avatar on them. fiddle disables hooks on its commits in
+either case.
+
+`fiddle config check --config .github/fiddle-ai/deployment.toml` loads the
+document and refuses an author with an empty name or an address without `@`.
+It does not print `account` or `author`, so read them in the document. The
+template runs the check before the run, so a document that does not load fails
+the job before any read.
+
+### 5. The workflow
+
+Copy the template to `.github/workflows/fiddle-ai.yml` in the target
+repository. Set `FIDDLE_TAG` and `FIDDLE_SHA256` together, as "Cut a release"
+publishes them. The placeholder digest matches nothing, so an unedited copy
+fails on its first run and says so.
+
+| what the template holds | why |
+| --- | --- |
+| `issue_comment` on a pull request, `pull_request_review`, `pull_request_review_comment` | the three places a person mentions `@fiddle-ai` |
+| `if`: the text mentions `@fiddle-ai`, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
+| `concurrency` per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a run is never stopped between its push and its answer |
+| checkout of the default branch with `persist-credentials: false` | the workflow runs no code from the pull request, and the workspace's checks cannot read a persisted token |
+
+The `if` is a filter, not the rule. fiddle applies its own rule again to every
+comment and review it reads: a mention inside code, a fence or a quote asks for
+nothing, a bot never steers, and a bot a mention names is quoted and not
+followed. So a wrong `if` costs a run that finds nothing to do. It cannot widen
+who steers.
+
+### What a run refuses
+
+| the pull request | the answer | exit |
+| --- | --- | --- |
+| on a repository other than `[github] repo` | a configuration error naming both | 2 |
+| closed or merged | refused, nothing to do | 2 |
+| its head branch in a fork | refused, naming the fork, because fiddle cannot push to it | 2 |
+| unreadable | the forge failed, and the run can be retried | 11 |
+| no unanswered mention | completed with nothing to do, and no agent paid for | 0 |
+| its branch moved during the run | the push is refused and not forced; the next mention starts again | non-zero |
+
+`--capability toil` over a `pr:` reference is refused, because toil works a
+ticket and a pull request names none. `--capability checks` runs.
+
+### Run a mention again on your own machine
+
+A completed run writes `<[stub] root>/changes/<owner>+<repo>+<n>.json`, and a
+second run over the same pull request reads it and reaches no step. A runner
+starts with an empty filesystem, so it never has that record. To make a local
+rerun behave as a runner does, forget the record. Run the script from the
+directory you run fiddle from, because a relative `[stub] root` is resolved
+against it.
+
+```sh
+scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
+  --ref 'pr:snowplow-incubator/snowplow-identities#275' --forget
+```
+
+It prints the run for you to type, and does not run it. Quote the reference: `#`
+starts a comment in some shells and a glob in others. A malformed reference is
+refused with the form it should take, `pr:<owner>/<repo>#<number>`.
+
+The record is not what decides whether a mention is answered. The answer on the
+pull request is. A forgotten record with every mention answered runs and
+completes with nothing to do.
 
 ## Record what the model was sent and what it returned
 

@@ -1,0 +1,158 @@
+# The @fiddle-ai trigger: a template for the target repository.
+#
+# Copy this file to .github/workflows/fiddle-ai.yml in the repository fiddle
+# works on. A person who speaks for the project mentions @fiddle-ai on a pull
+# request, and this workflow runs `fiddle run "pr:<owner>/<repo>#<n>"` once for
+# that pull request. RUNBOOKS.md, "The @fiddle-ai trigger", installs it, and
+# ADR 093 records the decision.
+#
+# THE GITHUB APP
+#
+# fiddle writes as a GitHub App named fiddle-ai. This workflow mints one
+# installation token per run and passes it as FIDDLE_GITHUB_TOKEN. The App
+# needs these repository permissions and nothing else:
+#
+#   contents: write        fetch the head branch and push onto it
+#   pull-requests: write   read the pull request, its reviews and review comments
+#   issues: write          read the conversation and post the answer
+#   checks: read           read the failing check runs on the head
+#   actions: read          read a failing Actions job's log
+#
+# It subscribes to these events, which are the three this workflow runs on:
+#
+#   issue_comment
+#   pull_request_review
+#   pull_request_review_comment
+#
+# THE DEPLOYMENT DOCUMENT
+#
+# The document FIDDLE_CONFIG names sets the login the App writes as, and the
+# author of every commit fiddle makes. <app-user-id> is the id of the App's bot
+# user: `gh api users/fiddle-ai%5Bbot%5D --jq .id`.
+#
+#   [github]
+#   account = "fiddle-ai[bot]"
+#
+#   [github.author]
+#   name = "fiddle-ai[bot]"
+#   email = "<app-user-id>+fiddle-ai[bot]@users.noreply.github.com"
+#
+# WHO STEERS
+#
+# The job runs only when the comment or review mentions @fiddle-ai, its author
+# is an OWNER, MEMBER or COLLABORATOR, and the sender is not a bot. fiddle
+# applies its own rule again to every comment and review it reads, so a wrong
+# `if` here cannot widen who steers: a mention in code, a fence or a quote, a
+# mention by a stranger and every bot's comment steer nothing.
+#
+# One run at a time per pull request. A run is never cancelled, because a
+# cancelled run can stop between its push and its answer. A later mention waits,
+# and the run that follows answers every mention not yet answered.
+#
+# The checkout is the default branch, so this workflow runs no code from the
+# pull request. fiddle refuses a pull request whose head is in a fork.
+#
+# FIDDLE_TAG and FIDDLE_SHA256 move together. FIDDLE_SHA256 is a placeholder no
+# digest matches, so a copy that was not edited fails on its first run and says
+# what to do.
+
+name: fiddle-ai
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fiddle-ai-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  fiddle:
+    if: >-
+      github.event.sender.type != 'Bot'
+      && (
+        (
+          github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && contains(github.event.comment.body, '@fiddle-ai')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+        )
+        || (
+          github.event_name == 'pull_request_review'
+          && contains(github.event.review.body, '@fiddle-ai')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association)
+        )
+        || (
+          github.event_name == 'pull_request_review_comment'
+          && contains(github.event.comment.body, '@fiddle-ai')
+          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Mint the fiddle-ai installation token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FIDDLE_AI_APP_ID }}
+          private-key: ${{ secrets.FIDDLE_AI_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+
+      - name: Download fiddle and verify it before it runs
+        env:
+          FIDDLE_REPO: peel/fiddle
+          FIDDLE_TAG: v0.1.0
+          FIDDLE_SHA256: replace-with-the-sha256-the-tag-publishes
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          base="https://github.com/${FIDDLE_REPO}/releases/download/${FIDDLE_TAG}"
+          curl -fsSL -o fiddle-linux-amd64 "${base}/fiddle-linux-amd64"
+          curl -fsSL -o fiddle-linux-amd64.sha256 "${base}/fiddle-linux-amd64.sha256"
+
+          published=$(cut -d ' ' -f 1 fiddle-linux-amd64.sha256)
+          measured=$(sha256sum fiddle-linux-amd64)
+          measured=${measured%% *}
+
+          if [ "$measured" != "$published" ]; then
+            echo "The download does not match the checksum beside it." >&2
+            echo "  measured  ${measured}" >&2
+            echo "  published ${published}" >&2
+            exit 1
+          fi
+          if [ "$measured" != "$FIDDLE_SHA256" ]; then
+            echo "${FIDDLE_TAG} publishes a binary this job does not pin." >&2
+            echo "  published ${measured}" >&2
+            echo "  pinned    ${FIDDLE_SHA256}" >&2
+            echo "Read the release. Then update FIDDLE_TAG and FIDDLE_SHA256 together." >&2
+            exit 1
+          fi
+
+          chmod +x fiddle-linux-amd64
+          echo "Verified ${FIDDLE_TAG} ${measured}"
+
+      - name: Run fiddle on the pull request
+        env:
+          FIDDLE_GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          FIDDLE_CONFIG: .github/fiddle-ai/deployment.toml
+          PULL_REQUEST: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          fiddle="${RUNNER_TEMP}/fiddle-linux-amd64"
+          "$fiddle" config check --config "$FIDDLE_CONFIG"
+          "$fiddle" run "pr:${{ github.repository }}#${PULL_REQUEST}" --config "$FIDDLE_CONFIG"
