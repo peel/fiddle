@@ -895,3 +895,96 @@ fn a_bot_comment_with_no_mention_naming_it_steers_nothing() {
     );
     assert!(world.github().replies().is_empty(), "nothing was answered");
 }
+
+#[test]
+fn a_second_run_steers_on_the_new_mention_alone_and_a_third_finds_nothing_new() {
+    let world = PullRequestWorld::serving(
+        a_change_named("Rename the helper")
+            .into_iter()
+            .chain(a_change_named("Add the test the second mention asked for"))
+            .collect(),
+    );
+    world
+        .github()
+        .a_member_commented(8_201, "@fiddle-ai rename the helper");
+
+    let first = world.run(REFERENCE);
+    assert_eq!(first.status.code(), Some(0), "{}", stderr_of(&first));
+    assert_eq!(
+        world.github().replies().len(),
+        1,
+        "the first mention is answered"
+    );
+    let after_the_first = world.model_prompts().len();
+
+    let published = world.github().head_of(HEAD_REF);
+    world.github().serves_the_pull_request(Pr::Open, &published);
+    world
+        .github()
+        .a_member_commented(8_202, "@fiddle-ai add a test for the empty slice");
+    world
+        .github()
+        .a_member_commented(8_203, "nice, the rename reads well");
+
+    let second = world.run(REFERENCE);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{} {}",
+        String::from_utf8_lossy(&second.stdout),
+        stderr_of(&second)
+    );
+    let briefs: Vec<String> = world
+        .model_prompts()
+        .into_iter()
+        .skip(after_the_first)
+        .collect();
+    assert_eq!(
+        briefs.len(),
+        3,
+        "the second run steers once: {}",
+        briefs.len()
+    );
+    assert!(
+        briefs
+            .iter()
+            .any(|it| it.contains("@fiddle-ai add a test for the empty slice")),
+        "the new mention is the direction"
+    );
+    assert!(
+        briefs
+            .iter()
+            .all(|it| !it.contains("nice, the rename reads well")),
+        "a member comment without the mention is not"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert!(
+        replies[1].contains("comments=8202 ")
+            && !replies[1].contains("8201")
+            && !replies[1].contains("8203"),
+        "the second answer names the new mention alone: {}",
+        replies[1]
+    );
+    assert!(
+        world
+            .github()
+            .message_of(&world.github().head_of(HEAD_REF))
+            .starts_with("Add the test the second mention asked for"),
+        "and the second change was published on the branch"
+    );
+
+    let before_the_third = world.model_prompts().len();
+    let third = world.run(REFERENCE);
+    assert_eq!(third.status.code(), Some(0), "{}", stderr_of(&third));
+    assert_eq!(
+        world.model_prompts().len(),
+        before_the_third,
+        "with nothing new, no model is asked anything"
+    );
+    assert_eq!(
+        world.github().replies().len(),
+        2,
+        "and nothing is answered again"
+    );
+}
