@@ -662,6 +662,39 @@ fn capability_help_of_the_binary() -> String {
         .join(" ")
 }
 
+fn schemes_the_binary_names(scenario: &Scenario) -> Vec<String> {
+    let out = scenario.inspect_raw_with(&[], "mystery:x");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "an unknown scheme is refused as input: stderr = {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rendered = String::from_utf8_lossy(&out.stderr)
+        .replace(['│', '×'], " ")
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    let (_, tail) = rendered.split_once("expected one of ").unwrap_or_else(|| {
+        panic!("the unknown-scheme refusal names the schemes the binary knows: {rendered}")
+    });
+    let listed = tail.split_once(" help:").map_or(tail, |(list, _)| list);
+    let schemes: Vec<String> = listed
+        .split(',')
+        .map(str::trim)
+        .filter(|scheme| !scheme.is_empty())
+        .map(str::to_string)
+        .collect();
+    for scheme in &schemes {
+        assert!(
+            scheme.chars().all(|c| c.is_ascii_lowercase()),
+            "`{scheme}` is not a scheme spelling, so the list was read off the refusal \
+             wrongly: {listed:?}"
+        );
+    }
+    schemes
+}
+
 #[test]
 fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_can_inspect() {
     let help = capability_help_of_the_binary();
@@ -677,7 +710,27 @@ fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_
         ("cve", "cve".to_string()),
         ("pr", "pr:acme/icecube#7".to_string()),
     ];
-    let mut compared = 0;
+    let pinned_without_inspecting = ["jira"];
+    let mut placed: Vec<String> = resolved
+        .iter()
+        .map(|(scheme, _)| scheme.to_string())
+        .chain(pinned_without_inspecting.map(str::to_string))
+        .collect();
+    placed.sort();
+    let mut known = schemes_the_binary_names(&scenario);
+    known.sort();
+    assert!(
+        known.len() > 1,
+        "the binary's scheme list was not read, so the comparison below holds nothing: \
+         {known:?}"
+    );
+    assert_eq!(
+        known, placed,
+        "every scheme the binary names is either inspected below or is `jira`, the one row \
+         pinned as a literal because an inspect over it needs a `[jira]` table this scenario \
+         does not write; a scheme in neither place has a default nobody compared"
+    );
+
     for (scheme, reference) in resolved {
         let payload = scenario.inspect_json(&reference);
         let id = payload["next_action"]["execute"]["capability_id"]
@@ -696,14 +749,7 @@ fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_
             "the binary resolves {row} with no flag, and its own `--capability` help \
              says: {help}"
         );
-        compared += 1;
     }
-    assert_eq!(
-        compared, 5,
-        "this lane compared {compared} schemes against the binary's derivation, and it \
-         is written to compare the five that inspect offline; `jira` is the sixth, and an \
-         inspect over it needs a `[jira]` table this scenario does not write"
-    );
 
     assert!(
         help.contains("`jira` -> `toil`"),
