@@ -686,9 +686,10 @@ impl PullRequestFacts {
             merged: body["merged"].as_bool().unwrap_or(false),
             head_ref: text(&body["head"]["ref"], "head ref")?,
             head_sha: text(&body["head"]["sha"], "head sha")?,
-            head_repo: body["head"]["repo"]["full_name"]
-                .as_str()
-                .map(str::to_string),
+            head_repo: match &body["head"]["repo"] {
+                serde_json::Value::Null => None,
+                repo => Some(text(&repo["full_name"], "head repository")?),
+            },
             base_ref: text(&body["base"]["ref"], "base ref")?,
         })
     }
@@ -824,6 +825,30 @@ mod facts {
                 .head_repo,
             Some("acme/icecube".to_string()),
             "and a head repository that is there is read, so absent is not the only answer"
+        );
+        let mut absent = complete();
+        absent["head"].as_object_mut().unwrap().remove("repo");
+        assert_eq!(
+            PullRequestFacts::from_json("p", &absent).unwrap().head_repo,
+            None,
+            "a head repository GitHub leaves out reads as absent, the same as one it reports as null"
+        );
+    }
+
+    #[test]
+    fn a_head_repository_with_no_full_name_is_malformed_rather_than_deleted() {
+        malformed_without(
+            |body| {
+                body["head"]["repo"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("full_name");
+            },
+            "head repository",
+        );
+        malformed_without(
+            |body| body["head"]["repo"]["full_name"] = serde_json::json!(42),
+            "head repository",
         );
     }
 

@@ -474,3 +474,69 @@ async fn a_garbled_response_is_a_lost_answer_and_not_a_refusal() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_pull_request_read_by_number_asks_for_that_pull_request_and_reads_its_facts() {
+    let dir = TempDir::new().unwrap();
+    let by_number = dir.path().join("pulls_by_number");
+    std::fs::create_dir_all(&by_number).unwrap();
+    std::fs::write(
+        by_number.join("7.json"),
+        serde_json::json!({
+            "number": 7, "title": "Bump openssl", "body": "covers 1 CVE", "state": "closed",
+            "merged": true,
+            "head": {"ref": "fiddle/ISP-263", "sha": "abc123", "repo": {"full_name": "fork/icecube"}},
+            "base": {"ref": "main"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let facts = fiddle_runtime::github::read_pull_request(
+        &gh(dir.path(), "ghp_whatever", PATIENT),
+        "acme/icecube",
+        7,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("a pull request the stub holds reads");
+
+    assert_eq!(
+        facts,
+        fiddle_runtime::github::PullRequestFacts {
+            number: 7,
+            title: "Bump openssl".into(),
+            body: "covers 1 CVE".into(),
+            open: false,
+            merged: true,
+            head_ref: "fiddle/ISP-263".into(),
+            head_sha: "abc123".into(),
+            head_repo: Some("fork/icecube".into()),
+            base_ref: "main".into(),
+        },
+        "every fact the stub served for the pull request is read back"
+    );
+
+    let requests: Vec<_> = std::fs::read_dir(dir.path().join("requests"))
+        .unwrap()
+        .collect();
+    assert_eq!(
+        requests.len(),
+        1,
+        "reading a pull request makes exactly one request"
+    );
+    let request = std::fs::read_to_string(dir.path().join("requests").join("0000.json")).unwrap();
+    let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+    let argv: Vec<&str> = request["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    let method = argv.iter().position(|arg| *arg == "--method").unwrap();
+    assert_eq!(
+        argv[method + 1..method + 3],
+        ["GET", "/repos/acme/icecube/pulls/7"],
+        "the read is a GET of the pull request at its number in the named repository, and argv was {argv:?}"
+    );
+}
