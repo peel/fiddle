@@ -609,13 +609,24 @@ where
                     .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED),
             })
             .collect();
+        let speaks = |it: &crate::github::Reviewed| {
+            !it.author_kind.is_a_bot() && crate::capability::entitled(&it.author_association)
+        };
+        let citing: Vec<String> = spoken
+            .iter()
+            .filter(|it| crate::capability::steers(it, &head) || speaks(it))
+            .map(|it| it.body.clone())
+            .collect();
         let said = spoken
             .iter()
             .filter(|it| !crate::capability::steers(it, &head))
+            .filter(|it| {
+                !it.author_kind.is_a_bot() || crate::capability::cited(&it.author.login, &citing)
+            })
             .map(|it| HumanSaid {
                 author: it.author.login.clone(),
                 body: it.body.clone(),
-                entitled: crate::capability::entitled(&it.author_association),
+                entitled: speaks(it),
             })
             .collect();
         Ok((asked, said))
@@ -660,8 +671,9 @@ where
                             || crate::capability::cited(&it.author.login, &citing)
                     })
                     .map(|it| HumanSaid {
+                        entitled: !it.author_kind.is_a_bot()
+                            && crate::capability::entitled(&it.author_association),
                         author: it.author.login,
-                        entitled: crate::capability::entitled(&it.author_association),
                         body: it.body,
                     })
                     .collect())

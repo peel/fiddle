@@ -726,7 +726,8 @@ where
                         .into_iter()
                         .map(|it| crate::capability::HumanSaid {
                             author: it.author.login,
-                            entitled: crate::capability::entitled(&it.author_association),
+                            entitled: !it.author_kind.is_a_bot()
+                                && crate::capability::entitled(&it.author_association),
                             body: it.body,
                         })
                         .collect(),
