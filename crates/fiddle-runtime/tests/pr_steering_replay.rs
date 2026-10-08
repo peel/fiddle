@@ -140,7 +140,10 @@ async fn the_bot_carrying_the_findings_is_admitted_because_an_entitled_human_nam
         "270 carries two conversation comments"
     );
 
-    let bots: Vec<&HumanResponse> = conversation.iter().filter(|it| it.is_bot).collect();
+    let bots: Vec<&HumanResponse> = conversation
+        .iter()
+        .filter(|it| it.author_kind.is_a_bot())
+        .collect();
     assert_eq!(
         bots.len(),
         1,
@@ -165,7 +168,7 @@ async fn the_bot_carrying_the_findings_is_admitted_because_an_entitled_human_nam
         .chain(
             conversation
                 .iter()
-                .filter(|it| !it.is_bot && entitled(&it.author_association))
+                .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
                 .map(|it| it.body.clone()),
         )
         .collect();

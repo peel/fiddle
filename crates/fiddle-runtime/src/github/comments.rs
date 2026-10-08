@@ -5,6 +5,31 @@ use tokio_util::sync::CancellationToken;
 
 const PER_PAGE: u32 = 100;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthorKind {
+    Person,
+    PersonThroughAnApp,
+    Bot,
+}
+
+impl AuthorKind {
+    fn of(user_type: &str, through_an_app: bool) -> Self {
+        match (user_type == "Bot", through_an_app) {
+            (true, _) => AuthorKind::Bot,
+            (false, true) => AuthorKind::PersonThroughAnApp,
+            (false, false) => AuthorKind::Person,
+        }
+    }
+
+    pub fn is_a_bot(self) -> bool {
+        self == AuthorKind::Bot
+    }
+
+    pub fn is_automated(self) -> bool {
+        self != AuthorKind::Person
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HumanResponse {
     pub comment: u64,
@@ -12,8 +37,7 @@ pub struct HumanResponse {
     pub body: String,
     pub created_at: String,
     pub updated_at: String,
-    pub is_bot: bool,
-    pub by_a_bot: bool,
+    pub author_kind: AuthorKind,
     pub author_association: String,
 }
 
@@ -40,8 +64,10 @@ impl From<ListedComment> for HumanResponse {
     fn from(listed: ListedComment) -> Self {
         Self {
             comment: listed.id,
-            is_bot: listed.user.kind == "Bot" || !listed.performed_via_github_app.is_null(),
-            by_a_bot: listed.user.kind == "Bot",
+            author_kind: AuthorKind::of(
+                &listed.user.kind,
+                !listed.performed_via_github_app.is_null(),
+            ),
             author: ActorRef {
                 login: listed.user.login,
                 id: listed.user.id,
@@ -63,7 +89,7 @@ pub struct Reviewed {
     pub state: String,
     pub body: String,
     pub commit_id: String,
-    pub by_a_bot: bool,
+    pub author_kind: AuthorKind,
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,7 +145,7 @@ pub async fn read_reviews(
         })?;
         reviews.extend(listed.into_iter().map(|it| Reviewed {
             id: it.id,
-            by_a_bot: it.user.kind == "Bot",
+            author_kind: AuthorKind::of(&it.user.kind, false),
             submitted_at: it.submitted_at,
             author: ActorRef {
                 login: it.user.login,

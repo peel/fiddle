@@ -1,4 +1,4 @@
-use fiddle_runtime::github::{read_conversation, read_one_comment, GhCli};
+use fiddle_runtime::github::{read_conversation, read_one_comment, AuthorKind, GhCli};
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -282,13 +282,13 @@ async fn a_response_carries_actor_identity_and_edit_state_from_the_listing_alone
     assert_eq!(r.created_at, "2026-08-10T00:00:00Z");
     assert_eq!(r.updated_at, "2026-08-10T00:00:01Z");
     assert_eq!(r.body, "approve");
-    assert!(!r.is_bot);
+    assert_eq!(r.author_kind, AuthorKind::Person);
     assert_eq!(r.author_association, "OWNER");
     assert_eq!(world.recorded_paths().len(), 1);
 }
 
 #[tokio::test]
-async fn a_bot_and_an_app_are_both_marked_not_a_person() {
+async fn a_bot_and_an_app_are_both_automated_and_only_the_bot_is_a_bot() {
     let world = World::new();
     world.page(
         "issue-comments",
@@ -306,8 +306,13 @@ async fn a_bot_and_an_app_are_both_marked_not_a_person() {
         .await
         .unwrap();
     assert!(
-        all.iter().all(|c| c.is_bot),
-        "both must be marked, got {all:?}"
+        all.iter().all(|c| c.author_kind.is_automated()),
+        "both are automated, which is what the decision protocol asks: {all:?}"
+    );
+    assert_eq!(
+        all.iter().map(|c| c.author_kind).collect::<Vec<_>>(),
+        vec![AuthorKind::Bot, AuthorKind::PersonThroughAnApp],
+        "and only the Bot account is a bot, so a person posting through an App can direct"
     );
 }
 

@@ -19,7 +19,7 @@ pub use checks::{
 };
 pub use cli::{GhCli, GhError, GhResponse};
 pub use comments::{
-    read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated,
+    read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated, AuthorKind,
     HumanResponse, Reviewed, APPROVED, CHANGES_REQUESTED,
 };
 pub use mentions::{directing, mentioning, mentions, with_the_bots_they_cite};

@@ -71,7 +71,7 @@ pub fn admitted(conversation: Vec<HumanResponse>, citing: &[String]) -> Vec<Huma
     conversation
         .into_iter()
         .filter(|it| !it.body.contains(FIDDLE_MARKER))
-        .filter(|it| match it.is_bot {
+        .filter(|it| match it.author_kind.is_a_bot() {
             true => cited(&it.author.login, citing),
             false => entitled(&it.author_association),
         })
@@ -95,8 +95,10 @@ mod tests {
             body: body.to_string(),
             created_at: "2026-09-11T12:05:40Z".to_string(),
             updated_at: "2026-09-11T12:05:40Z".to_string(),
-            is_bot,
-            by_a_bot: is_bot,
+            author_kind: match is_bot {
+                true => crate::github::AuthorKind::Bot,
+                false => crate::github::AuthorKind::Person,
+            },
             author_association: association.to_string(),
         }
     }

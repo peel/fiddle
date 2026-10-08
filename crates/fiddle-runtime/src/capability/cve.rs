@@ -398,14 +398,14 @@ impl Direction {
         citing.extend(
             conversation
                 .iter()
-                .filter(|it| !it.is_bot && entitled(&it.author_association))
+                .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
                 .map(|it| it.body.clone()),
         );
 
         said.extend(
             conversation
                 .into_iter()
-                .filter(|it| !it.is_bot || cited(&it.author.login, &citing))
+                .filter(|it| !it.author_kind.is_a_bot() || cited(&it.author.login, &citing))
                 .map(|it| HumanSaid {
                     author: it.author.login,
                     entitled: entitled(&it.author_association),
@@ -2089,7 +2089,7 @@ mod direction {
             state: crate::github::CHANGES_REQUESTED.to_string(),
             body: "bump the transitive one too".to_string(),
             commit_id: commit.to_string(),
-            by_a_bot: false,
+            author_kind: crate::github::AuthorKind::Person,
         };
 
         let head = "abc123";

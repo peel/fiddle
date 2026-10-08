@@ -142,11 +142,11 @@ pub fn directing(
     (
         reviews
             .into_iter()
-            .filter(|it| !it.by_a_bot && entitled(&it.author_association))
+            .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
             .collect(),
         conversation
             .into_iter()
-            .filter(|it| !it.by_a_bot && entitled(&it.author_association))
+            .filter(|it| !it.author_kind.is_a_bot() && entitled(&it.author_association))
             .collect(),
     )
 }
@@ -177,7 +177,7 @@ pub fn with_the_bots_they_cite(
             .into_iter()
             .filter(|it| {
                 directed_reviews.iter().any(|kept| kept.id == it.id)
-                    || (it.by_a_bot && named(&it.author.login))
+                    || (it.author_kind.is_a_bot() && named(&it.author.login))
             })
             .collect(),
         conversation
@@ -186,7 +186,7 @@ pub fn with_the_bots_they_cite(
                 directed_conversation
                     .iter()
                     .any(|kept| kept.comment == it.comment)
-                    || (it.by_a_bot && named(&it.author.login))
+                    || (it.author_kind.is_a_bot() && named(&it.author.login))
             })
             .collect(),
     )
@@ -195,6 +195,7 @@ pub fn with_the_bots_they_cite(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::AuthorKind;
     use fiddle_core::ActorRef;
 
     fn reviewed(id: u64, association: &str, body: &str) -> Reviewed {
@@ -209,7 +210,7 @@ mod tests {
             state: "COMMENTED".to_string(),
             body: body.to_string(),
             commit_id: "3acb655".to_string(),
-            by_a_bot: false,
+            author_kind: AuthorKind::Person,
         }
     }
 
@@ -223,8 +224,7 @@ mod tests {
             body: body.to_string(),
             created_at: "2026-10-08T12:00:00Z".to_string(),
             updated_at: "2026-10-08T12:00:00Z".to_string(),
-            is_bot: false,
-            by_a_bot: false,
+            author_kind: AuthorKind::Person,
             author_association: association.to_string(),
         }
     }
@@ -464,8 +464,7 @@ mod tests {
                 login: login.to_string(),
                 id: 2,
             },
-            is_bot: true,
-            by_a_bot: true,
+            author_kind: AuthorKind::Bot,
             ..said(id, "NONE", body)
         }
     }
@@ -546,7 +545,7 @@ mod tests {
                 login: "claude[bot]".to_string(),
                 id: 2,
             },
-            by_a_bot: true,
+            author_kind: AuthorKind::Bot,
             ..reviewed(1, "NONE", "1. rename it")
         };
         let named_like_a_bot = Reviewed {
@@ -561,7 +560,7 @@ mod tests {
                 login: "claude".to_string(),
                 id: 4,
             },
-            is_bot: true,
+            author_kind: AuthorKind::PersonThroughAnApp,
             ..said(3, "NONE", "a person posting through an App")
         };
         let (reviews, conversation) = cited_from(
@@ -589,12 +588,11 @@ mod tests {
     #[test]
     fn a_bot_never_directs_whatever_its_association() {
         let bot_review = Reviewed {
-            by_a_bot: true,
+            author_kind: AuthorKind::Bot,
             ..reviewed(1, "OWNER", "@fiddle-ai rename it")
         };
         let bot_comment = HumanResponse {
-            by_a_bot: true,
-            is_bot: true,
+            author_kind: AuthorKind::Bot,
             ..said(2, "MEMBER", "@fiddle-ai fix CI")
         };
         let (reviews, conversation) = directing(

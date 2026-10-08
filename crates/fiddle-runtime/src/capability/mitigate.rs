@@ -648,13 +648,17 @@ where
                     conversation
                         .iter()
                         .filter(|it| {
-                            !it.is_bot && crate::capability::entitled(&it.author_association)
+                            !it.author_kind.is_a_bot()
+                                && crate::capability::entitled(&it.author_association)
                         })
                         .map(|it| it.body.clone()),
                 );
                 Ok(conversation
                     .into_iter()
-                    .filter(|it| !it.is_bot || crate::capability::cited(&it.author.login, &citing))
+                    .filter(|it| {
+                        !it.author_kind.is_a_bot()
+                            || crate::capability::cited(&it.author.login, &citing)
+                    })
                     .map(|it| HumanSaid {
                         author: it.author.login,
                         entitled: crate::capability::entitled(&it.author_association),

@@ -187,6 +187,37 @@ impl PullRequestForge {
         std::fs::write(&page, serde_json::Value::Array(conversation).to_string()).unwrap();
     }
 
+    fn a_person_commented_through_an_app(&self, id: u64, association: &str, body: &str) {
+        let page = self.stub.join("issue-comments").join("page-1.json");
+        let mut conversation: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&page).unwrap()).unwrap();
+        conversation.push(serde_json::json!({
+            "id": id,
+            "body": body,
+            "created_at": "2026-10-08T12:00:00Z",
+            "updated_at": "2026-10-08T12:00:00Z",
+            "author_association": association,
+            "user": { "login": "spenes", "id": 88_285_759, "type": "User" },
+            "performed_via_github_app": { "id": 9, "slug": "slack" },
+        }));
+        std::fs::write(&page, serde_json::Value::Array(conversation).to_string()).unwrap();
+    }
+
+    fn said_in(&self, id: u64) -> String {
+        ["issue-comments", "reviews"]
+            .iter()
+            .flat_map(|collection| {
+                let page = self.stub.join(collection).join("page-1.json");
+                serde_json::from_str::<Vec<serde_json::Value>>(
+                    &std::fs::read_to_string(page).unwrap_or_else(|_| "[]".to_string()),
+                )
+                .unwrap_or_default()
+            })
+            .find(|it| it["id"].as_u64() == Some(id))
+            .and_then(|it| it["body"].as_str().map(str::to_string))
+            .unwrap_or_else(|| panic!("no comment or review {id} was written in this world"))
+    }
+
     fn a_member_commented(&self, id: u64, body: &str) {
         self.someone_commented(id, "spenes", "MEMBER", body);
     }
@@ -545,6 +576,7 @@ fn a_member_mention_steers_a_pull_request_run_onto_its_own_branch() {
         "the answer names the mention it answers and not the comment that asked nothing: {}",
         replies[0]
     );
+    every_answered_item_reached_the_brief(&world, &prompts, &replies[0]);
     assert!(
         world.jira_requests().is_empty(),
         "a pr: run reads and writes no tracker: {:?}",
@@ -904,6 +936,7 @@ fn a_bot_comment_an_entitled_mention_names_is_read_as_context_and_one_nobody_nam
         "the answer names the mention and not the bot comment it read: {}",
         replies[0]
     );
+    every_answered_item_reached_the_brief(&world, &prompts, &replies[0]);
 }
 
 #[test]
@@ -960,6 +993,7 @@ fn a_member_bots_mention_is_not_marked_answered_beside_a_persons() {
         "the answer names the person's mention and not the bot's, which directed nothing: {}",
         replies[0]
     );
+    every_answered_item_reached_the_brief(&world, &world.model_prompts(), &replies[0]);
 }
 
 #[test]
@@ -1032,6 +1066,7 @@ fn a_second_run_steers_on_the_new_mention_alone_and_a_third_finds_nothing_new() 
         "the second answer names the new mention alone: {}",
         replies[1]
     );
+    every_answered_item_reached_the_brief(&world, &briefs, &replies[1]);
     assert!(
         world
             .github()
@@ -1128,4 +1163,66 @@ fn an_answer_the_app_wrote_settles_the_next_run_only_when_the_account_is_configu
         unconfigured.replies, 2,
         "and answers it again, which is what the account rule prevents"
     );
+}
+
+fn marked(reply: &str) -> Vec<u64> {
+    let marker = reply
+        .lines()
+        .find(|line| line.contains("reviews=") && line.contains("comments="))
+        .unwrap_or_else(|| panic!("the reply carries no marker: {reply}"));
+    marker
+        .split_whitespace()
+        .filter_map(|field| field.split_once('='))
+        .filter(|(key, _)| *key == "reviews" || *key == "comments")
+        .flat_map(|(_, ids)| {
+            ids.split(',')
+                .filter(|id| !id.is_empty())
+                .map(|id| id.parse::<u64>().expect("a marker lists numbers"))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn every_answered_item_reached_the_brief(world: &PullRequestWorld, briefs: &[String], reply: &str) {
+    let answered = marked(reply);
+    assert!(
+        !answered.is_empty(),
+        "the reply answers something, so the check below is over at least one item: {reply}"
+    );
+    for id in answered {
+        let said = world.github().said_in(id);
+        assert!(
+            briefs.iter().any(|brief| brief.contains(&said)),
+            "{id} is named in the answer, so what it said reached the brief: {said:?}"
+        );
+    }
+}
+
+#[test]
+fn a_persons_mention_posted_through_an_app_reaches_the_brief_and_is_answered() {
+    let world = PullRequestWorld::serving(a_change_named("Rename the helper"));
+    world.github().a_person_commented_through_an_app(
+        8_401,
+        "OWNER",
+        "@fiddle-ai rename the helper please",
+    );
+
+    let run = world.run(REFERENCE);
+
+    assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    let prompts = world.model_prompts();
+    assert!(
+        prompts
+            .iter()
+            .any(|it| it.contains("@fiddle-ai rename the helper please")),
+        "a person who posts through an App is a person, and their mention is the direction"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].contains("comments=8401 "),
+        "and it is answered: {}",
+        replies[0]
+    );
+    every_answered_item_reached_the_brief(&world, &prompts, &replies[0]);
 }
