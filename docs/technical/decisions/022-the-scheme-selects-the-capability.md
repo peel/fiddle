@@ -1,7 +1,7 @@
 # 022 — An absent `--capability` resolves through the scheme
 
 Status: accepted
-Cites: Selection::resolve, Selection::default_for, Selection::Toil, selected_workflow, SelectedWorkflow, build_capability, InvocationScheme, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_reference_that_is_not_cve_still_selects_the_deterministic_capability, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_run_over_a_trackerless_reference_is_not_a_failed_run
+Cites: Selection::resolve, Selection::default_for, Selection::Toil, ToilOverAPullRequest, crates/fiddle-acceptance/tests/pull_request.rs::toil_over_a_pull_request_is_refused_and_checks_over_one_runs, selected_workflow, SelectedWorkflow, build_capability, InvocationScheme, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_reference_that_is_not_cve_still_selects_the_deterministic_capability, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_run_over_a_trackerless_reference_is_not_a_failed_run
 
 It replaces an invariant nobody had written down: absent means `stub_mark`. Two call sites in `fiddle-cli` implemented it, and every capability ADR since M0 assumed it.
 
@@ -130,3 +130,15 @@ request before it starts, refuses one on another repository, one that is closed
 or merged, and one whose head is in a fork, and publishes onto the pull
 request's own branch. The `jira` row is unchanged, and the rule is unchanged:
 absent means what the scheme implies.
+
+One override is refused. `--capability toil` over a `pr` reference exits 2,
+before the configuration, any port or the forge is reached, with
+`ToilOverAPullRequest`. `toil` works a tracker ticket: it qualifies the ticket,
+opens a `fiddle/<KEY>` branch and a pull request, and links that pull request
+onto the ticket. A `pr` reference names a pull request and no ticket, so that
+run would open a second pull request beside the one it names and then fail at
+the link. The refusal says so and names `--capability pull_request` and
+`--capability checks`, which both work a pull request and stay allowed.
+`crates/fiddle-acceptance/tests/pull_request.rs::toil_over_a_pull_request_is_refused_and_checks_over_one_runs`
+holds the row. Every other value of `--capability` stays an override for every
+scheme.
