@@ -151,6 +151,47 @@ pub fn directing(
     )
 }
 
+fn is_the_handle(login: &str, handle: &str) -> bool {
+    login
+        .strip_suffix("[bot]")
+        .unwrap_or(login)
+        .eq_ignore_ascii_case(handle)
+}
+
+pub fn with_the_bots_they_cite(
+    reviews: Vec<Reviewed>,
+    conversation: Vec<HumanResponse>,
+    handle: &str,
+) -> (Vec<Reviewed>, Vec<HumanResponse>) {
+    let (directed_reviews, directed_conversation) =
+        directing(reviews.clone(), conversation.clone(), handle);
+    let citing: Vec<String> = directed_reviews
+        .iter()
+        .map(|it| it.body.clone())
+        .chain(directed_conversation.iter().map(|it| it.body.clone()))
+        .collect();
+    let named =
+        |login: &str| !is_the_handle(login, handle) && crate::capability::cited(login, &citing);
+    (
+        reviews
+            .into_iter()
+            .filter(|it| {
+                directed_reviews.iter().any(|kept| kept.id == it.id)
+                    || (it.author.login.ends_with("[bot]") && named(&it.author.login))
+            })
+            .collect(),
+        conversation
+            .into_iter()
+            .filter(|it| {
+                directed_conversation
+                    .iter()
+                    .any(|kept| kept.comment == it.comment)
+                    || (it.is_bot && named(&it.author.login))
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +452,72 @@ mod tests {
             vec![5],
             "and so does a comment, so a stranger's mention and a member's plain comment \
              are both left out while the member's mention is kept"
+        );
+    }
+
+    fn by_a_bot(id: u64, login: &str, body: &str) -> HumanResponse {
+        HumanResponse {
+            comment: id,
+            author: ActorRef {
+                login: login.to_string(),
+                id: 2,
+            },
+            is_bot: true,
+            ..said(id, "NONE", body)
+        }
+    }
+
+    #[test]
+    fn a_bot_comment_an_entitled_mention_names_is_read_and_one_nobody_names_is_not() {
+        let (_, conversation) = with_the_bots_they_cite(
+            vec![],
+            vec![
+                by_a_bot(1, "claude[bot]", "1. rename it 2. add a test"),
+                by_a_bot(2, "codecov[bot]", "coverage fell"),
+                said(3, "MEMBER", "@fiddle-ai do Claude's comments 1 and 2"),
+                said(4, "NONE", "@fiddle-ai and codecov's too"),
+            ],
+            "fiddle-ai",
+        );
+        assert_eq!(
+            conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![1, 3],
+            "the member's mention is kept with the bot it names, in the order written; the \
+             bot only a stranger names, and the stranger, are left out"
+        );
+    }
+
+    #[test]
+    fn a_bot_comment_with_no_mention_naming_it_is_not_read() {
+        let (reviews, conversation) = with_the_bots_they_cite(
+            vec![],
+            vec![
+                by_a_bot(1, "claude[bot]", "1. rename it"),
+                said(2, "MEMBER", "Claude's comment 1 looks right"),
+            ],
+            "fiddle-ai",
+        );
+        assert!(
+            reviews.is_empty() && conversation.is_empty(),
+            "a bot steers nothing by itself, and a member who names it without the mention \
+             directs nothing: {conversation:?}"
+        );
+    }
+
+    #[test]
+    fn fiddles_own_account_is_never_read_as_a_cited_bot() {
+        let (_, conversation) = with_the_bots_they_cite(
+            vec![],
+            vec![
+                by_a_bot(1, "fiddle-ai[bot]", "an earlier note"),
+                said(2, "MEMBER", "@fiddle-ai do it again"),
+            ],
+            "fiddle-ai",
+        );
+        assert_eq!(
+            conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![2],
+            "every mention names the handle, so the handle's own bot is not cited by it"
         );
     }
 }

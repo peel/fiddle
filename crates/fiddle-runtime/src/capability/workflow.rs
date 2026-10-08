@@ -672,15 +672,22 @@ where
         let account = self.params.account.as_deref();
         let earlier = crate::github::already_answered(&reviews, &conversation, account);
         let (reviews, conversation) = crate::github::unanswered(reviews, conversation, account);
-        let (reviews, conversation) = match self.params.mention.as_deref() {
-            Some(handle) => crate::github::directing(reviews, conversation, handle),
-            None => (reviews, conversation),
-        };
-        let answering = crate::github::Answered::of(&reviews, &conversation);
-        let dated = reviews
+        let ((directed_reviews, directed_conversation), (reviews, conversation)) =
+            match self.params.mention.as_deref() {
+                Some(handle) => (
+                    crate::github::directing(reviews.clone(), conversation.clone(), handle),
+                    crate::github::with_the_bots_they_cite(reviews, conversation, handle),
+                ),
+                None => (
+                    (reviews.clone(), conversation.clone()),
+                    (reviews, conversation),
+                ),
+            };
+        let answering = crate::github::Answered::of(&directed_reviews, &directed_conversation);
+        let dated = directed_reviews
             .iter()
             .filter_map(|it| it.submitted_at.clone())
-            .chain(conversation.iter().map(|it| it.created_at.clone()))
+            .chain(directed_conversation.iter().map(|it| it.created_at.clone()))
             .filter(|at| !at.trim().is_empty())
             .max();
         let mut direction =

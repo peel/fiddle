@@ -22,7 +22,7 @@ pub use comments::{
     read_conversation, read_line_comments, read_one_comment, read_reviews, Annotated,
     HumanResponse, Reviewed, APPROVED, CHANGES_REQUESTED,
 };
-pub use mentions::{directing, mentioning, mentions};
+pub use mentions::{directing, mentioning, mentions, with_the_bots_they_cite};
 pub use pulls::{
     find_labelled_pull_request, open_pull_request_on, pull_request_body_target,
     pull_request_target, read_pull_request, read_pull_request_body, EnsurePullRequest,

@@ -150,6 +150,22 @@ impl PullRequestForge {
         std::fs::write(&page, serde_json::Value::Array(conversation).to_string()).unwrap();
     }
 
+    fn a_bot_commented(&self, id: u64, login: &str, body: &str) {
+        let page = self.stub.join("issue-comments").join("page-1.json");
+        let mut conversation: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&page).unwrap()).unwrap();
+        conversation.push(serde_json::json!({
+            "id": id,
+            "body": body,
+            "created_at": "2026-10-08T11:00:00Z",
+            "updated_at": "2026-10-08T11:00:00Z",
+            "author_association": "NONE",
+            "user": { "login": login, "id": id, "type": "Bot" },
+            "performed_via_github_app": { "slug": login.trim_end_matches("[bot]") },
+        }));
+        std::fs::write(&page, serde_json::Value::Array(conversation).to_string()).unwrap();
+    }
+
     fn a_member_commented(&self, id: u64, body: &str) {
         self.someone_commented(id, "spenes", "MEMBER", body);
     }
@@ -802,4 +818,79 @@ fn toil_over_a_pull_request_is_refused_and_checks_over_one_runs() {
             > 0,
         "checks over a pr: reference reads the pull request"
     );
+}
+
+const CLAUDES_FIRST_POINT: &str = "1. the helper's name hides that it subtracts one";
+
+const CLAUDES_SECOND_POINT: &str = "2. last_index panics on an empty slice";
+
+const A_BOT_NOBODY_NAMES: &str = "coverage fell by a sliver nobody asked about";
+
+fn a_change_named(title: &str) -> Vec<support::Reply> {
+    an_accepted_change_described(
+        &format!("{REPAIRED}// {title}\n"),
+        [
+            title,
+            "Previously the helper had its old name.",
+            "Now it has the name the mention asked for.",
+        ],
+    )
+}
+
+#[test]
+fn a_bot_comment_an_entitled_mention_names_is_read_as_context_and_one_nobody_names_is_not() {
+    let world = PullRequestWorld::serving(a_change_named("Do the two points Claude raised"));
+    world.github().a_bot_commented(
+        8_101,
+        "claude[bot]",
+        &format!("{CLAUDES_FIRST_POINT}\n{CLAUDES_SECOND_POINT}"),
+    );
+    world
+        .github()
+        .a_bot_commented(8_102, "codecov[bot]", A_BOT_NOBODY_NAMES);
+    world
+        .github()
+        .a_member_commented(8_103, "@fiddle-ai do Claude's comments 1 and 2");
+
+    let run = world.run(REFERENCE);
+
+    assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    let prompts = world.model_prompts();
+    assert!(
+        prompts.iter().any(|it| it.contains(CLAUDES_FIRST_POINT))
+            && prompts.iter().any(|it| it.contains(CLAUDES_SECOND_POINT)),
+        "the bot comment the mention names reaches the agent's brief"
+    );
+    assert!(
+        prompts.iter().all(|it| !it.contains(A_BOT_NOBODY_NAMES)),
+        "a bot comment nobody names does not"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].contains("comments=8103 ")
+            && !replies[0].contains("8101")
+            && !replies[0].contains("8102"),
+        "the answer names the mention and not the bot comment it read: {}",
+        replies[0]
+    );
+}
+
+#[test]
+fn a_bot_comment_with_no_mention_naming_it_steers_nothing() {
+    let world = PullRequestWorld::serving(vec![]);
+    world.github().a_bot_commented(
+        8_101,
+        "claude[bot]",
+        &format!("@fiddle-ai {CLAUDES_FIRST_POINT}"),
+    );
+
+    let run = world.run(REFERENCE);
+
+    assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    assert!(
+        world.model_prompts().is_empty(),
+        "a bot steers nothing by itself, even when it mentions the handle"
+    );
+    assert!(world.github().replies().is_empty(), "nothing was answered");
 }
