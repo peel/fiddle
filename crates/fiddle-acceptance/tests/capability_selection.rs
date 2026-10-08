@@ -710,6 +710,11 @@ fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_
          flag and reaches the toil gate: {help}"
     );
     assert!(
+        help.contains("`pr` -> `toil`"),
+        "the sixth scheme cannot be inspected offline either, since its default is the same \
+         workflow document, so this lane pins its row as a literal: {help}"
+    );
+    assert!(
         !help.contains("every other scheme marks"),
         "and the claim that stood here while the epic routed `jira` to `toil` is gone, so \
          a reverted help text cannot pass: {help}"

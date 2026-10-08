@@ -203,7 +203,7 @@ impl Selection {
     fn default_for(scheme: InvocationScheme) -> Self {
         match scheme {
             InvocationScheme::Cve => Selection::Mitigate,
-            InvocationScheme::Jira => Selection::Toil,
+            InvocationScheme::Jira | InvocationScheme::Pr => Selection::Toil,
             InvocationScheme::Beans | InvocationScheme::Scheduled | InvocationScheme::Scanner => {
                 Selection::Mark
             }
@@ -455,6 +455,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "fiddle::invocation_ref::illegal_value_character"
             }
+            InvocationRefError::MalformedPullRequest(_) => {
+                "fiddle::invocation_ref::malformed_pull_request"
+            }
         }))
     }
 
@@ -483,6 +486,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             },
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`".to_string()
+            }
+            InvocationRefError::MalformedPullRequest(_) => {
+                "a `pr` reference names one pull request by its repository and number, as in `pr:snowplow-incubator/snowplow-identities#275`; the owner and the repository are written with ASCII letters, digits, `-`, `_` and `.`, and the number is a positive decimal with no leading zero".to_string()
             }
         };
         Some(Box::new(help))
@@ -573,7 +579,8 @@ fn port_kind_for(scheme: InvocationScheme) -> PortKind {
         InvocationScheme::Beans
         | InvocationScheme::Scheduled
         | InvocationScheme::Scanner
-        | InvocationScheme::Cve => PortKind::Stub,
+        | InvocationScheme::Cve
+        | InvocationScheme::Pr => PortKind::Stub,
     }
 }
 
@@ -1890,6 +1897,31 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_request_reference_that_names_no_pull_request_is_refused_as_input_with_its_own_shape()
+    {
+        let refused = match reference_from("pr:acme/icecube") {
+            Err(CliError::InvocationRef(refused)) => refused,
+            other => panic!("`pr:acme/icecube` names no pull request number, got {other:?}"),
+        };
+        assert_eq!(
+            miette::Diagnostic::code(&refused).map(|code| code.to_string()),
+            Some("fiddle::invocation_ref::malformed_pull_request".to_string())
+        );
+        let help = miette::Diagnostic::help(&refused)
+            .map(|help| help.to_string())
+            .unwrap_or_default();
+        assert!(
+            help.contains("pr:snowplow-incubator/snowplow-identities#275"),
+            "the advice shows the shape a `pr` reference takes, got {help}"
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::InvocationRef(refused))),
+            EXIT_INVALID_INPUT,
+            "a reference this build could not use is input no retry corrects"
+        );
+    }
+
+    #[test]
     fn a_ticket_that_could_not_be_read_and_a_reference_that_could_not_be_parsed_exit_apart() {
         let unread = Termination::Rejected(CliError::TicketUnread(TicketUnread {
             work_item: "ISP-42".into(),
@@ -2489,12 +2521,13 @@ mod tests {
 
     #[test]
     fn every_scheme_names_the_port_it_uses_and_none_falls_through_to_the_stub() {
-        let pinned: [(InvocationScheme, PortKind); 5] = [
+        let pinned: [(InvocationScheme, PortKind); 6] = [
             (InvocationScheme::Beans, PortKind::Stub),
             (InvocationScheme::Jira, PortKind::Jira),
             (InvocationScheme::Scheduled, PortKind::Stub),
             (InvocationScheme::Scanner, PortKind::Stub),
             (InvocationScheme::Cve, PortKind::Stub),
+            (InvocationScheme::Pr, PortKind::Stub),
         ];
         for (scheme, expected) in pinned {
             assert_eq!(
@@ -2659,6 +2692,7 @@ mod tests {
             InvocationScheme::Scheduled => "scheduled:nightly",
             InvocationScheme::Scanner => "scanner:s-1",
             InvocationScheme::Cve => "cve",
+            InvocationScheme::Pr => "pr:acme/icecube#7",
         };
         let parsed: InvocationRef = spelled.parse().unwrap_or_else(|error| {
             panic!("`{spelled}` is a reference this build parses: {error:?}")

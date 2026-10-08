@@ -29,7 +29,8 @@ pub use finding::{
     SeveritiesError, Severity,
 };
 pub use identity::{
-    AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
+    AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, PullRequestRef,
+    WorkRef,
 };
 pub use observation::{
     ChangeSetState, Observation, ProjectedStatus, Publication, ReviewState, SourceRef,

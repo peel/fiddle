@@ -20,6 +20,7 @@ Resolve an absent `--capability` through the reference's scheme. Keep `--capabil
 | `beans` | `stub_mark` |
 | `scheduled` | `stub_mark` |
 | `scanner` | `stub_mark` |
+| `pr` | `toil` — see the 2026-10-08 amendment |
 
 ## Consequences
 
@@ -112,3 +113,10 @@ still gets named whenever the document is readable: with `workflows/toil.toml`
 present, an absent `FIDDLE_GITHUB_TOKEN` reports `fiddle::config::credential_absent`
 naming that variable, and an absent `JIRA_API_TOKEN` reports the same code naming
 that one.
+
+## Amended 2026-10-08: the `pr` scheme
+
+The `pr` scheme was added, and the table in the Decision above has a `pr` row. An
+absent `--capability` over a `pr` reference selects `toil`, the same row as `jira`,
+until the pull-request capability is registered. Every other row is unchanged, and
+the rule is unchanged: absent means what the scheme implies.

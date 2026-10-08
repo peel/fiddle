@@ -37,6 +37,11 @@ pub enum Addressed<'a> {
 
 impl<'a> Addressed<'a> {
     pub fn of(reference: &'a fiddle_core::InvocationRef) -> Self {
+        if reference.scheme() == fiddle_core::InvocationScheme::Pr {
+            return Addressed::NoWorkItem {
+                change_set: reference.record_key(),
+            };
+        }
         match reference.value() {
             "" => Addressed::NoWorkItem {
                 change_set: reference.scheme().as_str(),
@@ -704,6 +709,45 @@ mod tests {
         .await
         .bundle
         .observations
+    }
+
+    #[tokio::test]
+    async fn a_pull_request_run_consults_no_tracker_and_reads_the_change_record_its_record_key_names(
+    ) {
+        let reference: InvocationRef = "pr:acme/icecube#7".parse().unwrap();
+        let addressed = Addressed::of(&reference);
+        assert_eq!(
+            addressed,
+            Addressed::NoWorkItem {
+                change_set: "acme-icecube-7"
+            },
+            "a pull request is the thread of the run and not a ticket, so it addresses no work \
+             item and keys its change record by a name that holds no `/` or `#`"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let view = observe(
+            &StubWorkItemPort::new(dir.path()),
+            &StubChangePort::new(dir.path()),
+            addressed,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            matches!(view.work_item, Observation::NotApplicable { .. }),
+            "no tracker is consulted for a pull request run: {:?}",
+            view.work_item
+        );
+        match view.changes {
+            Observation::Available { source, .. } => assert_eq!(
+                source.0, "stub:changes/acme-icecube-7.json",
+                "the change record of `pr:acme/icecube#7` is read from one file under `changes`"
+            ),
+            other => panic!(
+                "an empty world answers that no change is recorded, and says where it looked, \
+                 got {other:?}"
+            ),
+        }
     }
 
     #[tokio::test]
