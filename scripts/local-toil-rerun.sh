@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-
-cd "$(dirname "$0")/.." || exit 2
+LC_ALL=C
 
 CONFIG=""
 REFERENCE=""
@@ -9,13 +8,16 @@ FORGET=0
 
 usage() {
   cat <<'USAGE'
-usage: local-toil-rerun.sh --config <deployment.toml> --ref <jira:KEY> [--forget]
+usage: local-toil-rerun.sh --config <deployment.toml> --ref <jira:KEY | pr:OWNER/REPO#N> [--forget]
 
 A runner starts with an empty filesystem, so it holds no record that this work
 completed and it runs the workflow again. A developer's machine keeps that
 record, so a second run here reports `completed` and never reaches a step. This
 script shows that record and, with --forget, removes it, which is the only
 difference between a local rerun and a runner's.
+
+Run it from the directory you run fiddle from. fiddle resolves a relative
+[stub] root against its working directory (ADR 092), and so does this script.
 
 It prints the run for you to type. It does not run it: a toil run writes to a
 repository and a ticket, and that is yours to authorise.
@@ -36,13 +38,22 @@ fail() { echo "local-toil-rerun: FAIL: $*" >&2; exit 1; }
 
 [ -n "$CONFIG" ] || fail "--config is required, and the completion record lives under the [stub] root that document names"
 [ -f "$CONFIG" ] || fail "$CONFIG does not exist"
-[ -n "$REFERENCE" ] || fail "--ref is required, for example jira:ISP-263"
+[ -n "$REFERENCE" ] || fail "--ref is required, for example jira:ISP-263 or pr:acme/icecube#7"
+
+PR_FORM='^pr:([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)#([1-9][0-9]*)$'
 
 case "$REFERENCE" in
-  jira:*) TICKET="${REFERENCE#jira:}" ;;
-  *) fail "--ref must name a jira ticket, and this one is '$REFERENCE'" ;;
+  jira:*)
+    TICKET="${REFERENCE#jira:}"
+    [ -n "$TICKET" ] || fail "'$REFERENCE' names no ticket"
+    ;;
+  pr:*)
+    [[ "$REFERENCE" =~ $PR_FORM ]] \
+      || fail "'$REFERENCE' does not name a pull request; write pr:<owner>/<repo>#<number>, where owner and repo hold ASCII letters, digits, '-', '_' and '.', and the number has no leading zero"
+    TICKET="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}+${BASH_REMATCH[3]}"
+    ;;
+  *) fail "--ref must name a jira ticket or a pull request, and this one is '$REFERENCE'" ;;
 esac
-[ -n "$TICKET" ] || fail "'$REFERENCE' names no ticket"
 
 ROOT=$(awk '
   /^[[:space:]]*\[/ { in_stub = ($0 ~ /^[[:space:]]*\[stub\][[:space:]]*$/) ; next }
@@ -59,7 +70,8 @@ ROOT=$(awk '
 
 case "$ROOT" in
   /*) ;;
-  *) ROOT="$(cd "$(dirname "$CONFIG")" && pwd)/$ROOT" ;;
+  *) HERE="$(pwd)" || fail "the working directory cannot be read, so the relative root '$ROOT' cannot be resolved"
+     ROOT="$HERE/$ROOT" ;;
 esac
 
 RECORD="$ROOT/changes/$TICKET.json"
@@ -80,8 +92,8 @@ else
 fi
 
 echo
-echo "local-toil-rerun: type this yourself; it writes to a repository and a ticket"
-echo "  FIDDLE_TRANSCRIPT=1 fiddle run $REFERENCE --config $CONFIG"
+echo "local-toil-rerun: type this yourself, from this directory; it writes to a repository and a ticket or a pull request"
+echo "  FIDDLE_TRANSCRIPT=1 fiddle run \"$REFERENCE\" --config $CONFIG"
 echo
 echo "local-toil-rerun: the run reads the direction on its own pull request first."
 echo "local-toil-rerun: nothing asked for means it completes without paying for the agent."
