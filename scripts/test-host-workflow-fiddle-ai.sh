@@ -278,7 +278,7 @@ else:
             refused += 1
         else:
             escaped.append(name)
-    print(f"{NAME}: {refused} of {total} mutants refused")
+    print(f"{NAME}: {refused} of {total} mutants change the template's bytes, so the byte pin refuses each")
 
 for name in escaped:
     print(f"{NAME}: FAIL: the mutant '{name}' passed every check", file=sys.stderr)
@@ -289,5 +289,5 @@ if drifted:
 if failures or escaped:
     print(f"{NAME}: FAIL", file=sys.stderr)
     sys.exit(1)
-print(f"{NAME}: PASS (the template equals the reviewed copy, {refused} of {total} mutants refused)")
+print(f"{NAME}: PASS (the template equals the reviewed copy; {refused} of {total} mutants refused by the byte pin alone)")
 PYTHON
