@@ -333,6 +333,21 @@ impl PullRequestWorld {
             .unwrap()
     }
 
+    fn run_capability(&self, invocation_ref: &str, capability: &str) -> std::process::Output {
+        let mut command = self.scenario.spawnable_run_command(invocation_ref);
+        for name in support::CREDENTIAL_VARS {
+            command.env_remove(name);
+        }
+        command
+            .args(["--capability", capability, "--json"])
+            .env(MODEL_CREDENTIAL, MODEL_SENTINEL)
+            .env(FORGE_CREDENTIAL, FORGE_SENTINEL)
+            .env(JIRA_USER, "nobody@example.com")
+            .env(JIRA_TOKEN, JIRA_SENTINEL)
+            .output()
+            .unwrap()
+    }
+
     fn inspect(&self, invocation_ref: &str) -> std::process::Output {
         let mut command = std::process::Command::new(support::fiddle_binary());
         command.args([
@@ -740,5 +755,51 @@ fn a_reference_and_a_head_repository_spelled_in_another_case_are_the_served_repo
         Some(AN_INVALID_INPUT_EXIT),
         "while a name that differs by more than case is still a fork: {}",
         stderr_of(&run)
+    );
+}
+
+#[test]
+fn toil_over_a_pull_request_is_refused_and_checks_over_one_runs() {
+    let world = PullRequestWorld::serving(vec![]);
+
+    let run = world.run_capability(REFERENCE, "toil");
+    let stderr = stderr_of(&run);
+
+    assert_eq!(
+        run.status.code(),
+        Some(AN_INVALID_INPUT_EXIT),
+        "toil has no ticket to work on a pr: reference: {stderr}"
+    );
+    assert!(
+        stderr.contains("tracker ticket")
+            && stderr.contains("names a pull request")
+            && stderr.contains("--capability pull_request")
+            && stderr.contains("--capability checks"),
+        "the refusal says why and names the capabilities that work a pull request: {stderr}"
+    );
+    assert_eq!(
+        world.github().requests_naming("/repos/"),
+        0,
+        "the refusal comes before any forge request"
+    );
+    assert!(
+        world.jira_requests().is_empty(),
+        "and before any tracker request: {:?}",
+        world.jira_requests()
+    );
+
+    let run = world.run_capability(REFERENCE, "checks");
+    assert_eq!(
+        run.status.code(),
+        Some(0),
+        "checks over the same reference runs, and with nothing asked it completes: {}",
+        stderr_of(&run)
+    );
+    assert!(
+        world
+            .github()
+            .requests_naming("/repos/acme/icecube/pulls/7")
+            > 0,
+        "checks over a pr: reference reads the pull request"
     );
 }

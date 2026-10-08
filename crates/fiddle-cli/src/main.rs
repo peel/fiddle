@@ -134,6 +134,10 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     PullRequestUnread(#[from] PullRequestUnread),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ToilOverAPullRequest(#[from] ToilOverAPullRequest),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -599,7 +603,8 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::WorkflowUnrunnable(_)
             | CliError::Ineligible(_)
             | CliError::ForeignPullRequest(_)
-            | CliError::PullRequestRefused(_),
+            | CliError::PullRequestRefused(_)
+            | CliError::ToilOverAPullRequest(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -817,6 +822,34 @@ struct PullRequestRefused {
 struct PullRequestUnread {
     pull_request: String,
     reason: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error(
+    "`toil` works a tracker ticket, and `{reference}` names a pull request, so there is no \
+     ticket for it to work"
+)]
+#[diagnostic(
+    code(fiddle::capability::toil_over_a_pull_request),
+    help(
+        "run `{reference}` with `--capability pull_request`, which is what it selects with \
+         no flag, or with `--capability checks`"
+    )
+)]
+struct ToilOverAPullRequest {
+    reference: String,
+}
+
+fn toil_works_no_pull_request(
+    selection: Selection,
+    reference: &InvocationRef,
+) -> Result<(), ToilOverAPullRequest> {
+    match (selection, reference.scheme()) {
+        (Selection::Toil, InvocationScheme::Pr) => Err(ToilOverAPullRequest {
+            reference: reference.as_str().to_string(),
+        }),
+        _ => Ok(()),
+    }
 }
 
 fn served_pull_request(
@@ -1891,6 +1924,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
+            toil_works_no_pull_request(selection, &reference)?;
             let config = config::load(&cli.config)?;
             let named = served_pull_request(&config, &cli.config, selection, &reference)?;
             let document = selected_workflow(selection, &cli.config)?;
@@ -2241,6 +2275,28 @@ mod tests {
             Selection::default_for(InvocationScheme::Jira),
             Selection::Toil,
             "while a `jira` reference still runs toil"
+        );
+    }
+
+    #[test]
+    fn toil_is_refused_over_a_pull_request_and_checks_and_pull_request_are_not() {
+        let pr: InvocationRef = "pr:acme/icecube#7".parse().unwrap();
+        let jira: InvocationRef = "jira:IDENT-1".parse().unwrap();
+        let refused = toil_works_no_pull_request(Selection::Toil, &pr)
+            .expect_err("toil over a pull request has no ticket to work");
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(refused.into())),
+            EXIT_INVALID_INPUT
+        );
+        for selection in [Selection::Checks, Selection::PullRequest] {
+            assert!(
+                toil_works_no_pull_request(selection, &pr).is_ok(),
+                "{selection:?} works a pull request"
+            );
+        }
+        assert!(
+            toil_works_no_pull_request(Selection::Toil, &jira).is_ok(),
+            "and toil still works a ticket"
         );
     }
 
