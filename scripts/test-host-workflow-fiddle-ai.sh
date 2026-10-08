@@ -87,9 +87,11 @@ holds "from the App id secret" '^          app-id: \$\{\{ secrets\.[A-Z_]+ \}\}$
 holds "and the private key secret" '^          private-key: \$\{\{ secrets\.[A-Z_]+ \}\}$' "$BODY"
 holds "fiddle runs with the minted token" '^          FIDDLE_GITHUB_TOKEN: \$\{\{ steps\.app\.outputs\.token \}\}$' "$BODY"
 
-echo "it checks out without persisting a credential"
+echo "it checks out the default branch without persisting a credential"
 counts "every checkout persists no credential" "$(printf '%s\n' "$BODY" | grep -cE 'uses: actions/checkout@')" '^          persist-credentials: false$' "$BODY"
 holds "there is a checkout" 'uses: actions/checkout@v[0-9]+$' "$BODY"
+counts "every checkout names the default branch, so no event checks out the pull request's merge ref" "$(printf '%s\n' "$BODY" | grep -cE 'uses: actions/checkout@')" '^          ref: \$\{\{ github\.event\.repository\.default_branch \}\}$' "$BODY"
+counts "and no step names another ref" 1 '^[[:space:]]+ref:' "$BODY"
 
 echo "it runs a pr: reference, so fiddle applies its own rule again"
 holds "the run names the pull request" '"\$fiddle" run "pr:\$\{\{ github\.repository \}\}#\$\{PULL_REQUEST\}"' "$BODY"

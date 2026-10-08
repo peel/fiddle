@@ -893,7 +893,7 @@ fails on its first run and says so.
 | `issue_comment` on a pull request, `pull_request_review`, `pull_request_review_comment` | the three places a person mentions `@fiddle-ai` |
 | `if`: the text mentions `@fiddle-ai`, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
 | `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a run is never stopped between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment that mentions nobody, an inline review comment, and fiddle's own answer are skipped before they queue, so none of them replaces a mention that waits |
-| checkout of the default branch with `persist-credentials: false` | the workflow runs no code from the pull request, and the workspace's checks cannot read a persisted token |
+| checkout with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false` | without `ref`, a review event checks out the pull request's merge ref, so the pull request would supply the deployment document, the workflow documents and the prompts, and a pull request that conflicts with its base has no merge ref to check out. With it, every event reads them from the default branch. The workspace's checks, which run the pull request's code, cannot read a persisted token |
 
 The `if` is a filter, not the rule. fiddle applies its own rule again to every
 comment and review it reads: a mention inside code, a fence or a quote asks for
