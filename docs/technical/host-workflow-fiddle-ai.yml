@@ -45,9 +45,14 @@
 # `if` here cannot widen who steers: a mention in code, a fence or a quote, a
 # mention by a stranger and every bot's comment steer nothing.
 #
-# One run at a time per pull request. A run is never cancelled, because a
-# cancelled run can stop between its push and its answer. A later mention waits,
-# and the run that follows answers every mention not yet answered.
+# One run at a time per pull request. The queue is on the job, not on the
+# workflow, so only a run that passed the `if` enters it. Every other event on
+# the pull request, fiddle's own answer included, is skipped before it queues,
+# so it cannot replace a mention that waits. A run is never cancelled, because a
+# cancelled run can stop between its push and its answer. A later mention waits.
+# GitHub keeps one waiting run per group, so a third mention replaces the second
+# while the first runs; the run that follows answers every mention not yet
+# answered, the second included.
 #
 # The checkout is the default branch, so this workflow runs no code from the
 # pull request. fiddle refuses a pull request whose head is in a fork.
@@ -68,10 +73,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: fiddle-ai-${{ github.event.issue.number || github.event.pull_request.number }}
-  cancel-in-progress: false
 
 jobs:
   fiddle:
@@ -97,6 +98,9 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    concurrency:
+      group: fiddle-ai-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

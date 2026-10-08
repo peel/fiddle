@@ -46,7 +46,7 @@ HEADER=$(awk '/^[^#]/ { exit } { print }' "$TEMPLATE")
 ON=$(block '^on:' '^[^[:space:]#]')
 GUARD=$(block '^    if: >-' '^    runs-on:')
 PERMISSIONS=$(block '^permissions:' '^[^[:space:]#]')
-CONCURRENCY=$(block '^concurrency:' '^[^[:space:]#]')
+CONCURRENCY=$(block '^    concurrency:$' '^    [^[:space:]#]')
 HANDLE=$(sed -nE 's/^const MENTION: &str = "([^"]+)";$/\1/p' "$MAIN")
 ASSOCIATIONS='fromJSON\('"'"'\["OWNER", "MEMBER", "COLLABORATOR"\]'"'"'\)'
 
@@ -72,9 +72,11 @@ counts "the three events are the only alternatives" 2 '\|\|' "$GUARD"
 absent "no other association is entitled" 'CONTRIBUTOR|NONE|FIRST_TIME|MANNEQUIN' "$GUARD"
 absent "no clause is always true" "(\btrue\b|always\(\)|!= ''\))" "$GUARD"
 
-echo "it runs one job per pull request and never cancels one"
-holds "one group per pull request number" '^  group: fiddle-ai-\$\{\{ github\.event\.issue\.number \|\| github\.event\.pull_request\.number \}\}$' "$CONCURRENCY"
-holds "a queued run does not cancel a running one" '^  cancel-in-progress: false$' "$CONCURRENCY"
+echo "only a run that passed the guard queues, one per pull request, and none is cancelled"
+absent "no workflow-level concurrency, where an event the guard skips would replace a queued mention" '^concurrency:' "$BODY"
+holds "the job holds the concurrency" '^    concurrency:$' "$BODY"
+holds "one group per pull request number" '^      group: fiddle-ai-\$\{\{ github\.event\.issue\.number \|\| github\.event\.pull_request\.number \}\}$' "$CONCURRENCY"
+holds "a queued run does not cancel a running one" '^      cancel-in-progress: false$' "$CONCURRENCY"
 absent "nothing cancels in progress" 'cancel-in-progress: true' "$BODY"
 
 echo "its own token reads, and the App's token does the work"
