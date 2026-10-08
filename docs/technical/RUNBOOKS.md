@@ -927,18 +927,25 @@ A run that steers, answers and is not rejected writes
 `<[stub] root>/changes/<owner>+<repo>+<n>.json`. A record fiddle wrote does not
 stop the next run. A pull request is not a work item, so a marker over it is not
 a completion, and a second run over the same pull request reads the pull request
-again. A record fiddle cannot read, such as one that is not JSON or whose marker
-is not a string, blocks every run over that reference until it is removed. What decides whether there is work is the answer on the
-pull request: each run answers only the mentions not yet answered, and with
+again. A record fiddle cannot read, such as one that is not JSON, one whose
+marker is not a string, or a directory at its path, blocks every run over that
+reference until it is removed. What decides whether there is work is the
+answer on the pull request: each run answers only the mentions not yet answered, and with
 every mention answered it completes with nothing to do and pays for no agent.
 
 So a local run and a runner behave the same while the record is one fiddle
 wrote. To run a mention again, delete fiddle's answer comment or post a new
 mention.
 
-`scripts/local-toil-rerun.sh` shows the record, says whether fiddle can read
-it, and prints the run for you to type. It does not run it. Run it from the directory you run fiddle from,
-because a relative `[stub] root` is resolved against it.
+`scripts/local-toil-rerun.sh` names the record. When anything is at its path,
+it asks fiddle: it runs `fiddle inspect <ref> --config <document> --json` and
+reports fiddle's answer, which is the marker fiddle read and fiddle's
+assessment, or that fiddle reports the record unreadable, with fiddle's reason.
+The fiddle it asks is `--fiddle <path>`, else `$FIDDLE`, else `fiddle` on the
+PATH. When fiddle cannot be asked, the script judges nothing and exits 2. For a
+`jira:` reference, `fiddle inspect` also reads the ticket. The script prints the
+run for you to type, and does not run it. Run it from the directory you run
+fiddle from, because a relative `[stub] root` is resolved against it.
 
 ```sh
 scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
@@ -948,8 +955,8 @@ scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
 Quote the reference: `#` starts a comment in some shells and a glob in others.
 A malformed reference, or a number above 18446744073709551615, is refused with
 the form it should take, `pr:<owner>/<repo>#<number>`. `--forget` removes the
-record. For a record fiddle can read, that changes nothing for a `pr:` run; for
-one it cannot read, it ends the block.
+record. For a record fiddle reads, that changes nothing for a `pr:` run; for
+one fiddle reports unreadable, it ends the block.
 
 ## Record what the model was sent and what it returned
 
