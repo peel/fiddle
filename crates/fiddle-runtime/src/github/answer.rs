@@ -23,8 +23,16 @@ pub struct Answered {
 impl Answered {
     pub fn of(reviews: &[Reviewed], conversation: &[HumanResponse]) -> Self {
         Answered {
-            reviews: reviews.iter().map(|it| it.id).collect(),
-            comments: conversation.iter().map(|it| it.comment).collect(),
+            reviews: reviews
+                .iter()
+                .filter(|it| !it.author_kind.is_a_bot())
+                .map(|it| it.id)
+                .collect(),
+            comments: conversation
+                .iter()
+                .filter(|it| !it.author_kind.is_a_bot())
+                .map(|it| it.comment)
+                .collect(),
         }
     }
 
@@ -731,5 +739,33 @@ mod tests {
     #[test]
     fn a_reply_without_a_marker_cannot_be_built() {
         assert!(AnswerPullRequest::new("o/r".into(), 1, "no marker".into()).is_err());
+    }
+
+    #[test]
+    fn a_bot_is_never_marked_answered() {
+        let by_a_bot = |mut it: HumanResponse| {
+            it.author_kind = crate::github::AuthorKind::Bot;
+            it
+        };
+        let bot_review = Reviewed {
+            author_kind: crate::github::AuthorKind::Bot,
+            ..review(9)
+        };
+        let answered = Answered::of(
+            &[review(8), bot_review],
+            &[
+                comment(1, "MEMBER", "rename it"),
+                by_a_bot(comment(2, "NONE", "a finding")),
+            ],
+        );
+        assert_eq!(
+            answered.marker(),
+            Answered {
+                reviews: [8].into_iter().collect(),
+                comments: [1].into_iter().collect(),
+            }
+            .marker(),
+            "a bot's review and comment are left out of the marker, and a person's are kept"
+        );
     }
 }

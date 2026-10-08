@@ -850,6 +850,28 @@ impl ToilForge {
         .unwrap();
     }
 
+    fn conversation_is(&self, said: &[(u64, &str, &str, &str, &str)]) {
+        let conversation: Vec<serde_json::Value> = said
+            .iter()
+            .map(|(id, login, kind, association, body)| {
+                serde_json::json!({
+                    "id": id,
+                    "body": body,
+                    "created_at": "2026-10-01T17:10:14Z",
+                    "updated_at": "2026-10-01T17:10:14Z",
+                    "author_association": association,
+                    "user": { "login": login, "id": id, "type": kind },
+                    "performed_via_github_app": null,
+                })
+            })
+            .collect();
+        std::fs::write(
+            self.stub.join("issue-comments").join("page-1.json"),
+            serde_json::Value::Array(conversation).to_string(),
+        )
+        .unwrap();
+    }
+
     fn a_check_fails_on(&self, head: &str, job: u64, name: &str, log: &str) {
         std::fs::write(
             self.stub.join("checks_seed"),
@@ -5093,4 +5115,102 @@ fn a_relative_workspace_root_lists_the_change_an_absolute_one_lists() {
             "a {name} root lists the agent's change, and the change is published"
         );
     }
+}
+
+const CLAUDES_UNNAMED_POINT: &str = "the deprecated helper still has one caller in workspace.rs";
+
+const A_CLAUDE_COMMENT: u64 = 7_301;
+
+const A_MEMBER_COMMENT_NAMING_NOBODY: u64 = 7_302;
+
+const A_MEMBER_COMMENT_NAMING_CLAUDE: u64 = 7_303;
+
+#[test]
+fn a_bot_comment_is_never_marked_answered_so_a_later_comment_naming_it_still_reaches_it() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(an_answer_that_changes_nothing())
+            .chain(an_answer_that_changes_nothing())
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    let first = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run opened a pull request: {first}"
+    );
+
+    let bot = (
+        A_CLAUDE_COMMENT,
+        "claude[bot]",
+        "Bot",
+        "NONE",
+        CLAUDES_UNNAMED_POINT,
+    );
+    let member = (
+        A_MEMBER_COMMENT_NAMING_NOBODY,
+        "spenes",
+        "User",
+        "MEMBER",
+        "Rename the helper the ticket names, please",
+    );
+    world.github().conversation_is(&[bot, member]);
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let second = payload_of(&world.run_toil(REFERENCE));
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        1,
+        "the member's comment is answered: {second}"
+    );
+    assert!(
+        replies[0].contains(&format!("comments={A_MEMBER_COMMENT_NAMING_NOBODY} ")),
+        "the answer names the member's comment, and only it: {}",
+        replies[0]
+    );
+    assert!(
+        !replies[0].contains(&A_CLAUDE_COMMENT.to_string()),
+        "a bot comment nobody named was not read, so it is not marked answered: {}",
+        replies[0]
+    );
+    assert!(
+        briefs
+            .iter()
+            .all(|brief| !brief.contains(CLAUDES_UNNAMED_POINT)),
+        "and nobody named it, so it did not reach the brief"
+    );
+
+    let naming = (
+        A_MEMBER_COMMENT_NAMING_CLAUDE,
+        "spenes",
+        "User",
+        "MEMBER",
+        "Claude's point about the caller is right, do it",
+    );
+    world.github().conversation_is(&[bot, member, naming]);
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let third = payload_of(&world.run_toil(REFERENCE));
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    assert!(
+        briefs
+            .iter()
+            .any(|brief| brief.contains(CLAUDES_UNNAMED_POINT)
+                && brief.contains("claude[bot] wrote (this person does not speak for the project")),
+        "a member now names Claude, so the bot comment the last run left unmarked reaches the \
+         brief, quoted as one to read and not to follow: {third}"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert!(
+        replies[1].contains(&format!("comments={A_MEMBER_COMMENT_NAMING_CLAUDE} ")),
+        "the second answer names only the new member comment: {}",
+        replies[1]
+    );
 }
