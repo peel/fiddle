@@ -52,11 +52,6 @@ github.event.sender.type != 'Bot'
     && contains(github.event.review.body, '@{HANDLE}')
     && contains({ASSOCIATIONS}, github.event.review.author_association)
   )
-  || (
-    github.event_name == 'pull_request_review_comment'
-    && contains(github.event.comment.body, '@{HANDLE}')
-    && contains({ASSOCIATIONS}, github.event.comment.author_association)
-  )
 )
 """.split())
 NUMBER = "${{ github.event.issue.number || github.event.pull_request.number }}"
@@ -64,7 +59,6 @@ DEFAULT_BRANCH = "${{ github.event.repository.default_branch }}"
 EVENTS = {
     "issue_comment": ["created"],
     "pull_request_review": ["submitted"],
-    "pull_request_review_comment": ["created"],
 }
 HEADER_LINES = [
     "#   contents: write ",
@@ -74,7 +68,6 @@ HEADER_LINES = [
     "#   actions: read ",
     "#   issue_comment",
     "#   pull_request_review",
-    "#   pull_request_review_comment",
     '#   account = "fiddle-ai[bot]"',
     '#   name = "fiddle-ai[bot]"',
     '#   email = "<app-user-id>+fiddle-ai[bot]@users.noreply.github.com"',
@@ -120,7 +113,7 @@ def check(text):
     triggers = document.get("on", document.get(True))
     holds("the workflow names exactly the keys name, on, permissions and jobs",
           set(document) == {"name", True, "permissions", "jobs"} or set(document) == {"name", "on", "permissions", "jobs"})
-    holds("it runs on the three events and on nothing else", isinstance(triggers, dict) and set(triggers) == set(EVENTS))
+    holds("it runs on the two events and on nothing else", isinstance(triggers, dict) and set(triggers) == set(EVENTS))
     for event, types in EVENTS.items():
         holds(f"{event} runs only on {types}",
               isinstance(triggers, dict) and isinstance(triggers.get(event), dict) and triggers[event] == {"types": types})
@@ -236,10 +229,10 @@ MUTANTS = [
     ("a running run cancelled", [("      cancel-in-progress: false\n", "      cancel-in-progress: true\n")]),
     ("CONTRIBUTOR entitled", [('"MEMBER", "COLLABORATOR"]\'), github.event.review', '"MEMBER", "COLLABORATOR", "CONTRIBUTOR"]\'), github.event.review')]),
     ("the bot exclusion dropped", [(BOT, "      (\n")]),
-    ("an extra event", [("  pull_request_review_comment:\n    types: [created]\n",
-                         "  pull_request_review_comment:\n    types: [created]\n  issues:\n    types: [opened]\n")]),
-    ("pull_request_target", [("  pull_request_review_comment:\n    types: [created]\n",
-                              "  pull_request_review_comment:\n    types: [created]\n  pull_request_target:\n    types: [opened]\n")]),
+    ("an extra event", [("  pull_request_review:\n    types: [submitted]\n",
+                         "  pull_request_review:\n    types: [submitted]\n  pull_request_review_comment:\n    types: [created]\n")]),
+    ("pull_request_target", [("  pull_request_review:\n    types: [submitted]\n",
+                              "  pull_request_review:\n    types: [submitted]\n  pull_request_target:\n    types: [opened]\n")]),
     ("--capability toil", [(FIDDLE_RUN, FIDDLE_RUN + " --capability toil")]),
     ("an alternative that is always true", [("      )\n    runs-on:", "      ) || true\n    runs-on:")]),
     ("another handle", [(f"'@{HANDLE}'", "'@fiddle'")]),

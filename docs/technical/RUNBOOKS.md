@@ -809,13 +809,15 @@ Creating an App on an organisation needs an organisation admin. Create it under
 | permission | access | what fiddle spends it on |
 | --- | --- | --- |
 | Contents | Read and write | fetch the head branch and push onto it |
-| Pull requests | Read and write | read the pull request, its reviews and review comments |
+| Pull requests | Read and write | read the pull request and its reviews |
 | Issues | Read and write | read the conversation and post the answer |
 | Checks | Read | read the failing check runs on the head |
 | Actions | Read | read a failing Actions job's log |
 
-- Subscribe to events: Issue comment, Pull request review, Pull request review
-  comment. These are the three the workflow runs on.
+- Subscribe to events: Issue comment and Pull request review. These are the two
+  the workflow runs on. A mention in an inline review comment, on a line of the
+  diff, starts no run: fiddle reads the conversation and the reviews, and no
+  inline comment.
 - Where it can be installed: only on this account.
 
 Generate a private key and note the App id. Then read the id of the App's bot
@@ -892,9 +894,9 @@ fails on its first run and says so.
 
 | what the template holds | why |
 | --- | --- |
-| `issue_comment` on a pull request, `pull_request_review`, `pull_request_review_comment` | the three places a person mentions `@fiddle-ai` |
+| `issue_comment` on a pull request, `pull_request_review` | the two places fiddle reads a mention of `@fiddle-ai`: the conversation and a review's body |
 | `if`: the text mentions `@fiddle-ai`, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
-| `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a run is never stopped between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment that mentions nobody, an inline review comment, and fiddle's own answer are skipped before they queue, so none of them replaces a mention that waits |
+| `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a run is never stopped between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment or review that mentions nobody, and fiddle's own answer, are skipped before they queue, so none of them replaces a mention that waits |
 | checkout with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false` | without `ref`, a review event checks out the pull request's merge ref, so the pull request would supply the deployment document, the workflow documents and the prompts, and a pull request that conflicts with its base has no merge ref to check out. With it, every event reads them from the default branch. The workspace's checks, which run the pull request's code, cannot read a persisted token |
 
 The `if` is a filter, not the rule. fiddle applies its own rule again to every

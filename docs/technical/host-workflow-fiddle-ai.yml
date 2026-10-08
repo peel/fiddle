@@ -13,16 +13,18 @@
 # needs these repository permissions and nothing else:
 #
 #   contents: write        fetch the head branch and push onto it
-#   pull-requests: write   read the pull request, its reviews and review comments
+#   pull-requests: write   read the pull request and its reviews
 #   issues: write          read the conversation and post the answer
 #   checks: read           read the failing check runs on the head
 #   actions: read          read a failing Actions job's log
 #
-# It subscribes to these events, which are the three this workflow runs on:
+# It subscribes to these events, which are the two this workflow runs on:
 #
 #   issue_comment
 #   pull_request_review
-#   pull_request_review_comment
+#
+# A mention in an inline review comment, on a line of the diff, starts no run.
+# fiddle reads the conversation and the reviews, and no inline comment.
 #
 # THE DEPLOYMENT DOCUMENT
 #
@@ -46,9 +48,9 @@
 # mention by a stranger and every bot's comment steer nothing.
 #
 # One run at a time per pull request. The queue is on the job, not on the
-# workflow, so only a run that passed the `if` enters it. Every other event on
-# the pull request, fiddle's own answer included, is skipped before it queues,
-# so it cannot replace a mention that waits. A run is never cancelled, because a
+# workflow, so only a run that passed the `if` enters it. Every other comment or
+# review this workflow receives, fiddle's own answer included, is skipped before
+# it queues, so it cannot replace a mention that waits. A run is never cancelled, because a
 # cancelled run can stop between its push and its answer. A later mention waits.
 # GitHub keeps one waiting run per group, so a third mention replaces the second
 # while the first runs; the run that follows answers every mention not yet
@@ -75,8 +77,6 @@ on:
     types: [created]
   pull_request_review:
     types: [submitted]
-  pull_request_review_comment:
-    types: [created]
 
 permissions:
   contents: read
@@ -96,11 +96,6 @@ jobs:
           github.event_name == 'pull_request_review'
           && contains(github.event.review.body, '@fiddle-ai')
           && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association)
-        )
-        || (
-          github.event_name == 'pull_request_review_comment'
-          && contains(github.event.comment.body, '@fiddle-ai')
-          && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
         )
       )
     runs-on: ubuntu-latest
