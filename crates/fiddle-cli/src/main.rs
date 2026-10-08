@@ -477,6 +477,7 @@ impl miette::Diagnostic for InvalidInvocationRef {
                      `{scheme}` to sweep what the configuration names; acting on one named \
                      item is not implemented in this build"
                 ),
+                Some(InvocationScheme::Pr) => "the scheme is recognised but names no pull request; write `pr:<owner>/<repo>#<number>`, as in `pr:snowplow-incubator/snowplow-identities#275`".to_string(),
                 Some(_) => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
                 None => format!(
                     "no value follows the scheme, and the scheme is not one fiddle knows. \
@@ -1918,6 +1919,40 @@ mod tests {
             exit_code_for(&Termination::Rejected(CliError::InvocationRef(refused))),
             EXIT_INVALID_INPUT,
             "a reference this build could not use is input no retry corrects"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_reference_with_no_value_is_advised_in_the_shape_a_pull_request_takes() {
+        let advice = |reference: &str| -> String {
+            let refused = match reference_from(reference) {
+                Err(CliError::InvocationRef(refused)) => refused,
+                other => panic!("`{reference}` names no work, got {other:?}"),
+            };
+            assert_eq!(
+                miette::Diagnostic::code(&refused).map(|code| code.to_string()),
+                Some("fiddle::invocation_ref::empty_value".to_string()),
+                "`{reference}` is refused for its empty value"
+            );
+            miette::Diagnostic::help(&refused)
+                .map(|help| help.to_string())
+                .unwrap_or_default()
+        };
+        let pull_request = advice("pr:");
+        assert!(
+            pull_request.contains("pr:<owner>/<repo>#<number>"),
+            "a `pr` reference is a repository and a number, so its advice shows that shape, \
+             got {pull_request}"
+        );
+        assert!(
+            !pull_request.contains("beans:"),
+            "and it does not offer a `beans` identifier a `pr` reference cannot take, got \
+             {pull_request}"
+        );
+        let beans = advice("beans:");
+        assert!(
+            beans.contains("beans:fiddle-m0-demo"),
+            "a scheme whose value is an identifier keeps the identifier example, got {beans}"
         );
     }
 
