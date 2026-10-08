@@ -4,25 +4,25 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="${1:-$ROOT/docs/technical/host-workflow-fiddle-ai.yml}"
 MAIN="${2:-$ROOT/crates/fiddle-cli/src/main.rs}"
+EXPECTED="${3:-$ROOT/docs/technical/host-workflow-fiddle-ai.expected.json}"
 
 [ -f "$TEMPLATE" ] || { echo "test-host-workflow-fiddle-ai: no template at $TEMPLATE, so nothing was checked" >&2; exit 2; }
 [ -f "$MAIN" ] || { echo "test-host-workflow-fiddle-ai: no $MAIN, so fiddle's own handle cannot be read" >&2; exit 2; }
+[ -f "$EXPECTED" ] || { echo "test-host-workflow-fiddle-ai: no reviewed copy at $EXPECTED, so the template has nothing to equal" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 \
   || { echo "test-host-workflow-fiddle-ai: python3 is not on the PATH, so the template cannot be parsed and nothing was checked" >&2; exit 2; }
 python3 -c 'import yaml' >/dev/null 2>&1 \
   || { echo "test-host-workflow-fiddle-ai: python3 has no PyYAML, so the template cannot be parsed and nothing was checked" >&2; exit 2; }
 
-MUTANTS=$(mktemp -d "${TMPDIR:-/tmp}/host-workflow-fiddle-ai-XXXXXX") || exit 2
-trap 'rm -rf "$MUTANTS"' EXIT INT TERM
-
-python3 - "$TEMPLATE" "$MAIN" "$MUTANTS" <<'PYTHON'
-import os
+python3 - "$TEMPLATE" "$MAIN" "$EXPECTED" <<'PYTHON'
+import copy
+import json
 import re
 import sys
 
 import yaml
 
-template_path, main_path, mutants_dir = sys.argv[1:4]
+template_path, main_path, expected_path = sys.argv[1:4]
 NAME = "test-host-workflow-fiddle-ai"
 
 
@@ -31,11 +31,44 @@ def refuse(reason):
     sys.exit(2)
 
 
-main_text = open(main_path, encoding="utf-8").read()
-found = re.findall(r'^const MENTION: &str = "([^"]+)";$', main_text, re.M)
+class UniqueKeys(yaml.SafeLoader):
+    pass
+
+
+def unique_mapping(loader, node, deep=False):
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(None, None, f"the key {key!r} is written twice", key_node.start_mark)
+        seen.add(key)
+    return loader.construct_mapping(node, deep)
+
+
+UniqueKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, unique_mapping)
+
+
+def parsed(text):
+    document = yaml.load(text, Loader=UniqueKeys)
+    if isinstance(document, dict) and True in document:
+        document["on"] = document.pop(True)
+    return document
+
+
+found = re.findall(r'^const MENTION: &str = "([^"]+)";$', open(main_path, encoding="utf-8").read(), re.M)
 if len(found) != 1:
     refuse(f"{main_path} names {len(found)} MENTION constants, so fiddle's own handle cannot be compared")
 HANDLE = found[0]
+
+try:
+    TEMPLATE_TEXT = open(template_path, encoding="utf-8").read()
+    TEMPLATE = parsed(TEMPLATE_TEXT)
+except yaml.YAMLError as error:
+    refuse(f"the template does not parse as YAML, so nothing was checked: {error}")
+try:
+    EXPECTED = json.load(open(expected_path, encoding="utf-8"))
+except ValueError as error:
+    refuse(f"the reviewed copy {expected_path} is not JSON: {error}")
 
 ASSOCIATIONS = """fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]')"""
 EXPECTED_IF = " ".join(f"""
@@ -55,10 +88,13 @@ github.event.sender.type != 'Bot'
 )
 """.split())
 NUMBER = "${{ github.event.issue.number || github.event.pull_request.number }}"
-DEFAULT_BRANCH = "${{ github.event.repository.default_branch }}"
-EVENTS = {
-    "issue_comment": ["created"],
-    "pull_request_review": ["submitted"],
+CHECKOUT = {
+    "uses": "actions/checkout@v4",
+    "with": {
+        "ref": "${{ github.event.repository.default_branch }}",
+        "fetch-depth": 0,
+        "persist-credentials": False,
+    },
 }
 HEADER_LINES = [
     "#   contents: write ",
@@ -74,203 +110,191 @@ HEADER_LINES = [
 ]
 
 
-def grants_write(permissions):
-    if isinstance(permissions, str):
-        return permissions != "read-all"
-    if isinstance(permissions, dict):
-        return any(value not in ("read", "none") for value in permissions.values())
-    return True
+def differences(have, want, path="workflow"):
+    if type(have) is not type(want):
+        return [f"{path} is {have!r}, and the reviewed copy holds {want!r}"]
+    if isinstance(want, dict):
+        found = []
+        for key in sorted(set(have) | set(want), key=str):
+            if key not in want:
+                found.append(f"{path}.{key} is not in the reviewed copy")
+            elif key not in have:
+                found.append(f"{path}.{key} is in the reviewed copy and not in the template")
+            else:
+                found += differences(have[key], want[key], f"{path}.{key}")
+        return found
+    if isinstance(want, list):
+        if len(have) != len(want):
+            return [f"{path} holds {len(have)} entries, and the reviewed copy holds {len(want)}"]
+        found = []
+        for index, (left, right) in enumerate(zip(have, want)):
+            found += differences(left, right, f"{path}[{index}]")
+        return found
+    return [] if have == want else [f"{path} is {have!r}, and the reviewed copy holds {want!r}"]
 
 
-def every_permissions(node, path="workflow"):
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "permissions":
-                yield path, value
-            yield from every_permissions(value, f"{path}.{key}")
-    elif isinstance(node, list):
-        for index, value in enumerate(node):
-            yield from every_permissions(value, f"{path}[{index}]")
-
-
-def check(text):
+def check(document):
     failures = []
-    checked = 0
 
-    def holds(what, condition):
-        nonlocal checked
-        checked += 1
+    def why(what, condition):
         if not condition:
             failures.append(what)
 
-    try:
-        document = yaml.safe_load(text)
-    except yaml.YAMLError as error:
-        return [f"the template does not parse as YAML: {error}"], 1
-    if not isinstance(document, dict):
-        return ["the template is not a mapping"], 1
+    job = document.get("jobs", {}).get("fiddle") if isinstance(document, dict) and isinstance(document.get("jobs"), dict) else None
+    job = job if isinstance(job, dict) else {}
+    why(f"the job's if is not the guard on @{HANDLE}, an entitled association and a sender that is no bot",
+        " ".join(str(job.get("if", "")).split()) == EXPECTED_IF)
+    why("the job does not queue one run per pull request without cancelling one",
+        job.get("concurrency") == {"group": f"fiddle-ai-{NUMBER}", "cancel-in-progress": False})
+    steps = job.get("steps") if isinstance(job.get("steps"), list) else []
+    why("the first step is not a checkout of the default branch that persists no credential",
+        bool(steps) and steps[0] == CHECKOUT)
+    why(f"the guard's handle is not @{HANDLE}, the handle main.rs names in MENTION",
+        f"'@{HANDLE}'" in str(job.get("if", "")))
 
-    triggers = document.get("on", document.get(True))
-    holds("the workflow names exactly the keys name, on, permissions and jobs",
-          set(document) == {"name", True, "permissions", "jobs"} or set(document) == {"name", "on", "permissions", "jobs"})
-    holds("it runs on the two events and on nothing else", isinstance(triggers, dict) and set(triggers) == set(EVENTS))
-    for event, types in EVENTS.items():
-        holds(f"{event} runs only on {types}",
-              isinstance(triggers, dict) and isinstance(triggers.get(event), dict) and triggers[event] == {"types": types})
-
-    holds("the workflow holds no concurrency, where an event the guard skips would replace a waiting mention",
-          "concurrency" not in document)
-    holds("the workflow token reads contents and nothing else", document.get("permissions") == {"contents": "read"})
-    for path, permissions in every_permissions(document):
-        holds(f"{path}.permissions grants no write", not grants_write(permissions))
-
-    jobs = document.get("jobs")
-    holds("the workflow holds exactly one job, and it is fiddle", isinstance(jobs, dict) and list(jobs) == ["fiddle"])
-    job = jobs.get("fiddle") if isinstance(jobs, dict) else None
-    if not isinstance(job, dict):
-        failures.append("there is no fiddle job to check")
-        return failures, checked + 1
-
-    holds("the job holds only if, runs-on, timeout-minutes, concurrency and steps",
-          set(job) == {"if", "runs-on", "timeout-minutes", "concurrency", "steps"})
-    guard = " ".join(str(job.get("if", "")).split())
-    holds(f"the job's if is exactly the guard on @{HANDLE}, an entitled association and a sender that is no bot",
-          guard == EXPECTED_IF)
-    holds("the job queues one run per pull request and never cancels one",
-          job.get("concurrency") == {"group": f"fiddle-ai-{NUMBER}", "cancel-in-progress": False})
-
-    steps = job.get("steps")
-    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
-        failures.append("the job's steps are not a list of mappings")
-        return failures, checked + 1
-
-    checkouts = [step for step in steps if str(step.get("uses", "")).startswith("actions/checkout")]
-    holds("there is a checkout", len(checkouts) >= 1)
-    for index, step in enumerate(checkouts):
-        given = step.get("with") if isinstance(step.get("with"), dict) else {}
-        holds(f"checkout {index + 1} names the default branch, so no event checks out the merge ref",
-              given.get("ref") == DEFAULT_BRANCH)
-        holds(f"checkout {index + 1} persists no credential", given.get("persist-credentials") is False)
-
-    minted = [step for step in steps if str(step.get("uses", "")).startswith("actions/create-github-app-token@")]
-    holds("one step mints the App token", len(minted) == 1)
-    if len(minted) == 1:
-        given = minted[0].get("with") if isinstance(minted[0].get("with"), dict) else {}
-        holds("the App token step is the one the run reads", minted[0].get("id") == "app")
-        holds("the App id comes from a secret", str(given.get("app-id", "")).startswith("${{ secrets."))
-        holds("the private key comes from a secret", str(given.get("private-key", "")).startswith("${{ secrets."))
-
-    runs = [step for step in steps if "run" in step]
-    for index, step in enumerate(runs):
-        script = str(step["run"])
-        expressions = re.findall(r"\$\{\{.*?\}\}", script)
-        holds(f"run step {index + 1} interpolates nothing an event supplies; it reads the event through env",
-              all(expression == "${{ github.repository }}" for expression in expressions))
-        holds(f"run step {index + 1} passes no --capability", "--capability" not in script)
-
-    fiddles = [step for step in runs
-               if '"$fiddle" run "pr:${{ github.repository }}#${PULL_REQUEST}"' in str(step["run"])]
-    holds("one step runs fiddle on the pr: reference", len(fiddles) == 1)
-    if len(fiddles) == 1:
-        environment = fiddles[0].get("env") if isinstance(fiddles[0].get("env"), dict) else {}
-        holds("the pull request number comes from the event", environment.get("PULL_REQUEST") == NUMBER)
-        holds("fiddle runs with the minted token",
-              environment.get("FIDDLE_GITHUB_TOKEN") == "${{ steps.app.outputs.token }}")
-
-    header = []
-    for line in text.splitlines():
-        if not line.startswith("#"):
-            break
-        header.append(line)
-    for wanted in HEADER_LINES:
-        holds(f"the header names {wanted.strip('# ').strip()}",
-              any(line == wanted.rstrip() or line.startswith(wanted) for line in header))
-
-    return failures, checked
+    found = differences(document, EXPECTED)
+    if found:
+        failures.append("the template does not equal the reviewed copy the suite holds; "
+                        "any edit fails the gate until that copy is changed in the same commit:")
+        failures += [f"  {line}" for line in found[:8]]
+    return failures
 
 
-template = open(template_path, encoding="utf-8").read()
-
-print("the template, parsed")
-failures, checked = check(template)
+print("the template equals the reviewed copy")
+failures = check(TEMPLATE)
+header = []
+for line in TEMPLATE_TEXT.splitlines():
+    if not line.startswith("#"):
+        break
+    header.append(line)
+for wanted in HEADER_LINES:
+    if not any(line == wanted.rstrip() or line.startswith(wanted) for line in header):
+        failures.append(f"the header does not name {wanted.strip('# ').strip()}")
 for failure in failures:
     print(f"{NAME}: FAIL: {failure}", file=sys.stderr)
 
-CHECKOUT = """      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          fetch-depth: 0
-          persist-credentials: false
-"""
-MINT_WITH = """        with:
-          app-id: ${{ secrets.FIDDLE_AI_APP_ID }}
-"""
-CONCURRENCY = """    concurrency:
-      group: fiddle-ai-${{ github.event.issue.number || github.event.pull_request.number }}
-      cancel-in-progress: false
-"""
-FIDDLE_RUN = '"$fiddle" run "pr:${{ github.repository }}#${PULL_REQUEST}" --config "$FIDDLE_CONFIG"'
+
+def job_of(document):
+    return document["jobs"]["fiddle"]
+
+
+def steps_of(document):
+    return job_of(document)["steps"]
+
+
+def step_named(document, name):
+    matching = [step for step in steps_of(document) if step.get("name") == name]
+    if len(matching) != 1:
+        raise LookupError(f"no single step named {name!r}")
+    return matching[0]
+
+
+RUN = "Run fiddle on the pull request"
+DOWNLOAD = "Download fiddle and verify it before it runs"
+MINT = "Mint the fiddle-ai installation token"
 REVIEW_ASSOCIATION = "&& contains(fromJSON('[\"OWNER\", \"MEMBER\", \"COLLABORATOR\"]'), github.event.review.author_association)"
 REVIEW_BODY = f"&& contains(github.event.review.body, '@{HANDLE}')"
-BOT = "      github.event.sender.type != 'Bot'\n      && (\n"
+SHA_CHECK = """if [ "$measured" != "$FIDDLE_SHA256" ]; then
+  echo "${FIDDLE_TAG} publishes a binary this job does not pin." >&2
+  echo "  published ${measured}" >&2
+  echo "  pinned    ${FIDDLE_SHA256}" >&2
+  echo "Read the release. Then update FIDDLE_TAG and FIDDLE_SHA256 together." >&2
+  exit 1
+fi
+"""
+
+
+def replace_in(text, old, new):
+    if old not in text:
+        raise LookupError(f"{old[:40]!r} is not in the reviewed copy")
+    return text.replace(old, new, 1)
+
+
+def set_if(document, old, new):
+    job_of(document)["if"] = replace_in(job_of(document)["if"], old, new)
+
+
+def append_run(document, name, line):
+    step = step_named(document, name)
+    step["run"] = step["run"] + line + "\n"
+
+
+def add_step(document, step, at=None):
+    steps = steps_of(document)
+    steps.insert(len(steps) if at is None else at, step)
+
+
+def set_env(document, name, key, value):
+    step_named(document, name).setdefault("env", {})[key] = value
+
 
 MUTANTS = [
-    ("a negated association", [(REVIEW_ASSOCIATION, REVIEW_ASSOCIATION.replace("&& contains", "&& !contains"))]),
-    ("a negated mention", [(REVIEW_BODY, REVIEW_BODY.replace("&& contains", "&& !contains"))]),
-    ("a second job under a quoted key", [(FIDDLE_RUN, FIDDLE_RUN + '\n\n  "other":\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo anyone\n')]),
-    ("persist-credentials moved under another step's with", [("          persist-credentials: false\n", ""),
-                                                            (MINT_WITH, MINT_WITH + "          persist-credentials: false\n")]),
-    ("ref moved under another step's with", [("          ref: ${{ github.event.repository.default_branch }}\n", ""),
-                                            (MINT_WITH, MINT_WITH + "          ref: ${{ github.event.repository.default_branch }}\n")]),
-    ("job-level permissions: write-all", [("    runs-on: ubuntu-latest\n", "    runs-on: ubuntu-latest\n    permissions: write-all\n")]),
-    ("a second checkout with a quoted uses", [(CHECKOUT, CHECKOUT + '\n      - uses: "actions/checkout@v4"\n')]),
-    ("the head ref injected into a run line", [(FIDDLE_RUN, FIDDLE_RUN + '\n          echo "${{ github.event.pull_request.head.ref }}"')]),
-    ("concurrency on the workflow", [(CONCURRENCY, ""), ("jobs:\n", "concurrency:\n  group: fiddle-ai-${{ github.event.issue.number || github.event.pull_request.number }}\n  cancel-in-progress: false\n\njobs:\n")]),
-    ("a running run cancelled", [("      cancel-in-progress: false\n", "      cancel-in-progress: true\n")]),
-    ("CONTRIBUTOR entitled", [('"MEMBER", "COLLABORATOR"]\'), github.event.review', '"MEMBER", "COLLABORATOR", "CONTRIBUTOR"]\'), github.event.review')]),
-    ("the bot exclusion dropped", [(BOT, "      (\n")]),
-    ("an extra event", [("  pull_request_review:\n    types: [submitted]\n",
-                         "  pull_request_review:\n    types: [submitted]\n  pull_request_review_comment:\n    types: [created]\n")]),
-    ("pull_request_target", [("  pull_request_review:\n    types: [submitted]\n",
-                              "  pull_request_review:\n    types: [submitted]\n  pull_request_target:\n    types: [opened]\n")]),
-    ("--capability toil", [(FIDDLE_RUN, FIDDLE_RUN + " --capability toil")]),
-    ("an alternative that is always true", [("      )\n    runs-on:", "      ) || true\n    runs-on:")]),
-    ("another handle", [(f"'@{HANDLE}'", "'@fiddle'")]),
-    ("the workflow token writes contents", [("permissions:\n  contents: read\n", "permissions:\n  contents: write\n")]),
-    ("the run reads the workflow token", [("${{ steps.app.outputs.token }}", "${{ secrets.GITHUB_TOKEN }}")]),
-    ("the header loses checks: read", [("#   checks: read ", "#   checks: none ")]),
+    ("a negated association", lambda d: set_if(d, REVIEW_ASSOCIATION, REVIEW_ASSOCIATION.replace("&& contains", "&& !contains"))),
+    ("a negated mention", lambda d: set_if(d, REVIEW_BODY, REVIEW_BODY.replace("&& contains", "&& !contains"))),
+    ("a second job under a quoted key", lambda d: d["jobs"].__setitem__("other", {"runs-on": "ubuntu-latest", "steps": [{"run": "echo anyone"}]})),
+    ("persist-credentials moved under another step's with", lambda d: (steps_of(d)[0]["with"].pop("persist-credentials"), step_named(d, MINT)["with"].__setitem__("persist-credentials", False))),
+    ("ref moved under another step's with", lambda d: (step_named(d, MINT)["with"].__setitem__("ref", steps_of(d)[0]["with"].pop("ref")))),
+    ("job-level permissions: write-all", lambda d: job_of(d).__setitem__("permissions", "write-all")),
+    ("a second checkout with a quoted uses", lambda d: add_step(d, {"uses": "actions/checkout@v4"})),
+    ("the head ref injected into a run line", lambda d: append_run(d, RUN, 'echo "${{ github.event.pull_request.head.ref }}"')),
+    ("concurrency on the workflow", lambda d: d.__setitem__("concurrency", job_of(d).pop("concurrency"))),
+    ("a running run cancelled", lambda d: job_of(d)["concurrency"].__setitem__("cancel-in-progress", True)),
+    ("CONTRIBUTOR entitled", lambda d: set_if(d, '"COLLABORATOR"]\'), github.event.review', '"COLLABORATOR", "CONTRIBUTOR"]\'), github.event.review')),
+    ("the bot exclusion dropped", lambda d: set_if(d, "github.event.sender.type != 'Bot' && ", "")),
+    ("an extra event", lambda d: d["on"].__setitem__("pull_request_review_comment", {"types": ["created"]})),
+    ("pull_request_target", lambda d: d["on"].__setitem__("pull_request_target", {"types": ["opened"]})),
+    ("--capability toil", lambda d: step_named(d, RUN).__setitem__("run", replace_in(step_named(d, RUN)["run"], '--config "$FIDDLE_CONFIG"\n', '--config "$FIDDLE_CONFIG" --capability toil\n'))),
+    ("an alternative that is always true", lambda d: job_of(d).__setitem__("if", job_of(d)["if"] + " || true")),
+    ("another handle", lambda d: set_if(d, f"'@{HANDLE}'", "'@fiddle'")),
+    ("the workflow token writes contents", lambda d: d["permissions"].__setitem__("contents", "write")),
+    ("the run reads the workflow token", lambda d: set_env(d, RUN, "FIDDLE_GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}")),
+    ("a second issue_comment type", lambda d: d["on"]["issue_comment"]["types"].append("edited")),
+    ("an expression across lines in a run", lambda d: append_run(d, RUN, 'echo "${{\n  github.event.pull_request.head.ref\n}}"')),
+    ("event text in github-script", lambda d: add_step(d, {"uses": "actions/github-script@v7", "with": {"script": "core.info(`${{ github.event.comment.body }}`)"}})),
+    ("event text in a docker step", lambda d: add_step(d, {"uses": "docker://alpine:3", "with": {"args": "sh -c \"${{ github.event.comment.body }}\""}})),
+    ("a checkout spelled Actions/checkout", lambda d: steps_of(d)[0].__setitem__("uses", "Actions/checkout@v4")),
+    ("a checkout of the head repository", lambda d: steps_of(d)[0]["with"].__setitem__("repository", "${{ github.event.pull_request.head.repo.full_name }}")),
+    ("the merge ref fetched and checked out", lambda d: append_run(d, RUN, 'git fetch origin "refs/pull/${PULL_REQUEST}/merge" && git checkout FETCH_HEAD')),
+    ("env text evaluated", lambda d: (set_env(d, RUN, "ASK", "${{ github.event.comment.body }}"), append_run(d, RUN, 'eval "$ASK"'))),
+    ("the whole event in env", lambda d: set_env(d, RUN, "EVENT", "${{ toJSON(github.event) }}")),
+    ("a working directory from event text", lambda d: step_named(d, RUN).__setitem__("working-directory", "${{ github.event.pull_request.head.ref }}")),
+    ("the pinned digest check removed", lambda d: step_named(d, DOWNLOAD).__setitem__("run", replace_in(step_named(d, DOWNLOAD)["run"], SHA_CHECK, ""))),
+    ("a step that may fail", lambda d: step_named(d, DOWNLOAD).__setitem__("continue-on-error", True)),
+    ("a job that may fail", lambda d: job_of(d).__setitem__("continue-on-error", True)),
+    ("event text in job env", lambda d: job_of(d).__setitem__("env", {"ASK": "${{ github.event.comment.body }}"})),
+    ("a local action from the checkout", lambda d: add_step(d, {"uses": "./.github/actions/fiddle"})),
+    ("fiddle from another repository", lambda d: set_env(d, DOWNLOAD, "FIDDLE_REPO", "someone/fiddle")),
+    ("a self-hosted runner", lambda d: job_of(d).__setitem__("runs-on", "self-hosted")),
 ]
 
-print("each widening mutant is refused")
+print("each mutant of the reviewed copy is refused")
 refused = 0
+drifted = []
 escaped = []
-for name, edits in MUTANTS:
-    mutated = template
-    applied = True
-    for old, new in edits:
-        if old not in mutated:
-            applied = False
-            break
-        mutated = mutated.replace(old, new)
-    if not applied or mutated == template:
-        escaped.append(f"the mutant '{name}' did not apply to the template, so it measured nothing")
+for name, mutate in MUTANTS:
+    mutant = copy.deepcopy(EXPECTED)
+    try:
+        mutate(mutant)
+    except (KeyError, IndexError, LookupError, TypeError, AttributeError) as error:
+        drifted.append(f"{name}: {error}")
         continue
-    path = os.path.join(mutants_dir, re.sub(r"[^a-z0-9]+", "-", name.lower()) + ".yml")
-    with open(path, "w", encoding="utf-8") as out:
-        out.write(mutated)
-    caught, _ = check(open(path, encoding="utf-8").read())
-    if caught:
+    if mutant == EXPECTED:
+        drifted.append(f"{name}: it changed nothing")
+        continue
+    if check(mutant):
         refused += 1
     else:
-        escaped.append(f"the mutant '{name}' passed every check")
+        escaped.append(name)
 
-for failure in escaped:
-    print(f"{NAME}: FAIL: {failure}", file=sys.stderr)
-failures += escaped
-
+for name in escaped:
+    print(f"{NAME}: FAIL: the mutant '{name}' passed every check", file=sys.stderr)
 print(f"{NAME}: {refused} of {len(MUTANTS)} mutants refused")
-if failures:
-    print(f"{NAME}: FAIL ({len(failures)} failures; {checked} checks on the template)", file=sys.stderr)
+if drifted:
+    for line in drifted:
+        print(f"{NAME}: the suite's fixture drifted from the template, so this mutant measured nothing: {line}", file=sys.stderr)
+    sys.exit(2)
+if failures or escaped:
+    print(f"{NAME}: FAIL", file=sys.stderr)
     sys.exit(1)
-print(f"{NAME}: PASS ({checked} checks on the template, {refused} of {len(MUTANTS)} mutants refused)")
+print(f"{NAME}: PASS (the template equals the reviewed copy, {refused} of {len(MUTANTS)} mutants refused)")
 PYTHON
