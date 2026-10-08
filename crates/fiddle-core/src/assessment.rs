@@ -16,6 +16,8 @@ pub const TOIL: CapabilityId = CapabilityId("toil");
 
 pub const CHECKS: CapabilityId = CapabilityId("checks");
 
+pub const PULL_REQUEST: CapabilityId = CapabilityId("pull_request");
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityAssessment {

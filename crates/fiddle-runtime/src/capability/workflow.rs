@@ -620,14 +620,34 @@ where
         let gh = self.executor.gh().map_err(CapabilityError::Forge)?;
         let cancel = self.executor.cancel();
 
-        let found =
-            crate::github::open_pull_request_on(gh, repo, head_owner, branch, base, cancel).await;
-        let open = match found {
-            Ok(open) => open,
-            Err(unreadable) => return Err(CapabilityError::Forge(unreadable)),
-        };
-        let Some(open) = open else {
-            return Ok(Steered::NothingPublishedYet);
+        let open = match self.params.pull_request {
+            Some(number) => {
+                let facts = crate::github::read_pull_request(gh, repo, number, cancel)
+                    .await
+                    .map_err(CapabilityError::Forge)?;
+                if !facts.open {
+                    return Err(CapabilityError::Unsteerable {
+                        reason: format!(
+                            "{repo}#{number} is no longer open, so there is no pull request \
+                             to steer this run from"
+                        ),
+                    });
+                }
+                crate::github::SteerablePullRequest {
+                    number: facts.number,
+                    head_sha: facts.head_sha,
+                }
+            }
+            None => {
+                let found =
+                    crate::github::open_pull_request_on(gh, repo, head_owner, branch, base, cancel)
+                        .await
+                        .map_err(CapabilityError::Forge)?;
+                let Some(open) = found else {
+                    return Ok(Steered::NothingPublishedYet);
+                };
+                open
+            }
         };
 
         let reviews = crate::github::read_reviews(
@@ -649,8 +669,13 @@ where
         .await
         .map_err(CapabilityError::Forge)?;
 
-        let earlier = crate::github::already_answered(&reviews, &conversation, None);
-        let (reviews, conversation) = crate::github::unanswered(reviews, conversation, None);
+        let account = self.params.account.as_deref();
+        let earlier = crate::github::already_answered(&reviews, &conversation, account);
+        let (reviews, conversation) = crate::github::unanswered(reviews, conversation, account);
+        let (reviews, conversation) = match self.params.mention.as_deref() {
+            Some(handle) => crate::github::directing(reviews, conversation, handle),
+            None => (reviews, conversation),
+        };
         let answering = crate::github::Answered::of(&reviews, &conversation);
         let dated = reviews
             .iter()

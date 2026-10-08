@@ -108,7 +108,7 @@ pub enum Command {
             help = "Restrict execution to one capability id. Absent selects what the \
                     reference's scheme implies, one row per scheme: `beans` -> `stub_mark`, \
                     `jira` -> `toil`, `scheduled` -> `stub_mark`, `scanner` -> `stub_mark`, \
-                    `cve` -> `cve_mitigate`, `pr` -> `toil`. So a `jira` reference with no flag does not mark: \
+                    `cve` -> `cve_mitigate`, `pr` -> `pull_request`. So a `jira` reference with no flag does not mark: \
                     it qualifies the ticket against the toil gate and, if the gate admits it, \
                     runs a model-driven agent that commits, pushes, opens a pull request, links \
                     it onto the ticket and sets the ticket to In Review. An unknown id is a \

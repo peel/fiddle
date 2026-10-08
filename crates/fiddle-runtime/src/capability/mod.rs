@@ -31,7 +31,7 @@ use fiddle_core::{
 };
 use std::path::PathBuf;
 
-pub const CAPABILITIES: [CapabilityId; 7] = [
+pub const CAPABILITIES: [CapabilityId; 8] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
     fiddle_core::PUBLISH_CHANGE,
@@ -39,6 +39,7 @@ pub const CAPABILITIES: [CapabilityId; 7] = [
     fiddle_core::CVE_MITIGATE,
     fiddle_core::TOIL,
     fiddle_core::CHECKS,
+    fiddle_core::PULL_REQUEST,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -361,6 +362,7 @@ mod tests {
                 fiddle_core::CVE_MITIGATE,
                 fiddle_core::TOIL,
                 fiddle_core::CHECKS,
+                fiddle_core::PULL_REQUEST,
             ]
         );
     }

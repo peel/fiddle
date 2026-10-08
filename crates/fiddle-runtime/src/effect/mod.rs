@@ -280,6 +280,8 @@ pub struct StepParams {
     pub issue_key: Option<String>,
     pub issue_updated: Option<String>,
     pub reaching: Option<String>,
+    pub mention: Option<String>,
+    pub account: Option<String>,
     pub earned: StepOutputs,
 }
 
@@ -301,6 +303,8 @@ impl StepParams {
             issue_key: None,
             issue_updated: None,
             reaching: None,
+            mention: None,
+            account: None,
             earned: StepOutputs::default(),
         }
     }

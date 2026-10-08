@@ -122,6 +122,18 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     TicketUnread(#[from] TicketUnread),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ForeignPullRequest(#[from] ForeignPullRequest),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    PullRequestRefused(#[from] PullRequestRefused),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    PullRequestUnread(#[from] PullRequestUnread),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -144,6 +156,7 @@ enum Selection {
     Mitigate,
     Toil,
     Checks,
+    PullRequest,
 }
 
 impl Selection {
@@ -156,11 +169,19 @@ impl Selection {
             Selection::Mitigate => fiddle_core::CVE_MITIGATE,
             Selection::Toil => fiddle_core::TOIL,
             Selection::Checks => fiddle_core::CHECKS,
+            Selection::PullRequest => fiddle_core::PULL_REQUEST,
         }
     }
 
     fn sweeps(self) -> bool {
         matches!(self, Selection::Mitigate)
+    }
+
+    fn runs_a_workflow(self) -> bool {
+        matches!(
+            self,
+            Selection::Toil | Selection::Checks | Selection::PullRequest
+        )
     }
 
     fn parse(requested: &str) -> Result<Self, UnknownCapability> {
@@ -178,6 +199,8 @@ impl Selection {
             Ok(Selection::Toil)
         } else if requested == fiddle_core::CHECKS.0 {
             Ok(Selection::Checks)
+        } else if requested == fiddle_core::PULL_REQUEST.0 {
+            Ok(Selection::PullRequest)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -203,7 +226,8 @@ impl Selection {
     fn default_for(scheme: InvocationScheme) -> Self {
         match scheme {
             InvocationScheme::Cve => Selection::Mitigate,
-            InvocationScheme::Jira | InvocationScheme::Pr => Selection::Toil,
+            InvocationScheme::Jira => Selection::Toil,
+            InvocationScheme::Pr => Selection::PullRequest,
             InvocationScheme::Beans | InvocationScheme::Scheduled | InvocationScheme::Scanner => {
                 Selection::Mark
             }
@@ -379,9 +403,20 @@ const CHECKS_DOCUMENT: &str = "checks.toml";
 
 const CHECKS_STAGE: &str = "checks";
 
+const PULL_REQUEST_DOCUMENT: &str = "pull_request.toml";
+
+const PULL_REQUEST_STAGE: &str = "pull_request";
+
+const MENTION: &str = "fiddle-ai";
+
 fn workflow_of(selection: Selection) -> (CapabilityId, &'static str, &'static str) {
     match selection {
         Selection::Checks => (fiddle_core::CHECKS, CHECKS_STAGE, CHECKS_DOCUMENT),
+        Selection::PullRequest => (
+            fiddle_core::PULL_REQUEST,
+            PULL_REQUEST_STAGE,
+            PULL_REQUEST_DOCUMENT,
+        ),
         _ => (fiddle_core::TOIL, TOIL_STAGE, TOIL_DOCUMENT),
     }
 }
@@ -421,6 +456,7 @@ struct Resolved<'a> {
     transcripts: Option<&'a Transcripts>,
     workflow: Option<SelectedWorkflow>,
     qualification: Option<Eligible>,
+    pull_request: Option<fiddle_runtime::github::PullRequestFacts>,
 }
 
 fn selected_workflow(
@@ -428,7 +464,7 @@ fn selected_workflow(
     config_path: &Path,
 ) -> Result<Option<SelectedWorkflow>, WorkflowDocumentUnusable> {
     match selection {
-        Selection::Toil | Selection::Checks => {
+        Selection::Toil | Selection::Checks | Selection::PullRequest => {
             let (_, stage, named) = workflow_of(selection);
             let document = workflows_root(config_path).join(named);
             let workflow = workflow_document(&document, stage)?;
@@ -538,9 +574,11 @@ fn exit_code_for(termination: &Termination) -> u8 {
         Termination::Ran(RunOutcome::Retryable { .. }) => EXIT_RETRYABLE,
         Termination::Ran(RunOutcome::Rejected { .. }) => 12,
         Termination::Ran(RunOutcome::Failed { .. }) => 20,
-        Termination::Rejected(CliError::TicketUnread(_) | CliError::ReviewUnreachable(_)) => {
-            EXIT_RETRYABLE
-        }
+        Termination::Rejected(
+            CliError::TicketUnread(_)
+            | CliError::ReviewUnreachable(_)
+            | CliError::PullRequestUnread(_),
+        ) => EXIT_RETRYABLE,
         Termination::Rejected(
             CliError::Config(
                 ConfigError::NotFound(_)
@@ -559,7 +597,9 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::TranscriptSwitch(_)
             | CliError::WorkflowDocument(_)
             | CliError::WorkflowUnrunnable(_)
-            | CliError::Ineligible(_),
+            | CliError::Ineligible(_)
+            | CliError::ForeignPullRequest(_)
+            | CliError::PullRequestRefused(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -738,6 +778,137 @@ impl Ineligible {
 struct TicketUnread {
     work_item: String,
     reason: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{reference}` names the repository {named}, and this deployment serves {served}")]
+#[diagnostic(
+    code(fiddle::config::foreign_pull_request),
+    help(
+        "a deployment works on pull requests in the repository `[github] repo` names; run \
+         `pr:{served}#<number>`, or run this reference from a deployment that serves {named}"
+    )
+)]
+struct ForeignPullRequest {
+    reference: String,
+    named: String,
+    served: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{pull_request} {reason}")]
+#[diagnostic(code(fiddle::pull_request::refused), help("{remedy}"))]
+struct PullRequestRefused {
+    pull_request: String,
+    reason: String,
+    remedy: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{pull_request} could not be read, so nothing was run: {reason}")]
+#[diagnostic(
+    code(fiddle::pull_request::unread),
+    help(
+        "a pull request this build cannot read is one it cannot work on; the reference \
+         parsed and the obstacle is in front of the request, so the same command can be \
+         sent again"
+    )
+)]
+struct PullRequestUnread {
+    pull_request: String,
+    reason: String,
+}
+
+fn served_pull_request(
+    config: &config::Config,
+    config_path: &Path,
+    selection: Selection,
+    reference: &InvocationRef,
+) -> Result<Option<fiddle_core::PullRequestRef>, CliError> {
+    if !selection.runs_a_workflow() {
+        return Ok(None);
+    }
+    let Some(named) = reference.pull_request() else {
+        return Ok(None);
+    };
+    let github = config.github.as_ref().ok_or_else(|| Unconfigured {
+        capability: selection.id(),
+        missing: "[github]",
+        path: config_path.display().to_string(),
+    })?;
+    let served = github.repo.to_string();
+    match named.full_name() == served {
+        true => Ok(Some(named)),
+        false => Err(ForeignPullRequest {
+            reference: reference.as_str().to_string(),
+            named: named.full_name(),
+            served,
+        }
+        .into()),
+    }
+}
+
+async fn open_on_the_served_repository(
+    named: &fiddle_core::PullRequestRef,
+    forge: &Forge,
+    cancel: &CancellationToken,
+) -> Result<fiddle_runtime::github::PullRequestFacts, CliError> {
+    let served = named.full_name();
+    let pull_request = format!("{served}#{}", named.number);
+    let unread = |reason: String| PullRequestUnread {
+        pull_request: pull_request.clone(),
+        reason,
+    };
+    let gh = forge
+        .ctx
+        .gh_client()
+        .map_err(|error| unread(error.to_string()))?;
+    let facts = fiddle_runtime::github::read_pull_request(gh, &served, named.number, cancel)
+        .await
+        .map_err(|error| unread(error.to_string()))?;
+    let refused = |reason: String, remedy: &str| PullRequestRefused {
+        pull_request: pull_request.clone(),
+        reason,
+        remedy: remedy.to_string(),
+    };
+    let nothing_to_do = "a pull request that is no longer open takes no change; mention \
+                         `@fiddle-ai` on an open one";
+    if facts.merged {
+        return Err(refused(
+            "is merged, so there is nothing to do".to_string(),
+            nothing_to_do,
+        )
+        .into());
+    }
+    if !facts.open {
+        return Err(refused(
+            "is closed, so there is nothing to do".to_string(),
+            nothing_to_do,
+        )
+        .into());
+    }
+    match facts.head_repo.as_deref() {
+        Some(head) if head == served => Ok(facts),
+        Some(fork) => Err(refused(
+            format!(
+                "has its head branch `{}` in {fork}, and fiddle cannot push to a fork",
+                facts.head_ref
+            ),
+            "push the branch to the repository this deployment serves and open the pull \
+             request from there",
+        )
+        .into()),
+        None => Err(refused(
+            format!(
+                "has its head branch `{}` in a repository that no longer exists, so there is \
+                 no branch to push to",
+                facts.head_ref
+            ),
+            "push the branch to the repository this deployment serves and open the pull \
+             request from there",
+        )
+        .into()),
+    }
 }
 
 fn qualifies_a_ticket(selection: Selection, reference: &InvocationRef) -> bool {
@@ -1068,7 +1239,11 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        Selection::Propose | Selection::Mitigate | Selection::Toil | Selection::Checks => {
+        Selection::Propose
+        | Selection::Mitigate
+        | Selection::Toil
+        | Selection::Checks
+        | Selection::PullRequest => {
             let workspace = config
                 .workspace
                 .as_ref()
@@ -1137,6 +1312,7 @@ fn build_capability<'a>(
         transcripts,
         workflow: selected,
         qualification,
+        pull_request,
     } = resolved;
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
@@ -1440,7 +1616,7 @@ fn build_capability<'a>(
             )))
         }
 
-        Selection::Toil | Selection::Checks => {
+        Selection::Toil | Selection::Checks | Selection::PullRequest => {
             let (capability_id, stage, named) = workflow_of(selection);
             let SelectedWorkflow { document, workflow } =
                 selected.ok_or_else(|| WorkflowDocumentUnusable {
@@ -1508,28 +1684,42 @@ fn build_capability<'a>(
                 stage,
                 workflow,
                 executor,
-                StepParams {
-                    repo: Some(github.repo.to_string()),
-                    head_owner: Some(github.repo.owner.clone()),
-                    branch: Some(fiddle_runtime::toil::branch(
-                        &github.branch_prefix,
-                        reference.value(),
-                    )),
-                    base: Some(github.base.clone()),
-                    title: Some(fiddle_runtime::toil::pull_request_title(
-                        reference.value(),
-                        None,
-                    )),
-                    body: Some(format!(
-                        "Opened by fiddle for {} in project {}.\n\n\
-                         The steps this run took are the steps {} names, in the \
-                         order it names them.\n",
-                        reference.as_str(),
-                        config.project.name,
-                        document.display(),
-                    )),
-                    draft: true,
-                    ..StepParams::for_capability(capability_id)
+                match pull_request {
+                    Some(facts) => StepParams {
+                        repo: Some(github.repo.to_string()),
+                        head_owner: Some(github.repo.owner.clone()),
+                        branch: Some(facts.head_ref),
+                        base: Some(facts.base_ref),
+                        title: Some(facts.title),
+                        pull_request: Some(facts.number),
+                        mention: Some(MENTION.to_string()),
+                        account: github.account.clone(),
+                        ..StepParams::for_capability(capability_id)
+                    },
+                    None => StepParams {
+                        repo: Some(github.repo.to_string()),
+                        head_owner: Some(github.repo.owner.clone()),
+                        branch: Some(fiddle_runtime::toil::branch(
+                            &github.branch_prefix,
+                            reference.value(),
+                        )),
+                        base: Some(github.base.clone()),
+                        title: Some(fiddle_runtime::toil::pull_request_title(
+                            reference.value(),
+                            None,
+                        )),
+                        body: Some(format!(
+                            "Opened by fiddle for {} in project {}.\n\n\
+                             The steps this run took are the steps {} names, in the \
+                             order it names them.\n",
+                            reference.as_str(),
+                            config.project.name,
+                            document.display(),
+                        )),
+                        draft: true,
+                        account: github.account.clone(),
+                        ..StepParams::for_capability(capability_id)
+                    },
                 },
                 WorkflowPorts {
                     model: gateway.model,
@@ -1702,6 +1892,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
             let config = config::load(&cli.config)?;
+            let named = served_pull_request(&config, &cli.config, selection, &reference)?;
             let document = selected_workflow(selection, &cli.config)?;
 
             let recording = transcripts(&config.report.dir, &reference)?;
@@ -1723,10 +1914,17 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 | Selection::Propose
                 | Selection::Mitigate
                 | Selection::Toil
-                | Selection::Checks => {
+                | Selection::Checks
+                | Selection::PullRequest => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
                 Selection::Mark | Selection::Repair => None,
+            };
+            let pull_request = match (named, forge.as_ref()) {
+                (Some(named), Some(forge)) => {
+                    Some(open_on_the_served_repository(&named, forge, &cancel).await?)
+                }
+                _ => None,
             };
             let selected = build_capability(
                 selection,
@@ -1739,6 +1937,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                     transcripts: recording.as_ref(),
                     workflow: document,
                     qualification,
+                    pull_request,
                 },
             )?;
             let record = fiddle_runtime::attempt(&AttemptContext {
@@ -2019,6 +2218,82 @@ mod tests {
     }
 
     #[test]
+    fn the_pr_scheme_resolves_to_the_pull_request_document() {
+        assert_eq!(
+            Selection::parse("pull_request").unwrap(),
+            Selection::PullRequest
+        );
+        assert_eq!(
+            Selection::default_for(InvocationScheme::Pr),
+            Selection::PullRequest,
+            "a `pr` reference with no flag runs the pull request's own workflow"
+        );
+        assert_eq!(
+            workflow_of(Selection::PullRequest),
+            (
+                fiddle_core::PULL_REQUEST,
+                PULL_REQUEST_STAGE,
+                PULL_REQUEST_DOCUMENT
+            ),
+            "and that workflow is `pull_request.toml`, filed under its own stage"
+        );
+        assert_eq!(
+            Selection::default_for(InvocationScheme::Jira),
+            Selection::Toil,
+            "while a `jira` reference still runs toil"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_is_qualified_by_no_ticket_gate() {
+        let pr: InvocationRef = "pr:acme/icecube#7".parse().unwrap();
+        let jira: InvocationRef = "jira:IDENT-1".parse().unwrap();
+        assert!(
+            !qualifies_a_ticket(Selection::PullRequest, &pr),
+            "a pr: run has no ticket, so no gate qualifies it"
+        );
+        assert!(
+            !qualifies_a_ticket(Selection::Toil, &pr),
+            "not even when toil is asked for over it"
+        );
+        assert!(
+            qualifies_a_ticket(Selection::Toil, &jira),
+            "while a jira: toil run is still qualified"
+        );
+    }
+
+    #[test]
+    fn a_refused_or_foreign_pull_request_is_invalid_input_and_an_unread_one_is_retryable() {
+        let foreign = CliError::ForeignPullRequest(ForeignPullRequest {
+            reference: "pr:someone/else#7".into(),
+            named: "someone/else".into(),
+            served: "acme/icecube".into(),
+        });
+        let refused = CliError::PullRequestRefused(PullRequestRefused {
+            pull_request: "acme/icecube#7".into(),
+            reason: "is closed, so there is nothing to do".into(),
+            remedy: "mention it on an open one".into(),
+        });
+        let unread = CliError::PullRequestUnread(PullRequestUnread {
+            pull_request: "acme/icecube#7".into(),
+            reason: "the forge answered 502".into(),
+        });
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(foreign)),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(refused)),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(unread)),
+            EXIT_RETRYABLE,
+            "a pull request the forge could not answer for is an obstacle a retry can pass"
+        );
+    }
+
+    #[test]
     fn a_scheme_that_names_no_capability_of_its_own_still_selects_the_deterministic_one() {
         for scheme in [
             InvocationScheme::Beans,
@@ -2111,6 +2386,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("nothing exports that variable, so no endpoint exists")
@@ -2200,6 +2476,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("the deterministic capability needs nothing but the document")
@@ -2238,6 +2515,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("no forge was supplied, so nothing can be built")
@@ -2286,6 +2564,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("a publication needs a forge to publish to")
@@ -2450,6 +2729,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("a repair needs a model and somewhere to work")

@@ -1223,7 +1223,8 @@ fn the_bare_workflow_identity_is_not_selectable_and_a_named_document_is() {
             "propose_change",
             "cve_mitigate",
             "toil",
-            "checks"
+            "checks",
+            "pull_request"
         ]
     );
 }

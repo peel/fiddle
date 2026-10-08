@@ -20,7 +20,7 @@ Resolve an absent `--capability` through the reference's scheme. Keep `--capabil
 | `beans` | `stub_mark` |
 | `scheduled` | `stub_mark` |
 | `scanner` | `stub_mark` |
-| `pr` | `toil` — see the 2026-10-08 amendment |
+| `pr` | `pull_request` — see the 2026-10-08 amendments |
 
 ## Consequences
 
@@ -120,3 +120,13 @@ The `pr` scheme was added, and the table in the Decision above has a `pr` row. A
 absent `--capability` over a `pr` reference selects `toil`, the same row as `jira`,
 until the pull-request capability is registered. Every other row is unchanged, and
 the rule is unchanged: absent means what the scheme implies.
+
+## Amended 2026-10-08: `pr` selects `pull_request`
+
+The `pull_request` capability is registered, and the `pr` row now selects it.
+It is a workflow document, `workflows/pull_request.toml`, read beside the
+configuration document as `toil` and `checks` are. A `pr` run reads the pull
+request before it starts, refuses one on another repository, one that is closed
+or merged, and one whose head is in a fork, and publishes onto the pull
+request's own branch. The `jira` row is unchanged, and the rule is unchanged:
+absent means what the scheme implies.

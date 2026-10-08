@@ -412,6 +412,9 @@ pub struct GitHub {
 
     #[serde(default)]
     pub decision: Option<Decision>,
+
+    #[serde(default)]
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1917,6 +1920,20 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         assert!(github.required_checks.is_empty());
         assert_eq!(github.work, None);
         assert_eq!(github.workflow, None);
+    }
+
+    #[test]
+    fn the_account_fiddle_writes_as_is_read_when_written_and_absent_otherwise() {
+        assert_eq!(
+            github(FORGE).account,
+            None,
+            "a table that names no account leaves today's rule in force"
+        );
+        assert_eq!(
+            github(&format!("{FORGE}account = \"fiddle-ai[bot]\"\n")).account,
+            Some("fiddle-ai[bot]".to_string()),
+            "a written account reaches the deployment as written"
+        );
     }
 
     #[test]
