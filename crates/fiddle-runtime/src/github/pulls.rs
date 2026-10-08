@@ -760,11 +760,11 @@ mod facts {
         let mut body = complete();
         remove(&mut body);
         match PullRequestFacts::from_json(path, &body) {
-            Err(GhError::Malformed(message)) => {
+            Err(GhError::Malformed(reason)) => {
                 assert!(
-                    message.contains(path) && message.contains(what),
-                    "a pull request with no {what} is malformed with a message naming the \
-                     path and the {what}, and it said {message:?}"
+                    reason.contains(path) && reason.contains(what),
+                    "a pull request with no {what} is malformed with a reason naming the \
+                     path and the {what}, and it said {reason:?}"
                 );
             }
             other => panic!("a pull request with no {what} is malformed, and it read {other:?}"),
