@@ -795,6 +795,9 @@ fn with_posted_comments(
 }
 
 fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
+    let posting_as = std::fs::read_to_string(dir.join("posting_as.json"))
+        .map(|held| parse(&held))
+        .unwrap_or_else(|_| serde_json::json!({ "login": "fiddle[bot]", "association": "OWNER" }));
     let key = format!(
         "POST_{}",
         bare_path.trim_start_matches('/').replace('/', "_")
@@ -817,8 +820,8 @@ fn posted_comments(dir: &Path, bare_path: &str) -> Vec<serde_json::Value> {
                 "body": request["body"].as_str().unwrap_or_default(),
                 "created_at": "2026-08-11T00:00:00Z",
                 "updated_at": "2026-08-11T00:00:00Z",
-                "author_association": "OWNER",
-                "user": { "login": "fiddle[bot]", "id": 1_000_001, "type": "Bot" },
+                "author_association": posting_as["association"],
+                "user": { "login": posting_as["login"], "id": 1_000_001, "type": "Bot" },
                 "performed_via_github_app": serde_json::Value::Null,
             })
         })

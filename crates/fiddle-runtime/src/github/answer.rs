@@ -326,6 +326,7 @@ pub struct AnswerPullRequest {
     pr: u64,
     answered: Answered,
     body: String,
+    account: Option<String>,
 }
 
 impl AnswerPullRequest {
@@ -341,7 +342,13 @@ impl AnswerPullRequest {
             pr,
             answered,
             body,
+            account: None,
         })
+    }
+
+    pub fn written_as(mut self, account: Option<String>) -> Self {
+        self.account = account;
+        self
     }
 
     fn comments_path(&self) -> String {
@@ -352,11 +359,12 @@ impl AnswerPullRequest {
 impl FromStepParams for AnswerPullRequest {
     fn from_params(_executor: &Executor<'_>, params: &StepParams) -> Result<Self, EffectError> {
         let kind = EffectName::shipped(PULL_REQUEST_ANSWERED);
-        Self::new(
+        Ok(Self::new(
             required(&params.repo, &kind, "repo")?,
             required(&params.pull_request, &kind, "pull_request")?,
             required(&params.body, &kind, "body")?,
-        )
+        )?
+        .written_as(params.account.clone()))
     }
 }
 
@@ -393,7 +401,7 @@ impl IntegrationOperation for AnswerPullRequest {
         .await?;
         Ok(conversation
             .iter()
-            .filter(|comment| entitled(&comment.author_association))
+            .filter(|comment| trusted(comment, self.account.as_deref()))
             .find(|comment| Answered::read_from(&comment.body).as_ref() == Some(&self.answered))
             .map(|comment| AnsweredComment {
                 repo: self.repo.clone(),

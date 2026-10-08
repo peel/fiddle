@@ -211,6 +211,14 @@ impl PullRequestForge {
             .collect()
     }
 
+    fn posts_as(&self, login: &str, association: &str) {
+        std::fs::write(
+            self.stub.join("posting_as.json"),
+            serde_json::json!({ "login": login, "association": association }).to_string(),
+        )
+        .unwrap();
+    }
+
     fn requests_naming(&self, needle: &str) -> usize {
         support::walkdir_files(self.stub.join("requests"))
             .iter()
@@ -1044,5 +1052,80 @@ fn a_second_run_steers_on_the_new_mention_alone_and_a_third_finds_nothing_new() 
         world.github().replies().len(),
         2,
         "and nothing is answered again"
+    );
+}
+
+struct TwoRuns {
+    first: Option<i32>,
+    second: Option<i32>,
+    asked_the_second_time: usize,
+    replies: usize,
+}
+
+fn the_app_answers_a_mention_and_runs_again_with_nothing_new(with_the_account: bool) -> TwoRuns {
+    let world = PullRequestWorld::serving(
+        a_change_named("Rename the helper")
+            .into_iter()
+            .chain(a_change_named("Rename the helper again"))
+            .collect(),
+    );
+    if with_the_account {
+        world.writes_as_its_own_account();
+    }
+    world.github().posts_as(ACCOUNT, "NONE");
+    world
+        .github()
+        .a_member_commented(8_301, "@fiddle-ai rename the helper");
+
+    let first = world.run(REFERENCE);
+    assert_eq!(
+        world.github().replies().len(),
+        1,
+        "the mention is answered by the first run: {}",
+        stderr_of(&first)
+    );
+    let published = world.github().head_of(HEAD_REF);
+    world.github().serves_the_pull_request(Pr::Open, &published);
+
+    let before = world.model_prompts().len();
+    let second = world.run(REFERENCE);
+    TwoRuns {
+        first: first.status.code(),
+        second: second.status.code(),
+        asked_the_second_time: world.model_prompts().len() - before,
+        replies: world.github().replies().len(),
+    }
+}
+
+#[test]
+fn an_answer_the_app_wrote_settles_the_next_run_only_when_the_account_is_configured() {
+    let configured = the_app_answers_a_mention_and_runs_again_with_nothing_new(true);
+    assert_eq!(
+        configured.first,
+        Some(0),
+        "with `[github] account` naming the App, the answer it posted with the association \
+         NONE is observed, so the first run completes"
+    );
+    assert_eq!(configured.second, Some(0), "and so does the second");
+    assert_eq!(
+        configured.asked_the_second_time, 0,
+        "the App's answer is trusted, so a run with nothing new asks no model"
+    );
+    assert_eq!(configured.replies, 1, "and answers nothing again");
+
+    let unconfigured = the_app_answers_a_mention_and_runs_again_with_nothing_new(false);
+    assert_ne!(
+        unconfigured.first,
+        Some(0),
+        "without the account the App's own answer is not observed, so the first run cannot \
+         show the mention answered"
+    );
+    assert!(
+        unconfigured.asked_the_second_time > 0,
+        "and the answer is not trusted, so the second run reads the mention again"
+    );
+    assert_eq!(
+        unconfigured.replies, 2,
+        "and answers it again, which is what the account rule prevents"
     );
 }
