@@ -654,6 +654,57 @@ pub async fn open_pull_request_on(
     }))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PullRequestFacts {
+    pub number: u64,
+    pub title: String,
+    pub body: String,
+    pub open: bool,
+    pub merged: bool,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub head_repo: Option<String>,
+    pub base_ref: String,
+}
+
+impl PullRequestFacts {
+    pub fn from_json(path: &str, body: &serde_json::Value) -> Result<Self, GhError> {
+        let missing = |what: &str| {
+            GhError::Malformed(format!("{path} answered a pull request with no {what}"))
+        };
+        let text = |value: &serde_json::Value, what: &str| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| missing(what))
+        };
+        Ok(PullRequestFacts {
+            number: body["number"].as_u64().ok_or_else(|| missing("number"))?,
+            title: body["title"].as_str().unwrap_or_default().to_string(),
+            body: body["body"].as_str().unwrap_or_default().to_string(),
+            open: text(&body["state"], "state")? == "open",
+            merged: body["merged"].as_bool().unwrap_or(false),
+            head_ref: text(&body["head"]["ref"], "head ref")?,
+            head_sha: text(&body["head"]["sha"], "head sha")?,
+            head_repo: body["head"]["repo"]["full_name"]
+                .as_str()
+                .map(str::to_string),
+            base_ref: text(&body["base"]["ref"], "base ref")?,
+        })
+    }
+}
+
+pub async fn read_pull_request(
+    gh: &GhCli,
+    repo: &str,
+    number: u64,
+    cancel: &CancellationToken,
+) -> Result<PullRequestFacts, GhError> {
+    let path = format!("/repos/{repo}/pulls/{number}");
+    let response = gh.api("GET", &path, None, cancel).await?;
+    PullRequestFacts::from_json(&path, &response.body)
+}
+
 #[cfg(test)]
 mod steerable {
     use super::*;
@@ -683,6 +734,152 @@ mod steerable {
                 head_sha: "abc".to_string(),
             }),
             "and a head that is there is read, so the case above is not the only answer"
+        );
+    }
+}
+
+#[cfg(test)]
+mod facts {
+    use super::*;
+
+    fn complete() -> serde_json::Value {
+        serde_json::json!({
+            "number": 7, "title": "T", "body": "b", "state": "open", "merged": false,
+            "head": {"ref": "x", "sha": "abc", "repo": {"full_name": "acme/icecube"}},
+            "base": {"ref": "main"}
+        })
+    }
+
+    fn malformed_without(remove: impl FnOnce(&mut serde_json::Value), what: &str) {
+        let path = "/repos/acme/icecube/pulls/7";
+        assert!(
+            PullRequestFacts::from_json(path, &complete()).is_ok(),
+            "the complete pull request reads, so the failure below is the missing {what} alone"
+        );
+        let mut body = complete();
+        remove(&mut body);
+        match PullRequestFacts::from_json(path, &body) {
+            Err(GhError::Malformed(message)) => {
+                assert!(
+                    message.contains(path) && message.contains(what),
+                    "a pull request with no {what} is malformed with a message naming the \
+                     path and the {what}, and it said {message:?}"
+                );
+            }
+            other => panic!("a pull request with no {what} is malformed, and it read {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_pull_request_reads_as_its_facts() {
+        let body = serde_json::json!({
+            "number": 275, "title": "T", "body": null, "state": "open", "merged": false,
+            "head": {"ref": "fiddle/ISP-263", "sha": "abc", "repo": {"full_name": "acme/icecube"}},
+            "base": {"ref": "main"}
+        });
+        let facts = PullRequestFacts::from_json("/repos/acme/icecube/pulls/275", &body).unwrap();
+        assert_eq!(
+            facts,
+            PullRequestFacts {
+                number: 275,
+                title: "T".into(),
+                body: String::new(),
+                open: true,
+                merged: false,
+                head_ref: "fiddle/ISP-263".into(),
+                head_sha: "abc".into(),
+                head_repo: Some("acme/icecube".into()),
+                base_ref: "main".into(),
+            },
+            "every fact GitHub reports about the pull request is read, and a null body reads as empty"
+        );
+    }
+
+    #[test]
+    fn a_closed_and_merged_pull_request_reads_as_closed_and_merged() {
+        let mut body = complete();
+        body["state"] = serde_json::json!("closed");
+        body["merged"] = serde_json::json!(true);
+        let facts = PullRequestFacts::from_json("p", &body).unwrap();
+        assert!(
+            !facts.open && facts.merged,
+            "a closed and merged pull request reads as closed and merged, and it read {facts:?}"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_whose_head_repository_was_deleted_has_none() {
+        let body = serde_json::json!({
+            "number": 7, "title": "T", "body": "b", "state": "open", "merged": false,
+            "head": {"ref": "x", "sha": "abc", "repo": null}, "base": {"ref": "main"}
+        });
+        assert_eq!(
+            PullRequestFacts::from_json("p", &body).unwrap().head_repo,
+            None,
+            "a head repository GitHub reports as null reads as absent"
+        );
+        assert_eq!(
+            PullRequestFacts::from_json("p", &complete())
+                .unwrap()
+                .head_repo,
+            Some("acme/icecube".to_string()),
+            "and a head repository that is there is read, so absent is not the only answer"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_with_no_head_sha_is_malformed() {
+        let body = serde_json::json!({"number": 7, "state": "open", "head": {"ref": "x"}, "base": {"ref": "main"}});
+        assert!(
+            matches!(
+                PullRequestFacts::from_json("p", &body),
+                Err(GhError::Malformed(_))
+            ),
+            "a pull request with no head sha is malformed"
+        );
+        malformed_without(
+            |body| body["head"]["sha"] = serde_json::Value::Null,
+            "head sha",
+        );
+    }
+
+    #[test]
+    fn a_pull_request_with_no_head_ref_is_malformed() {
+        malformed_without(
+            |body| {
+                body["head"].as_object_mut().unwrap().remove("ref");
+            },
+            "head ref",
+        );
+    }
+
+    #[test]
+    fn a_pull_request_with_no_base_ref_is_malformed() {
+        malformed_without(
+            |body| {
+                body["base"].as_object_mut().unwrap().remove("ref");
+            },
+            "base ref",
+        );
+    }
+
+    #[test]
+    fn a_pull_request_with_no_state_is_malformed() {
+        malformed_without(
+            |body| {
+                body.as_object_mut().unwrap().remove("state");
+            },
+            "state",
+        );
+    }
+
+    #[test]
+    fn a_pull_request_with_no_number_is_malformed() {
+        malformed_without(
+            |body| {
+                body.as_object_mut().unwrap().remove("number");
+            },
+            "number",
         );
     }
 }
