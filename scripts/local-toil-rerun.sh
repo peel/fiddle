@@ -5,22 +5,27 @@ LC_ALL=C
 CONFIG=""
 REFERENCE=""
 FORGET=0
+FIDDLE_BIN="${FIDDLE:-fiddle}"
 
 usage() {
   cat <<'USAGE'
-usage: local-toil-rerun.sh --config <deployment.toml> --ref <jira:KEY | pr:OWNER/REPO#N> [--forget]
+usage: local-toil-rerun.sh --config <deployment.toml> --ref <jira:KEY | pr:OWNER/REPO#N> [--forget] [--fiddle <path>]
 
-A runner starts with an empty filesystem, so it holds no record that this work
-completed and it runs the workflow again. A developer's machine keeps that
-record, so a second run here reports `completed` and never reaches a step. This
-script shows that record and, with --forget, removes it, which is the only
-difference between a local rerun and a runner's.
+A runner starts with an empty filesystem, so it holds no record of earlier
+work. A developer's machine keeps the change record a run wrote under the
+[stub] root. This script names that record and, when anything is there, asks
+fiddle what it makes of it: it runs `fiddle inspect <ref> --config <document>
+--json` and reports fiddle's answer. With --forget it removes the record.
+
+The fiddle it asks is --fiddle, else $FIDDLE, else `fiddle` on the PATH. When
+fiddle cannot be asked, the script judges nothing and exits 2. For a jira:
+reference, fiddle inspect also reads the ticket.
 
 A pr: reference names a pull request, which is not a work item, so a record
-fiddle wrote does not stop a run. Each run answers only the mentions not yet
+fiddle reads does not stop a run. Each run answers only the mentions not yet
 answered. To run a mention again, delete fiddle's answer comment or post a new
-mention. A record fiddle cannot read blocks a run over its reference, whatever
-the reference, until it is removed, and --forget removes it.
+mention. A record fiddle reports unreadable blocks a run over its reference
+until it is removed, and --forget removes it.
 
 Run it from the directory you run fiddle from. fiddle resolves a relative
 [stub] root against its working directory (ADR 092), and so does this script.
@@ -35,6 +40,7 @@ while [ $# -gt 0 ]; do
     --config) CONFIG="${2:-}"; shift 2 || exit 2 ;;
     --ref) REFERENCE="${2:-}"; shift 2 || exit 2 ;;
     --forget) FORGET=1; shift ;;
+    --fiddle) FIDDLE_BIN="${2:-}"; shift 2 || exit 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "local-toil-rerun: unknown argument $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -53,6 +59,8 @@ case "$REFERENCE" in
   jira:*)
     TICKET="${REFERENCE#jira:}"
     [ -n "$TICKET" ] || fail "'$REFERENCE' names no ticket"
+    [[ "$TICKET" =~ ^[A-Za-z0-9_:-]+$ ]] \
+      || fail "'$REFERENCE' is not a jira reference fiddle accepts; a value is written with ASCII letters, digits, '-', '_' and ':' only"
     ;;
   pr:*)
     [[ "$REFERENCE" =~ $PR_FORM ]] \
@@ -90,117 +98,86 @@ esac
 RECORD="$ROOT/changes/$TICKET.json"
 echo "local-toil-rerun: completion record for $TICKET is $RECORD"
 
-read_record() {
-  python3 - "$1" <<'PYTHON'
-import json
-import sys
-
-
-class Pairs(dict):
-    markers = 0
-
-
-def pairs(items):
-    held = Pairs(items)
-    held.markers = sum(1 for key, _ in items if key == "marker")
-    return held
-
-
-def constant(name):
-    raise ValueError(f"{name} is not JSON")
-
-
-def depth(value):
-    if isinstance(value, dict):
-        return 1 + max((depth(item) for item in value.values()), default=0)
-    if isinstance(value, list):
-        return 1 + max((depth(item) for item in value), default=0)
-    return 0
-
-
-def strings(value):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            yield key
-            yield from strings(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from strings(item)
-
-
-def unreadable(reason):
-    print(f"unreadable\t{reason}")
-    sys.exit(0)
-
-
-try:
-    text = open(sys.argv[1], "rb").read().decode("utf-8")
-    value = json.loads(text, parse_constant=constant, object_pairs_hook=pairs)
-    for string in strings(value):
-        string.encode("utf-8")
-except (UnicodeError, ValueError) as error:
-    unreadable(f"it is not JSON: {error}")
-if depth(value) >= 128:
-    unreadable("it nests deeper than fiddle reads")
-if isinstance(value, dict):
-    if value.markers > 1:
-        unreadable("it names marker twice")
-    marker = value.get("marker")
-elif isinstance(value, list) and len(value) == 1:
-    marker = value[0]
-else:
-    unreadable("it is not an object holding a marker")
-if marker is not None and not isinstance(marker, str):
-    unreadable("its marker is not a string")
-print(f"readable\t{marker or ''}")
-PYTHON
+cannot_ask() {
+  echo "local-toil-rerun: cannot ask fiddle whether it can read this record; nothing was judged: $*" >&2
+  exit 2
 }
 
-READABLE=1
-if [ -f "$RECORD" ]; then
-  command -v python3 >/dev/null 2>&1 \
-    || { echo "local-toil-rerun: python3 is not on the PATH, so whether fiddle can read $RECORD cannot be said" >&2; exit 2; }
-  VERDICT=$(read_record "$RECORD") || fail "could not read $RECORD"
-  case "$VERDICT" in
-    readable$'\t'*) MARKER="${VERDICT#readable$'\t'}" ;;
-    unreadable$'\t'*) READABLE=0; WHY="${VERDICT#unreadable$'\t'}" ;;
-    *) fail "the reading of $RECORD said neither readable nor unreadable: $VERDICT" ;;
+EXISTS=0
+[ -e "$RECORD" ] && EXISTS=1
+
+if [ "$EXISTS" -eq 1 ]; then
+  [ -n "$FIDDLE_BIN" ] || cannot_ask "--fiddle names no program"
+  command -v "$FIDDLE_BIN" >/dev/null 2>&1 \
+    || cannot_ask "there is no fiddle at '$FIDDLE_BIN'; pass --fiddle <path> or set FIDDLE"
+  command -v jq >/dev/null 2>&1 || cannot_ask "jq is not on the PATH, so fiddle's answer cannot be read"
+  ERRORS=$(mktemp "${TMPDIR:-/tmp}/local-toil-rerun-XXXXXX") || exit 2
+  ANSWER=$("$FIDDLE_BIN" inspect "$REFERENCE" --config "$CONFIG" --json 2>"$ERRORS")
+  ASKED=$?
+  SAID=$(head -c 2000 "$ERRORS")
+  rm -f "$ERRORS"
+  [ "$ASKED" -eq 0 ] || cannot_ask "fiddle inspect exited $ASKED: $SAID"
+  field() { printf '%s' "$ANSWER" | jq -r "$1" 2>/dev/null; }
+  [ "$(field '.schema')" = "fiddle.inspect.v0" ] || cannot_ask "fiddle inspect did not answer with fiddle.inspect.v0: $ANSWER"
+  CHANGES=$(field '.observations.changes | keys | if length == 1 then .[0] else "" end')
+  SOURCE=$(field '.observations.changes[]?.source // empty')
+  [ "$SOURCE" = "stub:changes/$TICKET.json" ] \
+    || cannot_ask "fiddle read the change record '${SOURCE:-none}', and this script names stub:changes/$TICKET.json"
+  ASSESSMENT=$(field '.assessment | keys | if length == 1 then .[0] else "" end')
+  BLOCKED_BY=$(field '.assessment.blocked.reason // empty')
+  case "$CHANGES" in
+    available) MARKER=$(field '.observations.changes.available.value.marker // empty') ;;
+    unavailable) WHY=$(field '.observations.changes.unavailable.reason // empty') ;;
+    *) cannot_ask "fiddle reported the change record as '${CHANGES:-nothing}'" ;;
   esac
+  [ -n "$ASSESSMENT" ] || cannot_ask "fiddle reported no assessment"
 fi
 
-if [ -f "$RECORD" ] && [ "$READABLE" -eq 0 ]; then
-  echo "local-toil-rerun: it exists, and $WHY"
-  echo "local-toil-rerun: fiddle cannot read this record, so a run over this reference is blocked until it is removed; --forget removes it"
+forget() {
+  rm -rf -- "$RECORD" || fail "could not remove $RECORD"
+  [ ! -e "$RECORD" ] || fail "$RECORD is still there after --forget"
+}
+
+if [ "$EXISTS" -eq 0 ]; then
+  if [ "$PULL" -eq 1 ]; then
+    echo "local-toil-rerun: it does not exist, and a record does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
+    echo "local-toil-rerun: each run answers only the mentions not yet answered on the pull request"
+    echo "local-toil-rerun: to run a mention again, delete fiddle's answer comment or post a new mention"
+  else
+    echo "local-toil-rerun: it does not exist, so this machine already behaves as a runner does"
+  fi
+elif [ "$CHANGES" = "unavailable" ]; then
+  echo "local-toil-rerun: fiddle reports this record unreadable, so a run over this reference is blocked until it is removed; --forget removes it"
+  echo "local-toil-rerun: fiddle says: $WHY"
   if [ "$FORGET" -eq 1 ]; then
-    rm -f "$RECORD" || fail "could not remove $RECORD"
+    forget
     echo "local-toil-rerun: removed, so a run over this reference is no longer blocked by it"
   fi
-elif [ "$PULL" -eq 1 ]; then
-  if [ -f "$RECORD" ]; then
-    echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
-    echo "local-toil-rerun: fiddle can read this record, and a record fiddle can read does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
-  else
-    echo "local-toil-rerun: it does not exist, and a record does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
-  fi
-  echo "local-toil-rerun: each run answers only the mentions not yet answered on the pull request"
-  echo "local-toil-rerun: to run a mention again, delete fiddle's answer comment or post a new mention"
-  if [ "$FORGET" -eq 1 ] && [ -f "$RECORD" ]; then
-    rm -f "$RECORD" || fail "could not remove $RECORD"
-    echo "local-toil-rerun: removed; this changes nothing for a pr: run"
-  fi
-elif [ -f "$RECORD" ]; then
-  echo "local-toil-rerun: it exists and carries marker '${MARKER:-none}'"
-  echo "local-toil-rerun: while it exists this run reports completed and reaches no step, which a runner never does"
-  if [ "$FORGET" -eq 1 ]; then
-    rm -f "$RECORD" || fail "could not remove $RECORD"
-    echo "local-toil-rerun: removed, so the next run reads the forge exactly as a runner does"
-  else
-    echo "local-toil-rerun: pass --forget to remove it"
-  fi
 else
-  echo "local-toil-rerun: it does not exist, so this machine already behaves as a runner does"
+  echo "local-toil-rerun: fiddle reads it, and it carries marker '${MARKER:-none}'"
+  echo "local-toil-rerun: fiddle's assessment is $ASSESSMENT"
+  if [ "$PULL" -eq 1 ] && [ "$ASSESSMENT" = "not_started" ]; then
+    echo "local-toil-rerun: a record fiddle reads does not stop a pr: run; a pull request is not a work item, so a marker over it is not a completion"
+    echo "local-toil-rerun: each run answers only the mentions not yet answered on the pull request"
+    echo "local-toil-rerun: to run a mention again, delete fiddle's answer comment or post a new mention"
+    if [ "$FORGET" -eq 1 ]; then
+      forget
+      echo "local-toil-rerun: removed; this changes nothing for a pr: run"
+    fi
+  else
+    case "$ASSESSMENT" in
+      satisfied) echo "local-toil-rerun: fiddle reports the work completed, so while the record exists a run reaches no step, which a runner never does" ;;
+      blocked) echo "local-toil-rerun: fiddle reports a run over this reference blocked: $BLOCKED_BY" ;;
+      not_started) echo "local-toil-rerun: fiddle reports the work not started, so the record does not stop a run" ;;
+      *) echo "local-toil-rerun: fiddle reports $ASSESSMENT" ;;
+    esac
+    if [ "$FORGET" -eq 1 ]; then
+      forget
+      echo "local-toil-rerun: removed, so the next run reads the forge exactly as a runner does"
+    else
+      echo "local-toil-rerun: pass --forget to remove it"
+    fi
+  fi
 fi
 
 echo

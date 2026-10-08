@@ -3,6 +3,15 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$SCRIPT_DIR/local-toil-rerun.sh"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+FIDDLE="${TEST_FIDDLE:-$ROOT/target/debug/fiddle}"
+
+[ -x "$FIDDLE" ] || { echo "test-local-toil-rerun: no fiddle binary at $FIDDLE; build it with cargo build --bin fiddle (the gate's cargo test builds it before the shell suites run), and nothing was checked" >&2; exit 2; }
+STALE=$(find "$ROOT/crates" -name '*.rs' -newer "$FIDDLE" -print -quit)
+[ -z "$STALE" ] || { echo "test-local-toil-rerun: $FIDDLE is older than $STALE, so its answers may not be this tree's; rebuild it, and nothing was checked" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "test-local-toil-rerun: jq is not on the PATH, and the script reads fiddle's answer with it; nothing was checked" >&2; exit 2; }
+export FIDDLE
+export RERUN_JIRA_USER=rerun-suite-user RERUN_JIRA_TOKEN=rerun-suite-token-not-a-secret
 
 FAILED=0
 CHECKED=0
@@ -65,8 +74,21 @@ root = "state"
 
 [report]
 dir = "reports"
+
+[jira]
+site = "https://127.0.0.1:9"
+project = "ISP"
+user = { env = "RERUN_JIRA_USER" }
+token = { env = "RERUN_JIRA_TOKEN" }
+timeout = "1s"
 TOML
 mkdir -p "$DIR/state/changes"
+
+fiddle_says() {
+  local dir="$1" reference="$2"
+  (cd "$dir" && "$FIDDLE" inspect "$reference" --config "$CONFIG" --json 2>/dev/null) \
+    | jq -r '.observations.changes | keys[0]'
+}
 
 echo "an incomplete invocation is refused"
 refuses "no argument at all"
@@ -84,8 +106,9 @@ check "it says the machine already behaves as a runner does" "already behaves as
 echo "a record that exists is reported, and left alone without --forget"
 printf '{"marker":"abcd1234"}' > "$DIR/state/changes/ISP-1.json"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref jira:ISP-1)
-check "it reads the marker out of the record" "abcd1234" "$OUT"
-check "it says what the record does to a run" "reaches no step" "$OUT"
+check "it reports the marker fiddle read" "fiddle reads it, and it carries marker 'abcd1234'" "$OUT"
+check "it reports fiddle's assessment, which is blocked here because the ticket cannot be read" "fiddle reports a run over this reference blocked: source jira:https://127.0.0.1:9/ISP-1 unavailable" "$OUT"
+lacks "it claims no completion fiddle did not report" "reaches no step" "$OUT"
 CHECKED=$((CHECKED + 1))
 [ -f "$DIR/state/changes/ISP-1.json" ] \
   || fail "the record was removed without --forget, so a read-only look is not read-only"
@@ -105,7 +128,7 @@ mkdir -p "$DIR/conf/state/changes" || exit 2
 printf '{"marker":"conf0001"}' > "$DIR/conf/state/changes/ISP-2.json"
 OUT=$(run_from "$DIR/work" --config "$DIR/conf/deployment.toml" --ref jira:ISP-2 --forget)
 check "it names the record under the working directory" "record for ISP-2 is $(cd "$DIR/work" && pwd)/state/changes/ISP-2.json" "$OUT"
-check "it reads the marker of the record fiddle would read" "work0001" "$OUT"
+check "fiddle reads the record under the working directory" "marker 'work0001'" "$OUT"
 CHECKED=$((CHECKED + 1))
 [ -f "$DIR/work/state/changes/ISP-2.json" ] \
   && fail "--forget left the record under the working directory, which is the one fiddle reads"
@@ -122,8 +145,9 @@ check "it says a record does not stop a pr: run" "does not stop a pr: run" "$OUT
 printf '{"marker":"pr000007"}' > "$DIR/state/changes/acme+icecube+7.json"
 printf '{"marker":"other"}' > "$DIR/state/changes/acme-icecube-7.json"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#7')
-check "it reads the pull request record's marker" "pr000007" "$OUT"
-check "a present record does not stop a pr: run either" "does not stop a pr: run" "$OUT"
+check "fiddle reads the pull request record's marker" "fiddle reads it, and it carries marker 'pr000007'" "$OUT"
+check "and assesses the run not started" "fiddle's assessment is not_started" "$OUT"
+check "a record fiddle reads does not stop a pr: run" "a record fiddle reads does not stop a pr: run" "$OUT"
 check "fiddle answers only the mentions not yet answered" "answers only the mentions not yet answered" "$OUT"
 check "it says how to run a mention again" "delete fiddle's answer comment or post a new mention" "$OUT"
 lacks "it never claims a pr: run stops at the record" "reaches no step" "$OUT"
@@ -147,40 +171,88 @@ check "the largest number a pull request can carry is accepted" "state/changes/a
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:Acme.io/ice_cube-2#10')
 check "a name with a dot, an underscore and a dash is a GitHub name" "state/changes/Acme.io+ice_cube-2+10.json" "$OUT"
 
-echo "a record fiddle cannot read blocks a run, and is said to"
-BLOCKED="fiddle cannot read this record, so a run over this reference is blocked until it is removed; --forget removes it"
-unreadable_pr() {
-  local what="$1" body="$2"
-  printf '%s' "$body" > "$DIR/state/changes/acme+icecube+9.json"
-  OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
-  check "$what is said to block the run" "$BLOCKED" "$OUT"
-  lacks "$what is not said to leave a pr: run alone" "does not stop a pr: run" "$OUT"
+echo "fiddle decides whether it can read a record, and the script reports what fiddle says"
+UNREADABLE="fiddle reports this record unreadable, so a run over this reference is blocked until it is removed; --forget removes it"
+PR9="$DIR/state/changes/acme+icecube+9.json"
+fixture() {
+  local what="$1" verdict="$2" body="$3"
+  rm -rf "$PR9"
+  printf '%s' "$body" > "$PR9"
+  judged "$what" "$verdict"
 }
-unreadable_pr "text that is not JSON" 'not json'
-unreadable_pr "a marker that is a number" '{"marker":7}'
-unreadable_pr "a marker named twice" '{"marker":"a","marker":"b"}'
-unreadable_pr "a NaN" '{"marker":NaN}'
-unreadable_pr "a JSON value that is not an object" '"marker"'
-unreadable_pr "two JSON values" '{"marker":"a"} {"marker":"b"}'
-unreadable_pr "a lone surrogate" '{"marker":"\ud800"}'
+judged() {
+  local what="$1" verdict="$2"
+  CHECKED=$((CHECKED + 1))
+  local said
+  said=$(fiddle_says "$DIR" 'pr:acme/icecube#9')
+  [ "$said" = "$verdict" ] || fail "$what: the fixture expects fiddle to report $verdict, and fiddle reports '${said:-nothing}'"
+  OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
+  case "$verdict" in
+    available)
+      check "$what is reported readable" "fiddle reads it" "$OUT"
+      check "$what does not stop a pr: run" "a record fiddle reads does not stop a pr: run" "$OUT"
+      lacks "$what is not reported unreadable" "unreadable" "$OUT"
+      ;;
+    unavailable)
+      check "$what is reported unreadable and blocking" "$UNREADABLE" "$OUT"
+      check "$what is reported with fiddle's own reason" "fiddle says: stub source" "$OUT"
+      lacks "$what is not said to leave a pr: run alone" "does not stop a pr: run" "$OUT"
+      ;;
+  esac
+}
+DEEP=$(printf '{"marker":"a","other":'; printf '[%.0s' $(seq 200); printf ']%.0s' $(seq 200); printf '}')
+fixture "a record fiddle wrote" available '{"marker":"0123456789abcdef"}'
+fixture "garbage" unavailable 'not json'
+fixture "an unknown field holding a lone surrogate" available '{"marker":"a","other":"\ud800"}'
+fixture "an unknown field nested 200 deep" available "$DEEP"
+fixture "an object without a marker" available '{}'
+fixture "a marker that is a number" unavailable '{"marker":7}'
+fixture "a marker named twice" unavailable '{"marker":"a","marker":"b"}'
+fixture "a NaN" unavailable '{"marker":NaN}'
+fixture "two JSON values" unavailable '{"marker":"a"} {"marker":"b"}'
+fixture "a lone surrogate in the marker" unavailable '{"marker":"\ud800"}'
+rm -rf "$PR9"
+mkdir -p "$PR9"
+judged "a directory at the record's path" unavailable
+check "a directory is reported with fiddle's reason" "stub source unreadable" "$OUT"
 CHECKED=$((CHECKED + 1))
-[ -f "$DIR/state/changes/acme+icecube+9.json" ] \
-  || fail "an unreadable record was removed without --forget"
+[ -d "$PR9" ] || fail "an unreadable record was removed without --forget"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9' --forget)
-check "--forget removes an unreadable record and says so" "no longer blocked by it" "$OUT"
+check "--forget removes what fiddle cannot read and says so" "no longer blocked by it" "$OUT"
 CHECKED=$((CHECKED + 1))
-[ -f "$DIR/state/changes/acme+icecube+9.json" ] \
-  && fail "--forget left an unreadable record in place"
-printf '{}' > "$DIR/state/changes/acme+icecube+9.json"
+[ -e "$PR9" ] && fail "--forget left the unreadable record in place"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
-check "an object without a marker is a record fiddle can read" "fiddle can read this record, and a record fiddle can read does not stop a pr: run" "$OUT"
-printf '{"marker":null,"other":[1,2]}' > "$DIR/state/changes/acme+icecube+9.json"
-OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
-check "a null marker beside another key is readable too" "does not stop a pr: run" "$OUT"
+check "with nothing at the path, the record is absent" "it does not exist" "$OUT"
 printf '[1,2]' > "$DIR/state/changes/ISP-3.json"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref jira:ISP-3)
-check "an unreadable record blocks a jira run too" "$BLOCKED" "$OUT"
-lacks "and is not said to complete it" "reports completed" "$OUT"
+check "a record fiddle cannot read is reported for a jira reference too" "$UNREADABLE" "$OUT"
+lacks "and is not said to complete the work" "reaches no step" "$OUT"
+
+echo "when fiddle cannot be asked, nothing is judged"
+printf '{"marker":"a"}' > "$PR9"
+asks_nothing() {
+  CHECKED=$((CHECKED + 1))
+  local what="$1"; shift
+  local out rc
+  out=$(cd "$DIR" && "$@" 2>&1); rc=$?
+  [ "$rc" -eq 2 ] || fail "$what: exited $rc, not 2: $out"
+  case "$out" in
+    *"cannot ask fiddle whether it can read this record; nothing was judged"*) ;;
+    *) fail "$what: did not say that nothing was judged: $out" ;;
+  esac
+  case "$out" in *"fiddle reads it"*|*"does not stop"*|*"unreadable, so"*) fail "$what: judged the record anyway: $out" ;; esac
+}
+asks_nothing "a fiddle that does not exist, named by --fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/no-such-fiddle"
+asks_nothing "a fiddle that does not exist, named by FIDDLE" env FIDDLE="$DIR/no-such-fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9'
+printf '#!/bin/sh\n"%s" "$@"\necho "and then it failed" >&2\nexit 3\n' "$FIDDLE" > "$DIR/failing-fiddle"
+chmod +x "$DIR/failing-fiddle"
+asks_nothing "a fiddle that answers and then exits non-zero" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/failing-fiddle"
+printf '#!/bin/sh\necho "{}"\n' > "$DIR/silent-fiddle"
+chmod +x "$DIR/silent-fiddle"
+asks_nothing "a fiddle that answers in another shape" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/silent-fiddle"
+OUT=$(cd "$DIR" && env FIDDLE="$DIR/no-such-fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#10' 2>&1)
+check "with nothing at the path, fiddle is not needed" "it does not exist" "$OUT"
+rm -f "$PR9"
 
 echo "a malformed pr: reference is refused with the form it should take"
 FORM='pr:<owner>/<repo>#<number>'
