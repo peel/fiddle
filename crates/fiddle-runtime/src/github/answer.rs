@@ -433,6 +433,7 @@ mod tests {
             state: "COMMENTED".to_string(),
             body: "commit message and PR description is missing".to_string(),
             commit_id: "3acb655".to_string(),
+            by_a_bot: false,
         }
     }
 
@@ -447,6 +448,7 @@ mod tests {
             created_at: "2026-09-25T12:00:00Z".to_string(),
             updated_at: "2026-09-25T12:00:00Z".to_string(),
             is_bot: false,
+            by_a_bot: false,
             author_association: association.to_string(),
         }
     }

@@ -13,6 +13,7 @@ pub struct HumanResponse {
     pub created_at: String,
     pub updated_at: String,
     pub is_bot: bool,
+    pub by_a_bot: bool,
     pub author_association: String,
 }
 
@@ -40,6 +41,7 @@ impl From<ListedComment> for HumanResponse {
         Self {
             comment: listed.id,
             is_bot: listed.user.kind == "Bot" || !listed.performed_via_github_app.is_null(),
+            by_a_bot: listed.user.kind == "Bot",
             author: ActorRef {
                 login: listed.user.login,
                 id: listed.user.id,
@@ -61,6 +63,7 @@ pub struct Reviewed {
     pub state: String,
     pub body: String,
     pub commit_id: String,
+    pub by_a_bot: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +119,7 @@ pub async fn read_reviews(
         })?;
         reviews.extend(listed.into_iter().map(|it| Reviewed {
             id: it.id,
+            by_a_bot: it.user.kind == "Bot",
             submitted_at: it.submitted_at,
             author: ActorRef {
                 login: it.user.login,

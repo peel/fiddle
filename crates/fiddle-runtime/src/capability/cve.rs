@@ -2089,6 +2089,7 @@ mod direction {
             state: crate::github::CHANGES_REQUESTED.to_string(),
             body: "bump the transitive one too".to_string(),
             commit_id: commit.to_string(),
+            by_a_bot: false,
         };
 
         let head = "abc123";

@@ -502,6 +502,7 @@ mod tests {
             created_at: STAMP.to_string(),
             updated_at: STAMP.to_string(),
             is_bot,
+            by_a_bot: is_bot,
             author_association: "COLLABORATOR".to_string(),
         })
     }
@@ -590,6 +591,7 @@ mod tests {
             created_at: STAMP.to_string(),
             updated_at: STAMP.to_string(),
             is_bot: false,
+            by_a_bot: false,
             author_association: "COLLABORATOR".to_string(),
         };
         let listed = Listed::of_github(&impostor);

@@ -177,7 +177,7 @@ pub fn with_the_bots_they_cite(
             .into_iter()
             .filter(|it| {
                 directed_reviews.iter().any(|kept| kept.id == it.id)
-                    || (it.author.login.ends_with("[bot]") && named(&it.author.login))
+                    || (it.by_a_bot && named(&it.author.login))
             })
             .collect(),
         conversation
@@ -186,7 +186,7 @@ pub fn with_the_bots_they_cite(
                 directed_conversation
                     .iter()
                     .any(|kept| kept.comment == it.comment)
-                    || (it.is_bot && named(&it.author.login))
+                    || (it.by_a_bot && named(&it.author.login))
             })
             .collect(),
     )
@@ -209,6 +209,7 @@ mod tests {
             state: "COMMENTED".to_string(),
             body: body.to_string(),
             commit_id: "3acb655".to_string(),
+            by_a_bot: false,
         }
     }
 
@@ -223,6 +224,7 @@ mod tests {
             created_at: "2026-10-08T12:00:00Z".to_string(),
             updated_at: "2026-10-08T12:00:00Z".to_string(),
             is_bot: false,
+            by_a_bot: false,
             author_association: association.to_string(),
         }
     }
@@ -463,6 +465,7 @@ mod tests {
                 id: 2,
             },
             is_bot: true,
+            by_a_bot: true,
             ..said(id, "NONE", body)
         }
     }
@@ -518,6 +521,53 @@ mod tests {
             conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
             vec![2],
             "every mention names the handle, so the handle's own bot is not cited by it"
+        );
+    }
+
+    #[test]
+    fn one_rule_reads_a_bot_review_and_a_bot_comment_and_not_a_person_posting_through_an_app() {
+        let claudes_review = Reviewed {
+            author: ActorRef {
+                login: "claude[bot]".to_string(),
+                id: 2,
+            },
+            by_a_bot: true,
+            ..reviewed(1, "NONE", "1. rename it")
+        };
+        let named_like_a_bot = Reviewed {
+            author: ActorRef {
+                login: "claude[bot]".to_string(),
+                id: 3,
+            },
+            ..reviewed(2, "NONE", "a person whose login looks like a bot's")
+        };
+        let through_an_app = HumanResponse {
+            author: ActorRef {
+                login: "claude".to_string(),
+                id: 4,
+            },
+            is_bot: true,
+            ..said(3, "NONE", "a person posting through an App")
+        };
+        let (reviews, conversation) = with_the_bots_they_cite(
+            vec![claudes_review, named_like_a_bot],
+            vec![
+                through_an_app,
+                said(4, "MEMBER", "@fiddle-ai do Claude's comments 1 and 2"),
+            ],
+            "fiddle-ai",
+        );
+        assert_eq!(
+            reviews.iter().map(|it| it.id).collect::<Vec<_>>(),
+            vec![1],
+            "a review is a bot's when its author's account is a bot, not when its login \
+             looks like one"
+        );
+        assert_eq!(
+            conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![4],
+            "and a comment posted through an App by a person is not a bot's, so it is not \
+             quoted as a cited bot"
         );
     }
 }

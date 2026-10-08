@@ -96,6 +96,7 @@ mod tests {
             created_at: "2026-09-11T12:05:40Z".to_string(),
             updated_at: "2026-09-11T12:05:40Z".to_string(),
             is_bot,
+            by_a_bot: is_bot,
             author_association: association.to_string(),
         }
     }
