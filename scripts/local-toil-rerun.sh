@@ -58,7 +58,7 @@ case "$REFERENCE" in
     NUMBER="${BASH_REMATCH[3]}"
     TICKET="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}+$NUMBER"
     LARGEST=18446744073709551615
-    if [ "${#NUMBER}" -gt "${#LARGEST}" ] || { [ "${#NUMBER}" -eq "${#LARGEST}" ] && [[ "$NUMBER" > "$LARGEST" ]]; }; then
+    if [ "${#NUMBER}" -gt "${#LARGEST}" ] || { [ "${#NUMBER}" -eq "${#LARGEST}" ] && [ "$(printf '%s\n%s\n' "$NUMBER" "$LARGEST" | sort | tail -1)" != "$LARGEST" ]; }; then
       fail "'$REFERENCE' does not name a pull request; write pr:<owner>/<repo>#<number>, and the number is at most $LARGEST"
     fi
     PULL=1
