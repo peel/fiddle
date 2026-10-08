@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(
             addressed,
             Addressed::NoWorkItem {
-                change_set: "acme-icecube-7"
+                change_set: "acme+icecube+7"
             },
             "a pull request is the thread of the run and not a ticket, so it addresses no work \
              item and keys its change record by a name that holds no `/` or `#`"
@@ -740,7 +740,7 @@ mod tests {
         );
         match view.changes {
             Observation::Available { source, .. } => assert_eq!(
-                source.0, "stub:changes/acme-icecube-7.json",
+                source.0, "stub:changes/acme+icecube+7.json",
                 "the change record of `pr:acme/icecube#7` is read from one file under `changes`"
             ),
             other => panic!(

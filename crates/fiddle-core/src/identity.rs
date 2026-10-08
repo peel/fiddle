@@ -142,7 +142,7 @@ impl PullRequestRef {
     }
 
     fn record_key(&self) -> String {
-        format!("{}-{}-{}", self.owner, self.repo, self.number)
+        format!("{}+{}+{}", self.owner, self.repo, self.number)
     }
 }
 
@@ -552,11 +552,11 @@ mod tests {
         );
         assert_eq!(
             parsed.slug(),
-            "pr-snowplow-incubator-snowplow-identities-275"
+            "pr-snowplow-incubator+snowplow-identities+275"
         );
         assert_eq!(
             parsed.record_key(),
-            "snowplow-incubator-snowplow-identities-275"
+            "snowplow-incubator+snowplow-identities+275"
         );
         assert_eq!(
             parsed.as_str(),
@@ -658,6 +658,25 @@ mod tests {
                 "`{text}` answers a pull request exactly when its scheme is `pr`"
             );
         }
+    }
+
+    #[test]
+    fn two_pull_requests_whose_names_differ_only_where_a_dash_falls_keep_apart() {
+        let owner_holds_the_dash: InvocationRef = "pr:a-b/c#1".parse().unwrap();
+        let repo_holds_the_dash: InvocationRef = "pr:a/b-c#1".parse().unwrap();
+        assert_eq!(owner_holds_the_dash.record_key(), "a-b+c+1");
+        assert_eq!(repo_holds_the_dash.record_key(), "a+b-c+1");
+        assert_ne!(
+            owner_holds_the_dash.record_key(),
+            repo_holds_the_dash.record_key(),
+            "`-` is a name character in GitHub owners and repositories, so a key joined with \
+             it would give two pull requests one change record"
+        );
+        assert_ne!(
+            owner_holds_the_dash.slug(),
+            repo_holds_the_dash.slug(),
+            "and the slug is built from the key, so it keeps them apart too"
+        );
     }
 
     #[test]
