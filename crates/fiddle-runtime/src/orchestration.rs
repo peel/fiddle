@@ -5,8 +5,8 @@ use crate::journal::{AttemptJournal, AttemptTrace, FileJournal};
 use crate::ports::{ChangePort, WorkItemPort};
 use fiddle_core::{
     correlation_key, derive_next, CapabilityExecution, ChangeSetState, EvidenceRef, FiddleBuild,
-    InvocationRef, Mode, NextAction, Observation, ProgressEntry, Published, ReportBundle,
-    RunOutcome, WorkRef, WorkStateView,
+    InvocationRef, InvocationScheme, Mode, NextAction, Observation, ProgressEntry, Published,
+    ReportBundle, RunOutcome, WorkRef, WorkStateView,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,16 +37,20 @@ pub enum Addressed<'a> {
 
 impl<'a> Addressed<'a> {
     pub fn of(reference: &'a fiddle_core::InvocationRef) -> Self {
-        if reference.scheme() == fiddle_core::InvocationScheme::Pr {
-            return Addressed::NoWorkItem {
+        match reference.scheme() {
+            InvocationScheme::Pr => Addressed::NoWorkItem {
                 change_set: reference.record_key(),
-            };
-        }
-        match reference.value() {
-            "" => Addressed::NoWorkItem {
-                change_set: reference.scheme().as_str(),
             },
-            value => Addressed::WorkItem(value),
+            InvocationScheme::Beans
+            | InvocationScheme::Jira
+            | InvocationScheme::Scheduled
+            | InvocationScheme::Scanner
+            | InvocationScheme::Cve => match reference.value() {
+                "" => Addressed::NoWorkItem {
+                    change_set: reference.scheme().as_str(),
+                },
+                value => Addressed::WorkItem(value),
+            },
         }
     }
 
