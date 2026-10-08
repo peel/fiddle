@@ -675,6 +675,7 @@ fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_
         ("scheduled", "scheduled:nightly".to_string()),
         ("scanner", "scanner:cve-2026-1".to_string()),
         ("cve", "cve".to_string()),
+        ("pr", "pr:acme/icecube#7".to_string()),
     ];
     let mut compared = 0;
     for (scheme, reference) in resolved {
@@ -698,21 +699,17 @@ fn the_capability_help_names_the_default_the_binary_resolves_for_each_scheme_it_
         compared += 1;
     }
     assert_eq!(
-        compared, 4,
+        compared, 5,
         "this lane compared {compared} schemes against the binary's derivation, and it \
-         is written to compare four"
+         is written to compare the five that inspect offline; `jira` is the sixth, and an \
+         inspect over it needs a `[jira]` table this scenario does not write"
     );
 
     assert!(
         help.contains("`jira` -> `toil`"),
-        "the fifth scheme cannot be inspected offline, so this lane pins its row as a \
+        "`jira` cannot be inspected offline, so this lane pins its row as a \
          literal; `crates/fiddle-acceptance/tests/toil.rs` drives `run jira:KEY` with no \
          flag and reaches the toil gate: {help}"
-    );
-    assert!(
-        help.contains("`pr` -> `toil`"),
-        "the sixth scheme cannot be inspected offline either, since its default is the same \
-         workflow document, so this lane pins its row as a literal: {help}"
     );
     assert!(
         !help.contains("every other scheme marks"),

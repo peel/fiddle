@@ -579,6 +579,7 @@ mod tests {
             "acme/icecube#-7",
             "acme/ice/cube#7",
             "acme/icecube#99999999999999999999999",
+            "a+b/c#1",
         ] {
             assert!(
                 matches!(
@@ -608,6 +609,7 @@ mod tests {
                 "acme/icecube#99999999999999999999999",
                 "acme/icecube#9999999999",
             ),
+            ("a+b/c#1", "a-b/c#1"),
         ] {
             assert!(
                 matches!(
