@@ -46,11 +46,13 @@ HEADER=$(awk '/^[^#]/ { exit } { print }' "$TEMPLATE")
 ON=$(block '^on:' '^[^[:space:]#]')
 GUARD=$(block '^    if: >-' '^    runs-on:')
 PERMISSIONS=$(block '^permissions:' '^[^[:space:]#]')
+JOBS=$(block '^jobs:' '^[^[:space:]#]')
 CONCURRENCY=$(block '^    concurrency:$' '^    [^[:space:]#]')
 HANDLE=$(sed -nE 's/^const MENTION: &str = "([^"]+)";$/\1/p' "$MAIN")
 ASSOCIATIONS='fromJSON\('"'"'\["OWNER", "MEMBER", "COLLABORATOR"\]'"'"'\)'
 
 [ -n "$ON" ] || { echo "test-host-workflow-fiddle-ai: the template has no on: block, so no trigger was checked" >&2; exit 2; }
+[ -n "$JOBS" ] || { echo "test-host-workflow-fiddle-ai: the template has no jobs: block, so no job was checked" >&2; exit 2; }
 [ -n "$GUARD" ] || { echo "test-host-workflow-fiddle-ai: the template has no job if: block, so no guard was checked" >&2; exit 2; }
 [ -n "$HANDLE" ] || { echo "test-host-workflow-fiddle-ai: $MAIN names no MENTION, so fiddle's own rule cannot be compared" >&2; exit 2; }
 
@@ -61,6 +63,12 @@ holds "a created review comment" '^  pull_request_review_comment:$' "$ON"
 counts "the on: block names three events" 3 '^  [a-z_]+:' "$ON"
 counts "two events act on creation" 2 'types: \[created\]$' "$ON"
 counts "one acts on submission" 1 'types: \[submitted\]$' "$ON"
+
+echo "one job runs, and it is the guarded one"
+counts "the workflow holds exactly one job" 1 '^  [A-Za-z0-9_-]+:' "$JOBS"
+holds "and that job is fiddle" '^  fiddle:$' "$JOBS"
+counts "exactly one job-level if" 1 '^    if:' "$JOBS"
+holds "fiddle's first key is the guard" '^  fiddle:$' "$(printf '%s\n' "$JOBS" | grep -B1 -E '^    if: >-$' | head -1)"
 
 echo "its guard requires the mention, an entitled association and a sender that is no bot"
 holds "a bot sender is excluded" "^      github\.event\.sender\.type != 'Bot'$" "$GUARD"
