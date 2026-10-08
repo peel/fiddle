@@ -4,9 +4,95 @@ pub fn mentions(text: &str, handle: &str) -> bool {
     if handle.is_empty() {
         return false;
     }
+    let text = without_code_or_quotes(text);
     text.char_indices()
         .filter(|(_, it)| *it == '@')
-        .any(|(at, _)| opens_a_mention(text, at) && names_the_handle(&text[at + 1..], handle))
+        .any(|(at, _)| opens_a_mention(&text, at) && names_the_handle(&text[at + 1..], handle))
+}
+
+fn without_code_or_quotes(text: &str) -> String {
+    let mut fence: Option<(char, usize)> = None;
+    let mut kept = Vec::new();
+    for line in text.split('\n') {
+        let trimmed = line.trim_start();
+        match fence {
+            Some((mark, length)) => {
+                if closes(trimmed, mark, length) {
+                    fence = None;
+                }
+                kept.push("");
+            }
+            None => {
+                if let Some(opened) = opens(trimmed) {
+                    fence = Some(opened);
+                    kept.push("");
+                } else if trimmed.starts_with('>') {
+                    kept.push("");
+                } else {
+                    kept.push(line);
+                }
+            }
+        }
+    }
+    without_code_spans(&kept.join("\n"))
+}
+
+fn run_of(line: &str, mark: char) -> usize {
+    line.chars().take_while(|it| *it == mark).count()
+}
+
+fn opens(line: &str) -> Option<(char, usize)> {
+    ['`', '~']
+        .into_iter()
+        .map(|mark| (mark, run_of(line, mark)))
+        .find(|(_, length)| *length >= 3)
+}
+
+fn closes(line: &str, mark: char, length: usize) -> bool {
+    let run = run_of(line, mark);
+    run >= length && line[run * mark.len_utf8()..].trim().is_empty()
+}
+
+fn without_code_spans(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut kept = chars.clone();
+    let mut at = 0;
+    while at < chars.len() {
+        if chars[at] != '`' {
+            at += 1;
+            continue;
+        }
+        let length = backticks_from(&chars, at);
+        let inside = at + length;
+        match closing_run(&chars, inside, length) {
+            Some(close) => {
+                kept[inside..close].fill(' ');
+                at = close + length;
+            }
+            None => at = inside,
+        }
+    }
+    kept.into_iter().collect()
+}
+
+fn backticks_from(chars: &[char], at: usize) -> usize {
+    chars[at..].iter().take_while(|it| **it == '`').count()
+}
+
+fn closing_run(chars: &[char], from: usize, length: usize) -> Option<usize> {
+    let mut at = from;
+    while at < chars.len() {
+        if chars[at] != '`' {
+            at += 1;
+            continue;
+        }
+        let run = backticks_from(chars, at);
+        if run == length {
+            return Some(at);
+        }
+        at += run;
+    }
+    None
 }
 
 fn opens_a_mention(text: &str, at: usize) -> bool {
@@ -124,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_mention_counts_when_an_earlier_one_is_inside_code() {
+    fn a_word_mention_after_a_code_span_counts_and_a_code_span_with_an_address_does_not() {
         assert!(
             mentions("call it as `@fiddle-ai`, so @fiddle-ai do it", "fiddle-ai"),
             "the second occurrence is a word, so the text mentions the handle"
@@ -132,6 +218,120 @@ mod tests {
         assert!(
             !mentions("call it as `@fiddle-ai` or x@fiddle-ai", "fiddle-ai"),
             "no occurrence is a word, so the text does not mention the handle"
+        );
+    }
+
+    #[test]
+    fn a_mention_inside_an_inline_code_span_is_left_out() {
+        assert!(
+            !mentions("`ping @fiddle-ai`", "fiddle-ai"),
+            "a mention inside a code span is shown, not asked"
+        );
+        assert!(
+            mentions("`ping` @fiddle-ai", "fiddle-ai"),
+            "the same mention after the span closes is asked"
+        );
+        assert!(
+            !mentions("``a ` @fiddle-ai``", "fiddle-ai"),
+            "a span opened by two backticks closes only at two, so a single one inside does not end it"
+        );
+        assert!(
+            mentions("``a`` @fiddle-ai", "fiddle-ai"),
+            "the same mention after the two-backtick span closes is asked"
+        );
+        assert!(
+            mentions("see `x` @fiddle-ai", "fiddle-ai"),
+            "a mention after a closed span is asked"
+        );
+        assert!(
+            !mentions("see `x`@fiddle-ai", "fiddle-ai"),
+            "a backtick right before the at sign still ends no word, as before"
+        );
+    }
+
+    #[test]
+    fn an_unmatched_backtick_is_literal_so_the_mention_after_it_counts() {
+        assert!(
+            mentions("`oops @fiddle-ai", "fiddle-ai"),
+            "a backtick with no closing run of its length opens no span"
+        );
+        assert!(
+            !mentions("`oops @fiddle-ai`", "fiddle-ai"),
+            "the same text with its closing backtick is a span"
+        );
+    }
+
+    #[test]
+    fn a_mention_inside_a_fenced_block_is_left_out() {
+        assert!(
+            !mentions("```\n@fiddle-ai\n```", "fiddle-ai"),
+            "a mention between backtick fences is shown, not asked"
+        );
+        assert!(
+            mentions("```\nnot here\n```\n@fiddle-ai", "fiddle-ai"),
+            "a mention after the backtick fence closes is asked"
+        );
+        assert!(
+            !mentions("~~~\n@fiddle-ai\n~~~", "fiddle-ai"),
+            "a mention between tilde fences is shown, not asked"
+        );
+        assert!(
+            mentions("~~~\nnot here\n~~~\n@fiddle-ai", "fiddle-ai"),
+            "a mention after the tilde fence closes is asked"
+        );
+        assert!(
+            !mentions("```\n@fiddle-ai", "fiddle-ai"),
+            "an unclosed fence runs to the end of the text"
+        );
+        assert!(
+            mentions("@fiddle-ai\n```\nlog", "fiddle-ai"),
+            "a mention before an unclosed fence is asked"
+        );
+        assert!(
+            !mentions("````\n```\n@fiddle-ai\n````", "fiddle-ai"),
+            "a shorter fence inside a longer one does not close it"
+        );
+        assert!(
+            !mentions("```\n~~~\n@fiddle-ai\n```", "fiddle-ai"),
+            "a tilde fence inside a backtick fence does not close it"
+        );
+    }
+
+    #[test]
+    fn a_mention_on_a_quoted_line_is_left_out() {
+        assert!(
+            !mentions("> @fiddle-ai fix CI", "fiddle-ai"),
+            "a quoted mention repeats what someone else asked"
+        );
+        assert!(
+            !mentions("  >@fiddle-ai fix CI", "fiddle-ai"),
+            "a quote is a line whose first non-space character is the marker"
+        );
+        assert!(
+            mentions("> quoted\n@fiddle-ai fix it", "fiddle-ai"),
+            "a mention on the line after the quote is asked"
+        );
+        assert!(
+            mentions("@fiddle-ai > fix it", "fiddle-ai"),
+            "a quote marker later in the line does not make the line a quote"
+        );
+    }
+
+    #[test]
+    fn multibyte_text_around_left_out_regions_does_not_panic() {
+        assert!(
+            mentions(
+                "żółw `ąę @fiddle-ai` 🦀\n> ć @fiddle-ai\n日本 @fiddle-ai",
+                "fiddle-ai"
+            ),
+            "the last line is a mention among multibyte text"
+        );
+        assert!(
+            !mentions(
+                "żółw `ąę @fiddle-ai` 🦀\n> ć @fiddle-ai\n```\n日本 @fiddle-ai",
+                "fiddle-ai"
+            ),
+            "every mention among multibyte text is left out"
         );
     }
 

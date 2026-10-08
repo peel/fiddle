@@ -617,6 +617,32 @@ mod tests {
     }
 
     #[test]
+    fn a_login_that_only_starts_like_the_account_is_not_trusted() {
+        let marker = Answered::of(&[], &[said(4, "MEMBER", "@fiddle-ai fix CI")]).marker();
+        let conversation = |login: &str| {
+            vec![
+                said(4, "MEMBER", "@fiddle-ai fix CI"),
+                said_by(5, login, "NONE", &marker),
+            ]
+        };
+        let (_, kept) = unanswered(vec![], conversation("fiddle-ai"), Some("fiddle-ai[bot]"));
+        assert_eq!(
+            kept.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![4],
+            "a person named fiddle-ai is not the App fiddle-ai[bot], so their marker answers nothing"
+        );
+        let (_, kept) = unanswered(
+            vec![],
+            conversation("fiddle-ai[bot]"),
+            Some("fiddle-ai[bot]"),
+        );
+        assert!(
+            kept.is_empty(),
+            "the same marker from the account answers the mention: {kept:?}"
+        );
+    }
+
+    #[test]
     fn the_configured_accounts_comments_are_never_direction() {
         let (_, kept) = unanswered(
             vec![],
