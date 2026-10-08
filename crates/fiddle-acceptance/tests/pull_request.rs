@@ -150,7 +150,28 @@ impl PullRequestForge {
         std::fs::write(&page, serde_json::Value::Array(conversation).to_string()).unwrap();
     }
 
+    fn a_bot_reviewed(&self, id: u64, login: &str, association: &str, commit: &str, body: &str) {
+        std::fs::write(
+            self.stub.join("reviews").join("page-1.json"),
+            serde_json::json!([{
+                "id": id,
+                "submitted_at": "2026-10-08T11:30:00Z",
+                "user": { "login": login, "id": id, "type": "Bot" },
+                "author_association": association,
+                "state": "COMMENTED",
+                "commit_id": commit,
+                "body": body,
+            }])
+            .to_string(),
+        )
+        .unwrap();
+    }
+
     fn a_bot_commented(&self, id: u64, login: &str, body: &str) {
+        self.a_bot_commented_as(id, login, "NONE", body);
+    }
+
+    fn a_bot_commented_as(&self, id: u64, login: &str, association: &str, body: &str) {
         let page = self.stub.join("issue-comments").join("page-1.json");
         let mut conversation: Vec<serde_json::Value> =
             serde_json::from_str(&std::fs::read_to_string(&page).unwrap()).unwrap();
@@ -159,7 +180,7 @@ impl PullRequestForge {
             "body": body,
             "created_at": "2026-10-08T11:00:00Z",
             "updated_at": "2026-10-08T11:00:00Z",
-            "author_association": "NONE",
+            "author_association": association,
             "user": { "login": login, "id": id, "type": "Bot" },
             "performed_via_github_app": { "slug": login.trim_end_matches("[bot]") },
         }));
@@ -878,22 +899,59 @@ fn a_bot_comment_an_entitled_mention_names_is_read_as_context_and_one_nobody_nam
 }
 
 #[test]
-fn a_bot_comment_with_no_mention_naming_it_steers_nothing() {
-    let world = PullRequestWorld::serving(vec![]);
-    world.github().a_bot_commented(
+fn a_bot_steers_nothing_even_as_a_member_mentioning_the_handle() {
+    for association in ["OWNER", "MEMBER"] {
+        let world = PullRequestWorld::serving(vec![]);
+        world.github().a_bot_reviewed(
+            8_100,
+            "claude[bot]",
+            association,
+            &world.opened_at,
+            &format!("@fiddle-ai {CLAUDES_FIRST_POINT}"),
+        );
+        world.github().a_bot_commented_as(
+            8_101,
+            "claude[bot]",
+            association,
+            &format!("@fiddle-ai {CLAUDES_SECOND_POINT}"),
+        );
+
+        let run = world.run(REFERENCE);
+
+        assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+        assert!(
+            world.model_prompts().is_empty(),
+            "a bot whose association is {association} reviews the head and comments, both \
+             mentioning the handle, and still steers nothing, because a bot never directs"
+        );
+        assert!(
+            world.github().replies().is_empty(),
+            "nothing was answered for the {association} bot"
+        );
+    }
+}
+
+#[test]
+fn a_member_bots_mention_is_not_marked_answered_beside_a_persons() {
+    let world = PullRequestWorld::serving(a_change_named("Rename the helper"));
+    world.github().a_bot_commented_as(
         8_101,
         "claude[bot]",
-        &format!("@fiddle-ai {CLAUDES_FIRST_POINT}"),
+        "MEMBER",
+        &format!("@fiddle-ai {CLAUDES_SECOND_POINT}"),
     );
+    world.github().a_member_commented(8_102, THE_MENTION);
 
     let run = world.run(REFERENCE);
 
     assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "{replies:?}");
     assert!(
-        world.model_prompts().is_empty(),
-        "a bot steers nothing by itself, even when it mentions the handle"
+        replies[0].contains("comments=8102 ") && !replies[0].contains("8101"),
+        "the answer names the person's mention and not the bot's, which directed nothing: {}",
+        replies[0]
     );
-    assert!(world.github().replies().is_empty(), "nothing was answered");
 }
 
 #[test]

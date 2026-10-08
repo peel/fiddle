@@ -142,11 +142,11 @@ pub fn directing(
     (
         reviews
             .into_iter()
-            .filter(|it| entitled(&it.author_association))
+            .filter(|it| !it.by_a_bot && entitled(&it.author_association))
             .collect(),
         conversation
             .into_iter()
-            .filter(|it| entitled(&it.author_association))
+            .filter(|it| !it.by_a_bot && entitled(&it.author_association))
             .collect(),
     )
 }
@@ -568,6 +568,34 @@ mod tests {
             vec![4],
             "and a comment posted through an App by a person is not a bot's, so it is not \
              quoted as a cited bot"
+        );
+    }
+
+    #[test]
+    fn a_bot_never_directs_whatever_its_association() {
+        let bot_review = Reviewed {
+            by_a_bot: true,
+            ..reviewed(1, "OWNER", "@fiddle-ai rename it")
+        };
+        let bot_comment = HumanResponse {
+            by_a_bot: true,
+            is_bot: true,
+            ..said(2, "MEMBER", "@fiddle-ai fix CI")
+        };
+        let (reviews, conversation) = directing(
+            vec![bot_review, reviewed(3, "OWNER", "@fiddle-ai rename it")],
+            vec![bot_comment, said(4, "MEMBER", "@fiddle-ai fix CI")],
+            "fiddle-ai",
+        );
+        assert_eq!(
+            reviews.iter().map(|it| it.id).collect::<Vec<_>>(),
+            vec![3],
+            "an entitled bot's mention in a review directs nothing, and a person's does"
+        );
+        assert_eq!(
+            conversation.iter().map(|it| it.comment).collect::<Vec<_>>(),
+            vec![4],
+            "and so in a comment"
         );
     }
 }
