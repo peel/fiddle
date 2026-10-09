@@ -97,7 +97,13 @@ CHECK_EXIT=$?
 CHECK_SAID=$(head -c 2000 "$CHECK_ERRORS")
 rm -f "$CHECK_ERRORS"
 [ "$CHECK_EXIT" -eq 0 ] || cannot_locate "fiddle config check exited $CHECK_EXIT: $CHECK_SAID"
-ROOT=$(printf '%s' "$CHECKED_DOCUMENT" | jq -r 'if (.stub.root | type) == "string" then .stub.root else empty end' 2>/dev/null)
+ROOT_KIND=$(printf '%s' "$CHECKED_DOCUMENT" | jq -r 'if (.stub.root | type) != "string" then "none" elif (.stub.root | test("[\u0000-\u001f\u007f]")) then "control" else "named" end' 2>/dev/null)
+case "$ROOT_KIND" in
+  named) ;;
+  control) cannot_locate "fiddle's root holds a control character, which this script cannot name safely" ;;
+  *) cannot_locate "fiddle config check reported no [stub] root: $CHECKED_DOCUMENT" ;;
+esac
+ROOT=$(printf '%s' "$CHECKED_DOCUMENT" | jq -r '.stub.root' 2>/dev/null)
 [ -n "$ROOT" ] || cannot_locate "fiddle config check reported no [stub] root: $CHECKED_DOCUMENT"
 case "$ROOT" in
   /*) ;;

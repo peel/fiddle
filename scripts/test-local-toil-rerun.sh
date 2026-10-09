@@ -290,6 +290,38 @@ spelled() {
 spelled "a literal string root" "root = 'state'" literal
 spelled "a root followed by a comment" 'root = "state" # c' commented
 
+echo "a root fiddle reports with a control character is refused, and the path it would strip to is left alone"
+CONTROL="fiddle's root holds a control character, which this script cannot name safely"
+controlled() {
+  local what="$1" stripped="$2" here="$DIR/controlled-$3"
+  mkdir -p "$here/$stripped/changes" || exit 2
+  { sed -n '1,/^\[stub\]$/p' "$CONFIG"; cat; sed -n '/^\[report\]$/,$p' "$CONFIG"; } > "$here/deployment.toml"
+  local reported
+  reported=$(cd "$here" && "$FIDDLE" config check --config deployment.toml --json 2>/dev/null | jq -r '.stub.root | test("\n$")')
+  CHECKED=$((CHECKED + 1))
+  [ "$reported" = true ] || fail "$what: fiddle does not report a root ending in a newline, so the fixture measures nothing"
+  local decoy="$here/$stripped/changes/acme+icecube+11.json"
+  printf '{"marker":"decoy001"}' > "$decoy"
+  local out rc
+  out=$(cd "$here" && bash "$SCRIPT" --config deployment.toml --ref 'pr:acme/icecube#11' --forget 2>&1); rc=$?
+  CHECKED=$((CHECKED + 1))
+  [ "$rc" -eq 2 ] || fail "$what: exited $rc, not 2: $out"
+  check "$what is refused with the reason" "$CONTROL" "$out"
+  check "$what is refused as nothing judged" "$WHERE" "$out"
+  lacks "$what reports no verdict for the stripped path" "decoy001" "$out"
+  CHECKED=$((CHECKED + 1))
+  [ -f "$decoy" ] || fail "$what: --forget removed the record under the stripped path, which fiddle does not read"
+}
+controlled 'a root with an escaped newline' state escaped <<'TOML'
+root = "state\n"
+
+TOML
+controlled 'a multi-line root ending in a newline' s4 multiline <<'TOML'
+root = """s4
+"""
+
+TOML
+
 echo "--forget removes a file, a symlink or an empty directory, and nothing that holds files"
 rm -rf "$PR9"
 mkdir -p "$PR9/inner"
