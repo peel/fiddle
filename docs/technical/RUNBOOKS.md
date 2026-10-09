@@ -946,7 +946,9 @@ answer: the marker fiddle read and fiddle's assessment, or that fiddle reports
 the record unreadable, with fiddle's reason. The fiddle it asks is `--fiddle
 <path>`, else `$FIDDLE`, else `fiddle` on the PATH. When fiddle cannot answer
 either question, the script judges nothing and exits 2, so it needs fiddle even
-when there is no record. For a `jira:` reference, `fiddle inspect` makes a live
+when there is no record. It also exits 2 when the root fiddle reports holds a
+control character, such as a trailing newline, because it cannot name that path
+safely. For a `jira:` reference, `fiddle inspect` makes a live
 request to the Jira site the document configures. The script prints the run for
 you to type, and does not run it. Run it from the directory you run fiddle
 from, because fiddle resolves a relative `[stub] root` against it.
