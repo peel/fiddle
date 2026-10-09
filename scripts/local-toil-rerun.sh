@@ -29,7 +29,8 @@ A pr: reference names a pull request, which is not a work item, so a record
 fiddle reads does not stop a run. Each run answers only the mentions not yet
 answered. To run a mention again, delete fiddle's answer comment or post a new
 mention. A record fiddle reports unreadable blocks a run over its reference
-until it is removed, and --forget removes it.
+until it is removed. --forget removes it unless it is a directory that holds
+files, which it leaves for you to decide on.
 
 Run it from the directory you run fiddle from. fiddle resolves a relative
 [stub] root against its working directory (ADR 092), and this script asks
@@ -159,7 +160,11 @@ if [ "$EXISTS" -eq 0 ]; then
     echo "local-toil-rerun: it does not exist, so this machine already behaves as a runner does"
   fi
 elif [ "$CHANGES" = "unavailable" ]; then
-  echo "local-toil-rerun: fiddle reports this record unreadable, so a run over this reference is blocked until it is removed; --forget removes it"
+  if [ -d "$RECORD" ] && [ ! -L "$RECORD" ] && [ -n "$(ls -A -- "$RECORD")" ]; then
+    echo "local-toil-rerun: fiddle reports this record unreadable, so a run over this reference is blocked until it is removed; it is a directory that holds files, so --forget will not remove it"
+  else
+    echo "local-toil-rerun: fiddle reports this record unreadable, so a run over this reference is blocked until it is removed; --forget removes it"
+  fi
   echo "local-toil-rerun: fiddle says: $WHY"
   if [ "$FORGET" -eq 1 ]; then
     forget

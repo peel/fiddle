@@ -300,6 +300,9 @@ OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9' --forget); RC
 CHECKED=$((CHECKED + 1))
 [ "$RC" -eq 2 ] || fail "--forget over a directory that holds files exited $RC, not 2: $OUT"
 check "--forget says why it leaves a directory that holds files" "a directory that holds files" "$OUT"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9')
+check "without --forget it says --forget will not remove a directory that holds files" "it is a directory that holds files, so --forget will not remove it" "$OUT"
+lacks "and does not promise that --forget removes it" "; --forget removes it" "$OUT"
 CHECKED=$((CHECKED + 1))
 [ -f "$PR9/inner/note" ] || fail "--forget removed what a directory held"
 rm -rf "$PR9"
