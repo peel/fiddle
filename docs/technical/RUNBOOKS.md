@@ -863,6 +863,7 @@ Two settings belong to the App.
 ```toml
 [github]
 repo = "snowplow-incubator/snowplow-identities"
+base = "main"
 token = { env = "FIDDLE_GITHUB_TOKEN" }
 account = "fiddle-ai[bot]"
 
@@ -937,26 +938,34 @@ So a local run and a runner behave the same while the record is one fiddle
 wrote. To run a mention again, delete fiddle's answer comment or post a new
 mention.
 
-`scripts/local-toil-rerun.sh` names the record. When anything is at its path,
-it asks fiddle: it runs `fiddle inspect <ref> --config <document> --json` and
-reports fiddle's answer, which is the marker fiddle read and fiddle's
-assessment, or that fiddle reports the record unreadable, with fiddle's reason.
-The fiddle it asks is `--fiddle <path>`, else `$FIDDLE`, else `fiddle` on the
-PATH. When fiddle cannot be asked, the script judges nothing and exits 2. For a
-`jira:` reference, `fiddle inspect` also reads the ticket. The script prints the
-run for you to type, and does not run it. Run it from the directory you run
-fiddle from, because a relative `[stub] root` is resolved against it.
+`scripts/local-toil-rerun.sh` asks fiddle twice. It runs `fiddle config check
+--config <document> --json` and takes the `[stub] root` fiddle reports, and it
+names the record under that root. When anything is at the record's path, it
+runs `fiddle inspect <ref> --config <document> --json` and reports fiddle's
+answer: the marker fiddle read and fiddle's assessment, or that fiddle reports
+the record unreadable, with fiddle's reason. The fiddle it asks is `--fiddle
+<path>`, else `$FIDDLE`, else `fiddle` on the PATH. When fiddle cannot answer
+either question, the script judges nothing and exits 2, so it needs fiddle even
+when there is no record. For a `jira:` reference, `fiddle inspect` makes a live
+request to the Jira site the document configures. The script prints the run for
+you to type, and does not run it. Run it from the directory you run fiddle
+from, because fiddle resolves a relative `[stub] root` against it.
 
 ```sh
 scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
   --ref 'pr:snowplow-incubator/snowplow-identities#275'
 ```
 
-Quote the reference: `#` starts a comment in some shells and a glob in others.
+Quote the reference. In bash, sh and zsh a `#` inside a word is literal, but
+zsh with `extendedglob` set reads it as a glob operator and refuses the word
+with `no matches found`.
 A malformed reference, or a number above 18446744073709551615, is refused with
 the form it should take, `pr:<owner>/<repo>#<number>`. `--forget` removes the
-record. For a record fiddle reads, that changes nothing for a `pr:` run; for
-one fiddle reports unreadable, it ends the block.
+record when it is a file, a symlink or an empty directory, and checks that the
+path is gone. It refuses a directory that holds anything, with exit 2, and
+leaves what it holds for you to decide on. For a record fiddle reads, removing
+it changes nothing for a `pr:` run; for one fiddle reports unreadable, it ends
+the block.
 
 ## Record what the model was sent and what it returned
 
