@@ -928,9 +928,10 @@ A run that steers, answers and is not rejected writes
 `<[stub] root>/changes/<owner>+<repo>+<n>.json`. A record fiddle wrote does not
 stop the next run. A pull request is not a work item, so a marker over it is not
 a completion, and a second run over the same pull request reads the pull request
-again. A record fiddle cannot read, such as one that is not JSON, one whose
-marker is not a string, or a directory at its path, blocks every run over that
-reference until it is removed. What decides whether there is work is the
+again. A record fiddle cannot read blocks every run over that reference until
+it is removed. fiddle reports these unreadable: a record that is not JSON, one
+whose marker is not a string, a directory at the record's path, a records
+directory fiddle may not read, and a `[stub] root` that is a file. What decides whether there is work is the
 answer on the pull request: each run answers only the mentions not yet answered, and with
 every mention answered it completes with nothing to do and pays for no agent.
 
@@ -938,20 +939,19 @@ So a local run and a runner behave the same while the record is one fiddle
 wrote. To run a mention again, delete fiddle's answer comment or post a new
 mention.
 
-`scripts/local-toil-rerun.sh` asks fiddle twice. It runs `fiddle config check
---config <document> --json` and takes the `[stub] root` fiddle reports, and it
-names the record under that root. When anything is at the record's path, it
-runs `fiddle inspect <ref> --config <document> --json` and reports fiddle's
-answer: the marker fiddle read and fiddle's assessment, or that fiddle reports
-the record unreadable, with fiddle's reason. The fiddle it asks is `--fiddle
-<path>`, else `$FIDDLE`, else `fiddle` on the PATH. When fiddle cannot answer
-either question, the script judges nothing and exits 2, so it needs fiddle even
-when there is no record. It also exits 2 when the root fiddle reports holds a
-control character, such as a trailing newline, because it cannot name that path
-safely. For a `jira:` reference, `fiddle inspect` makes a live
-request to the Jira site the document configures. The script prints the run for
-you to type, and does not run it. Run it from the directory you run fiddle
-from, because fiddle resolves a relative `[stub] root` against it.
+`scripts/local-toil-rerun.sh` decides nothing itself. It runs `fiddle inspect
+<ref> --config <document> --json` and prints fiddle's change observation and
+fiddle's assessment as `jq -c` prints them from fiddle's answer, with one sentence that restates
+whether fiddle reports the record available or unavailable, and why. When
+fiddle refuses, for example a malformed reference, the script prints fiddle's
+error as it is and exits with fiddle's code: for `pr:acme#7`, fiddle exits 2
+and says to write `pr:<owner>/<repo>#<number>`. When fiddle cannot be run, or
+answers in a shape the script does not read, the script exits 2. The fiddle it
+runs is `--fiddle <path>`, else `$FIDDLE`, else `fiddle` on the PATH. For a
+`jira:` reference, `fiddle inspect` makes a live request to the Jira site the
+document configures. Run it from the directory you run fiddle from, because
+fiddle resolves a relative `[stub] root` against it. The script prints the run
+for you to type, and does not run it.
 
 ```sh
 scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
@@ -961,13 +961,18 @@ scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
 Quote the reference. In bash, sh and zsh a `#` inside a word is literal, but
 zsh with `extendedglob` set reads it as a glob operator and refuses the word
 with `no matches found`.
-A malformed reference, or a number above 18446744073709551615, is refused with
-the form it should take, `pr:<owner>/<repo>#<number>`. `--forget` removes the
-record when it is a file, a symlink or an empty directory, and checks that the
-path is gone. It refuses a directory that holds anything, with exit 2, and
-leaves what it holds for you to decide on. For a record fiddle reads, removing
-it changes nothing for a `pr:` run; for one fiddle reports unreadable, it ends
-the block.
+
+`--forget` removes the record fiddle named in its answer,
+`stub:changes/<name>.json`, under the `[stub] root` that `fiddle config check
+--config <document> --json` reports. It refuses, with exit 2 and nothing
+removed, a name outside `[A-Za-z0-9._:+-]` or not ending in `.json`, a root
+that is not absolute, and a root that holds a control character (C0, DEL or
+C1). It removes the record only when it is a regular file, a symlink or an
+empty directory, and checks that the path is gone; anything else, including a
+directory that holds files, a path it cannot examine, or nothing at the path,
+it leaves, and exits 2. When fiddle named no record, `--forget` removes nothing
+and says so. For a record fiddle reads, removing it changes nothing for a `pr:`
+run; for one fiddle reports unavailable, it ends the block.
 
 ## Record what the model was sent and what it returned
 
