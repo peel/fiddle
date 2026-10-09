@@ -13,13 +13,17 @@ usage: local-toil-rerun.sh --config <deployment.toml> --ref <jira:KEY | pr:OWNER
 
 A runner starts with an empty filesystem, so it holds no record of earlier
 work. A developer's machine keeps the change record a run wrote under the
-[stub] root. This script names that record and, when anything is there, asks
-fiddle what it makes of it: it runs `fiddle inspect <ref> --config <document>
---json` and reports fiddle's answer. With --forget it removes the record.
+[stub] root. This script asks fiddle where that root is, with `fiddle config
+check --config <document> --json`, and names the record under it. When
+anything is at the record's path, it asks fiddle what it makes of it, with
+`fiddle inspect <ref> --config <document> --json`, and reports fiddle's answer.
+With --forget it removes a record that is a file, a symlink or an empty
+directory, and refuses a directory that holds anything.
 
 The fiddle it asks is --fiddle, else $FIDDLE, else `fiddle` on the PATH. When
-fiddle cannot be asked, the script judges nothing and exits 2. For a jira:
-reference, fiddle inspect also reads the ticket.
+fiddle cannot answer either question, the script judges nothing and exits 2.
+For a jira: reference, fiddle inspect makes a live request to the configured
+Jira site.
 
 A pr: reference names a pull request, which is not a work item, so a record
 fiddle reads does not stop a run. Each run answers only the mentions not yet
@@ -28,7 +32,8 @@ mention. A record fiddle reports unreadable blocks a run over its reference
 until it is removed, and --forget removes it.
 
 Run it from the directory you run fiddle from. fiddle resolves a relative
-[stub] root against its working directory (ADR 092), and so does this script.
+[stub] root against its working directory (ADR 092), and this script asks
+fiddle from the same directory.
 
 It prints the run for you to type. It does not run it: a toil run writes to a
 repository and a ticket, and that is yours to authorise.
@@ -76,23 +81,26 @@ case "$REFERENCE" in
   *) fail "--ref must name a jira ticket or a pull request, and this one is '$REFERENCE'" ;;
 esac
 
-ROOT=$(awk '
-  /^[[:space:]]*\[/ { in_stub = ($0 ~ /^[[:space:]]*\[stub\][[:space:]]*$/) ; next }
-  in_stub && /^[[:space:]]*root[[:space:]]*=/ {
-    line = $0
-    sub(/^[^=]*=[[:space:]]*/, "", line)
-    gsub(/^"|"$/, "", line)
-    print line
-    exit
-  }
-' "$CONFIG")
+cannot_locate() {
+  echo "local-toil-rerun: cannot ask fiddle where its records are; nothing was judged: $*" >&2
+  exit 2
+}
 
-[ -n "$ROOT" ] || fail "$CONFIG names no [stub] root, so the completion record cannot be found"
-
+[ -n "$FIDDLE_BIN" ] || cannot_locate "--fiddle names no program"
+command -v "$FIDDLE_BIN" >/dev/null 2>&1 \
+  || cannot_locate "there is no fiddle at '$FIDDLE_BIN'; pass --fiddle <path> or set FIDDLE"
+command -v jq >/dev/null 2>&1 || cannot_locate "jq is not on the PATH, so fiddle's answer cannot be read"
+CHECK_ERRORS=$(mktemp "${TMPDIR:-/tmp}/local-toil-rerun-XXXXXX") || exit 2
+CHECKED_DOCUMENT=$("$FIDDLE_BIN" config check --config "$CONFIG" --json 2>"$CHECK_ERRORS")
+CHECK_EXIT=$?
+CHECK_SAID=$(head -c 2000 "$CHECK_ERRORS")
+rm -f "$CHECK_ERRORS"
+[ "$CHECK_EXIT" -eq 0 ] || cannot_locate "fiddle config check exited $CHECK_EXIT: $CHECK_SAID"
+ROOT=$(printf '%s' "$CHECKED_DOCUMENT" | jq -r 'if (.stub.root | type) == "string" then .stub.root else empty end' 2>/dev/null)
+[ -n "$ROOT" ] || cannot_locate "fiddle config check reported no [stub] root: $CHECKED_DOCUMENT"
 case "$ROOT" in
   /*) ;;
-  *) HERE="$(pwd)" || fail "the working directory cannot be read, so the relative root '$ROOT' cannot be resolved"
-     ROOT="$HERE/$ROOT" ;;
+  *) cannot_locate "fiddle config check reported the root '$ROOT', which is not absolute" ;;
 esac
 
 RECORD="$ROOT/changes/$TICKET.json"
@@ -104,13 +112,9 @@ cannot_ask() {
 }
 
 EXISTS=0
-[ -e "$RECORD" ] && EXISTS=1
+{ [ -e "$RECORD" ] || [ -L "$RECORD" ]; } && EXISTS=1
 
 if [ "$EXISTS" -eq 1 ]; then
-  [ -n "$FIDDLE_BIN" ] || cannot_ask "--fiddle names no program"
-  command -v "$FIDDLE_BIN" >/dev/null 2>&1 \
-    || cannot_ask "there is no fiddle at '$FIDDLE_BIN'; pass --fiddle <path> or set FIDDLE"
-  command -v jq >/dev/null 2>&1 || cannot_ask "jq is not on the PATH, so fiddle's answer cannot be read"
   ERRORS=$(mktemp "${TMPDIR:-/tmp}/local-toil-rerun-XXXXXX") || exit 2
   ANSWER=$("$FIDDLE_BIN" inspect "$REFERENCE" --config "$CONFIG" --json 2>"$ERRORS")
   ASKED=$?
@@ -134,8 +138,16 @@ if [ "$EXISTS" -eq 1 ]; then
 fi
 
 forget() {
-  rm -rf -- "$RECORD" || fail "could not remove $RECORD"
-  [ ! -e "$RECORD" ] || fail "$RECORD is still there after --forget"
+  if [ -d "$RECORD" ] && [ ! -L "$RECORD" ]; then
+    if [ -n "$(ls -A -- "$RECORD")" ]; then
+      echo "local-toil-rerun: $RECORD is a directory that holds files, and --forget removes only a file, a symlink or an empty directory; decide what to do with what it holds, then remove it yourself" >&2
+      exit 2
+    fi
+    rmdir -- "$RECORD" || fail "could not remove $RECORD"
+  else
+    rm -f -- "$RECORD" || fail "could not remove $RECORD"
+  fi
+  [ ! -e "$RECORD" ] && [ ! -L "$RECORD" ] || fail "$RECORD is still there after --forget"
 }
 
 if [ "$EXISTS" -eq 0 ]; then

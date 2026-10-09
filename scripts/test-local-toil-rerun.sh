@@ -99,7 +99,7 @@ refuses "a reference that names no tracker" --config "$CONFIG" --ref beans:w-1
 
 echo "an absent record is reported as the runner's own state"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref jira:ISP-1)
-check "it resolves the root relative to where it runs" "record for ISP-1 is $(cd "$DIR" && pwd)/state/changes/ISP-1.json" "$OUT"
+check "it resolves the root relative to where it runs" "record for ISP-1 is $(cd "$DIR" && pwd -P)/state/changes/ISP-1.json" "$OUT"
 check "and names it absolutely rather than relative to the caller" "record for ISP-1 is /" "$OUT"
 check "it says the machine already behaves as a runner does" "already behaves as a runner" "$OUT"
 
@@ -127,7 +127,7 @@ printf '{"marker":"work0001"}' > "$DIR/work/state/changes/ISP-2.json"
 mkdir -p "$DIR/conf/state/changes" || exit 2
 printf '{"marker":"conf0001"}' > "$DIR/conf/state/changes/ISP-2.json"
 OUT=$(run_from "$DIR/work" --config "$DIR/conf/deployment.toml" --ref jira:ISP-2 --forget)
-check "it names the record under the working directory" "record for ISP-2 is $(cd "$DIR/work" && pwd)/state/changes/ISP-2.json" "$OUT"
+check "it names the record under the working directory" "record for ISP-2 is $(cd "$DIR/work" && pwd -P)/state/changes/ISP-2.json" "$OUT"
 check "fiddle reads the record under the working directory" "marker 'work0001'" "$OUT"
 CHECKED=$((CHECKED + 1))
 [ -f "$DIR/work/state/changes/ISP-2.json" ] \
@@ -136,7 +136,7 @@ CHECKED=$((CHECKED + 1))
 [ -f "$DIR/conf/state/changes/ISP-2.json" ] \
   || fail "--forget removed a record beside the document, which fiddle never reads"
 OUT=$(run_from "$DIR/work" --config ../conf/deployment.toml --ref jira:ISP-2)
-check "a relative --config is read from the working directory too" "record for ISP-2 is $(cd "$DIR/work" && pwd)/state/changes/ISP-2.json" "$OUT"
+check "a relative --config is read from the working directory too" "record for ISP-2 is $(cd "$DIR/work" && pwd -P)/state/changes/ISP-2.json" "$OUT"
 
 echo "a pr: reference names the record <owner>+<repo>+<n>"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#7')
@@ -229,30 +229,95 @@ check "a record fiddle cannot read is reported for a jira reference too" "$UNREA
 lacks "and is not said to complete the work" "reaches no step" "$OUT"
 
 echo "when fiddle cannot be asked, nothing is judged"
-printf '{"marker":"a"}' > "$PR9"
+WHERE="cannot ask fiddle where its records are; nothing was judged"
+WHETHER="cannot ask fiddle whether it can read this record; nothing was judged"
 asks_nothing() {
   CHECKED=$((CHECKED + 1))
-  local what="$1"; shift
+  local what="$1" said="$2"; shift 2
   local out rc
   out=$(cd "$DIR" && "$@" 2>&1); rc=$?
   [ "$rc" -eq 2 ] || fail "$what: exited $rc, not 2: $out"
   case "$out" in
-    *"cannot ask fiddle whether it can read this record; nothing was judged"*) ;;
-    *) fail "$what: did not say that nothing was judged: $out" ;;
+    *"$said"*) ;;
+    *) fail "$what: did not say '$said': $out" ;;
   esac
-  case "$out" in *"fiddle reads it"*|*"does not stop"*|*"unreadable, so"*) fail "$what: judged the record anyway: $out" ;; esac
+  case "$out" in *"fiddle reads it"*|*"does not stop"*|*"unreadable, so"*|*"does not exist"*) fail "$what: judged the record anyway: $out" ;; esac
 }
-asks_nothing "a fiddle that does not exist, named by --fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/no-such-fiddle"
-asks_nothing "a fiddle that does not exist, named by FIDDLE" env FIDDLE="$DIR/no-such-fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9'
+printf '{"marker":"a"}' > "$PR9"
+asks_nothing "a fiddle that does not exist, named by --fiddle" "$WHERE" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/no-such-fiddle"
+asks_nothing "a fiddle that does not exist, named by FIDDLE" "$WHERE" env FIDDLE="$DIR/no-such-fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9'
+asks_nothing "no record, and no fiddle to say where records are" "$WHERE" env FIDDLE="$DIR/no-such-fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#10'
 printf '#!/bin/sh\n"%s" "$@"\necho "and then it failed" >&2\nexit 3\n' "$FIDDLE" > "$DIR/failing-fiddle"
 chmod +x "$DIR/failing-fiddle"
-asks_nothing "a fiddle that answers and then exits non-zero" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/failing-fiddle"
+asks_nothing "a config check that answers and then exits non-zero" "$WHERE" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/failing-fiddle"
 printf '#!/bin/sh\necho "{}"\n' > "$DIR/silent-fiddle"
 chmod +x "$DIR/silent-fiddle"
-asks_nothing "a fiddle that answers in another shape" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/silent-fiddle"
-OUT=$(cd "$DIR" && env FIDDLE="$DIR/no-such-fiddle" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#10' 2>&1)
-check "with nothing at the path, fiddle is not needed" "it does not exist" "$OUT"
+asks_nothing "a config check that names no root" "$WHERE" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/silent-fiddle"
+printf '#!/bin/sh\nif [ "$1" = inspect ]; then "%s" "$@"; echo "and then it failed" >&2; exit 3; fi\nexec "%s" "$@"\n' "$FIDDLE" "$FIDDLE" > "$DIR/failing-inspect"
+chmod +x "$DIR/failing-inspect"
+asks_nothing "an inspect that answers and then exits non-zero" "$WHETHER" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/failing-inspect"
+printf '#!/bin/sh\nif [ "$1" = inspect ]; then echo "{}"; exit 0; fi\nexec "%s" "$@"\n' "$FIDDLE" > "$DIR/silent-inspect"
+chmod +x "$DIR/silent-inspect"
+asks_nothing "an inspect that answers in another shape" "$WHETHER" bash "$SCRIPT" --config "$CONFIG" --ref 'pr:acme/icecube#9' --fiddle "$DIR/silent-inspect"
 rm -f "$PR9"
+
+echo "the root is where fiddle says it is, however the document spells it"
+spelled() {
+  local what="$1" line="$2"
+  local here="$DIR/spelled-$3"
+  mkdir -p "$here/state/changes" || exit 2
+  sed "s|^root = .*|$line|" "$CONFIG" > "$here/deployment.toml"
+  CHECKED=$((CHECKED + 1))
+  grep -qxF "$line" "$here/deployment.toml" || fail "$what: the fixture document does not hold $line"
+  local record="$here/state/changes/acme+icecube+11.json"
+  printf '{"marker":"lit00001"}' > "$record"
+  local said
+  said=$(cd "$here" && "$FIDDLE" inspect 'pr:acme/icecube#11' --config deployment.toml --json 2>/dev/null | jq -r '.observations.changes | keys[0]')
+  CHECKED=$((CHECKED + 1))
+  [ "$said" = available ] || fail "$what: fiddle reports '$said' for a record it wrote"
+  OUT=$(run_from "$here" --config deployment.toml --ref 'pr:acme/icecube#11')
+  check "$what names the record fiddle reads" "record for acme+icecube+11 is $(cd "$here" && pwd -P)/state/changes/acme+icecube+11.json" "$OUT"
+  check "$what reports the record fiddle reads" "fiddle reads it, and it carries marker 'lit00001'" "$OUT"
+  printf 'garbage' > "$record"
+  said=$(cd "$here" && "$FIDDLE" inspect 'pr:acme/icecube#11' --config deployment.toml --json 2>/dev/null | jq -r '.observations.changes | keys[0]')
+  CHECKED=$((CHECKED + 1))
+  [ "$said" = unavailable ] || fail "$what: fiddle reports '$said' for garbage"
+  OUT=$(run_from "$here" --config deployment.toml --ref 'pr:acme/icecube#11' --forget)
+  check "$what reports a record fiddle cannot read" "$UNREADABLE" "$OUT"
+  CHECKED=$((CHECKED + 1))
+  [ -e "$record" ] && fail "$what: --forget left the record fiddle cannot read"
+}
+spelled "a literal string root" "root = 'state'" literal
+spelled "a root followed by a comment" 'root = "state" # c' commented
+
+echo "--forget removes a file, a symlink or an empty directory, and nothing that holds files"
+rm -rf "$PR9"
+mkdir -p "$PR9/inner"
+printf 'keep me' > "$PR9/inner/note"
+CHECKED=$((CHECKED + 1))
+[ "$(fiddle_says "$DIR" 'pr:acme/icecube#9')" = unavailable ] || fail "fiddle does not report a directory that holds files unreadable"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9' --forget); RC=$?
+CHECKED=$((CHECKED + 1))
+[ "$RC" -eq 2 ] || fail "--forget over a directory that holds files exited $RC, not 2: $OUT"
+check "--forget says why it leaves a directory that holds files" "a directory that holds files" "$OUT"
+CHECKED=$((CHECKED + 1))
+[ -f "$PR9/inner/note" ] || fail "--forget removed what a directory held"
+rm -rf "$PR9"
+mkdir -p "$PR9"
+CHECKED=$((CHECKED + 1))
+[ "$(fiddle_says "$DIR" 'pr:acme/icecube#9')" = unavailable ] || fail "fiddle does not report an empty directory unreadable"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9' --forget)
+check "--forget removes an empty directory fiddle cannot read" "no longer blocked by it" "$OUT"
+CHECKED=$((CHECKED + 1))
+[ -e "$PR9" ] && fail "--forget left the empty directory"
+printf '{"marker":"a"}' > "$DIR/target-record"
+ln -s "$DIR/target-record" "$PR9"
+OUT=$(run_from "$DIR" --config "$CONFIG" --ref 'pr:acme/icecube#9' --forget)
+check "--forget removes a symlink fiddle reads through" "removed" "$OUT"
+CHECKED=$((CHECKED + 1))
+{ [ -e "$PR9" ] || [ -L "$PR9" ]; } && fail "--forget left the symlink"
+CHECKED=$((CHECKED + 1))
+[ -f "$DIR/target-record" ] || fail "--forget removed the file a symlink pointed at"
 
 echo "a malformed pr: reference is refused with the form it should take"
 FORM='pr:<owner>/<repo>#<number>'
