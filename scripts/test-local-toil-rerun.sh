@@ -96,6 +96,9 @@ refuses "a config and no reference" --config "$CONFIG"
 refuses "a reference and no config" --ref jira:ISP-1
 refuses "a config that does not exist" --config "$DIR/absent.toml" --ref jira:ISP-1
 refuses "a reference that names no tracker" --config "$CONFIG" --ref beans:w-1
+refuses_saying "--config with no value after it" "--config takes a value" --ref jira:ISP-1 --config
+refuses_saying "--ref with no value after it" "--ref takes a value" --config "$CONFIG" --ref
+refuses_saying "--fiddle with no value after it" "--fiddle takes a value" --config "$CONFIG" --ref jira:ISP-1 --fiddle
 
 echo "an absent record is reported as the runner's own state"
 OUT=$(run_from "$DIR" --config "$CONFIG" --ref jira:ISP-1)

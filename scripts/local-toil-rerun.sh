@@ -43,10 +43,10 @@ USAGE
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --config) CONFIG="${2:-}"; shift 2 || exit 2 ;;
-    --ref) REFERENCE="${2:-}"; shift 2 || exit 2 ;;
+    --config) [ $# -ge 2 ] || { echo "local-toil-rerun: FAIL: --config takes a value, and none follows it" >&2; exit 2; }; CONFIG="$2"; shift 2 ;;
+    --ref) [ $# -ge 2 ] || { echo "local-toil-rerun: FAIL: --ref takes a value, and none follows it" >&2; exit 2; }; REFERENCE="$2"; shift 2 ;;
     --forget) FORGET=1; shift ;;
-    --fiddle) FIDDLE_BIN="${2:-}"; shift 2 || exit 2 ;;
+    --fiddle) [ $# -ge 2 ] || { echo "local-toil-rerun: FAIL: --fiddle takes a value, and none follows it" >&2; exit 2; }; FIDDLE_BIN="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "local-toil-rerun: unknown argument $1" >&2; usage >&2; exit 2 ;;
   esac
