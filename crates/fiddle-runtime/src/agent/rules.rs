@@ -81,7 +81,6 @@ fn names_a_path(target: &str) -> bool {
 }
 
 fn linked_path(target: &str) -> Option<String> {
-    let target = target.trim_end_matches('\n');
     if target.is_empty() || target.starts_with('/') {
         return None;
     }
@@ -115,8 +114,10 @@ fn read(
     let (committed, through) = match committed.link {
         false => (committed, None),
         true => {
-            let target =
-                String::from_utf8_lossy(&workspace.committed_bytes(&committed)?).to_string();
+            let target = workspace
+                .committed_bytes(&committed)
+                .map_err(|_| refused(Unquotable::LinkToNoFile))?;
+            let target = String::from_utf8_lossy(&target).to_string();
             if !names_a_path(&target) {
                 return Err(refused(Unquotable::LinkToNoFile).into());
             }
@@ -132,17 +133,16 @@ fn read(
             }
         }
     };
-    if committed.bytes > RULES_CAP_BYTES {
-        return Err(refused(Unquotable::OverTheCap {
-            bytes: committed.bytes,
-        })
-        .into());
+    let followed = |read: WorkspaceError| match through {
+        Some(_) => RulesError::from(refused(Unquotable::LinkToNoFile)),
+        None => RulesError::from(read),
+    };
+    let bytes = workspace.committed_size(&committed).map_err(followed)?;
+    if bytes > RULES_CAP_BYTES {
+        return Err(refused(Unquotable::OverTheCap { bytes }).into());
     }
-    let text = String::from_utf8(workspace.committed_bytes(&committed)?).map_err(|_| {
-        refused(Unquotable::NotText {
-            bytes: committed.bytes,
-        })
-    })?;
+    let held = workspace.committed_bytes(&committed).map_err(followed)?;
+    let text = String::from_utf8(held).map_err(|_| refused(Unquotable::NotText { bytes }))?;
     Ok(RuleFile {
         name,
         through,
@@ -289,7 +289,7 @@ mod tests {
     fn a_link_resolves_inside_the_project_and_not_outside_it() {
         assert_eq!(linked_path("CLAUDE.md"), Some("CLAUDE.md".to_string()));
         assert_eq!(
-            linked_path("docs/../AGENTS.md\n"),
+            linked_path("docs/../AGENTS.md"),
             Some("AGENTS.md".to_string())
         );
         assert_eq!(

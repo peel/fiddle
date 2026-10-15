@@ -57,7 +57,6 @@ pub struct Workspace {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Committed {
     pub link: bool,
-    pub bytes: u64,
     object: String,
 }
 
@@ -165,15 +164,7 @@ impl Workspace {
     ) -> Result<Option<Committed>, WorkspaceError> {
         let listed = git_stdout(
             &self.root,
-            &[
-                "--literal-pathspecs",
-                "ls-tree",
-                "-z",
-                "-l",
-                revision,
-                "--",
-                path,
-            ],
+            &["--literal-pathspecs", "ls-tree", "-z", revision, "--", path],
         )?;
         let listed = String::from_utf8_lossy(&listed);
         let Some((entry, named)) = listed.trim_end_matches('\0').split_once('\t') else {
@@ -183,26 +174,28 @@ impl Workspace {
             return Ok(None);
         }
         let fields: Vec<&str> = entry.split_whitespace().collect();
-        let [mode, kind, object, bytes] = fields[..] else {
+        let [mode, kind, object] = fields[..] else {
             return Err(WorkspaceError::Git {
-                command: format!("ls-tree -z -l {revision} -- {path}"),
-                stderr: format!(
-                    "git listed {entry:?}, which is not a mode, a type, an object and a size"
-                ),
+                command: format!("ls-tree -z {revision} -- {path}"),
+                stderr: format!("git listed {entry:?}, which is not a mode, a type and an object"),
             });
         };
         if kind != "blob" {
             return Ok(None);
         }
-        let bytes = bytes.parse::<u64>().map_err(|_| WorkspaceError::Git {
-            command: format!("ls-tree -z -l {revision} -- {path}"),
-            stderr: format!("git listed a size of {bytes:?} for a blob"),
-        })?;
         Ok(Some(Committed {
             link: mode == "120000",
-            bytes,
             object: object.to_string(),
         }))
+    }
+
+    pub fn committed_size(&self, committed: &Committed) -> Result<u64, WorkspaceError> {
+        let told = git_stdout(&self.root, &["cat-file", "-s", &committed.object])?;
+        let told = String::from_utf8_lossy(&told);
+        told.trim().parse::<u64>().map_err(|_| WorkspaceError::Git {
+            command: format!("cat-file -s {}", committed.object),
+            stderr: format!("git told a size of {:?} for a blob", told.trim()),
+        })
     }
 
     pub fn committed_bytes(&self, committed: &Committed) -> Result<Vec<u8>, WorkspaceError> {

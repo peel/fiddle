@@ -388,3 +388,54 @@ fn a_link_to_a_file_whose_name_looks_like_pathspec_magic_quotes_that_file() {
         );
     }
 }
+
+fn without_the_object(repo: &Path, object: &str) {
+    let loose = repo
+        .join(".git/objects")
+        .join(&object[..2])
+        .join(&object[2..]);
+    std::fs::remove_file(&loose)
+        .unwrap_or_else(|error| panic!("the object {object} is loose at {loose:?}: {error}"));
+}
+
+#[test]
+fn a_link_whose_blobs_git_cannot_read_is_a_link_to_no_file_and_prints_no_git_text() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for (n, lost) in [(11, "AGENTS.md"), (12, "rules.md")] {
+        let repo = dir.path().join(format!("unreadable-{n}"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = fixture::trivial_repo(&repo);
+        std::fs::write(repo.join("rules.md"), RULES).unwrap();
+        std::os::unix::fs::symlink("rules.md", repo.join("AGENTS.md")).unwrap();
+        let base = committed(&repo, "a link whose blob will be lost");
+        let object = fixture::git_says(&repo, &["rev-parse", &format!("HEAD:{lost}")]);
+        let workspace = cut(&repo, &dir.path().join(format!("unreadable-ws-{n}")), n);
+        without_the_object(&repo, &object);
+
+        let error = match ProjectRules::at(&workspace, workspace.cut_from()) {
+            Err(error) => CapabilityError::from(error),
+            Ok(rules) => panic!("{lost}: its blob is gone, and the read quoted {rules:?}"),
+        };
+        let told = error.to_string();
+
+        assert!(
+            matches!(
+                &error,
+                CapabilityError::UnquotableRules(UnquotableRules {
+                    name: "AGENTS.md",
+                    why: Unquotable::LinkToNoFile,
+                    revision,
+                }) if *revision == base
+            ),
+            "{lost}: {error:?}"
+        );
+        assert_eq!(error.recurrence(), Recurrence::Permanent, "{lost}");
+        assert!(
+            !told.contains(&object)
+                && !told.contains("cat-file")
+                && !told.contains("fatal")
+                && !told.contains("rules.md"),
+            "{lost}: the refusal prints no object, no git text and no link target: {told}"
+        );
+    }
+}
