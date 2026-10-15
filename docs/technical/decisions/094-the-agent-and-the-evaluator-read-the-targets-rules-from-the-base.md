@@ -46,7 +46,7 @@ The evaluate step now also quotes the agent's own report, through `with_report` 
 
 - A `pr:` run makes one more fetch, of its base branch, before the agent runs.
 - A `jira:` run reads the rules of its fixture's HEAD. That commit is the base of the run: the agent changes its code, and fiddle builds the branch on it.
-- Each brief grows by the size of the two files, up to 64 KiB.
+- Each brief grows by the size of the two files, at most 32768 bytes each, plus the frame, the labels and the fences that hold them.
 - A target whose rules file is over the cap, or not text, or a link fiddle does not follow, gets no run until the file changes on its base.
 - The transcript cuts each field over 16384 characters in the middle, so it can hold less than the whole quotation. The commit the brief names holds the whole text, at the path the brief's label names: the rules file itself, or for a link, the path after `A LINK TO`.
 - The single read holds for one run. The fixture's object store persists across runs, and workspace commands are not isolated (ADR 044), so code one run executes can change what a later run reads.
