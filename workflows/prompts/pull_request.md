@@ -1,7 +1,8 @@
 # Do what the mention on this pull request asks
 
-A person who speaks for the project mentioned `@fiddle-ai` on this pull
-request and asked for something. What they asked is quoted below. The
+A person who speaks for the project mentioned fiddle on this pull request
+and asked for something. fiddle has already checked who wrote it and that it
+names the handle this deployment answers to, so do not judge the handle. What they asked is quoted below. The
 project here is the pull request's head. Do what the mention asks on it, and
 nothing else.
 

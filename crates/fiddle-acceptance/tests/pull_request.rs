@@ -553,6 +553,11 @@ fn a_member_mention_of_the_app_the_deployment_names_steers_the_run() {
         "with `[github] account = \"{ANOTHER_APP}\"`, a member's mention of \
          @snowplow-identities-ai is the direction: {prompts:?}"
     );
+    assert!(
+        prompts.iter().all(|it| !it.contains("@fiddle-ai")),
+        "no brief names a handle the deployment does not answer to, so the agent is not told \
+         that the mention it was given is addressed to someone else: {prompts:?}"
+    );
     let replies = world.github().replies();
     assert_eq!(replies.len(), 1, "and it is answered once: {replies:?}");
     assert!(

@@ -1,7 +1,8 @@
 # Judge this change against the mention that asked for it
 
-A person who speaks for the project mentioned `@fiddle-ai` on this pull
-request and asked for something. What they asked is quoted below, with the
+A person who speaks for the project mentioned fiddle on this pull request
+and asked for something. fiddle has already checked who wrote it and that it
+names the handle this deployment answers to, so do not judge the handle. What they asked is quoted below, with the
 checks on the pull request's head as context. Decide whether what is in the
 project now does what the mention asked.
 
