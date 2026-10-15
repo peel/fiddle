@@ -9,7 +9,9 @@ pub mod transcript;
 pub use audit::AuditHook;
 pub use retry::{RetryingModel, RETRIES};
 pub use returns::{Declarations, Held, LastReturn, ReturnHook, Spent, RETURNS};
-pub use rules::{ProjectRules, RuleFile, Withheld, RULES_CAP_BYTES, RULE_FILES};
+pub use rules::{
+    ProjectRules, RuleFile, RulesError, Unquotable, UnquotableRules, RULES_CAP_BYTES, RULE_FILES,
+};
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, SearchFiles, ToolError, ToolHost,

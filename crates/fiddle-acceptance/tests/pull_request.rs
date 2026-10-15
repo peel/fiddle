@@ -125,7 +125,15 @@ impl PullRequestForge {
     }
 
     fn base_keeps_rules_for_agents(&self, files: &[(&str, &str)]) -> String {
-        let base = support::rules::committed(&self.fixture, files);
+        self.base_keeps_rules_written_by(|repo| {
+            for (path, contents) in files {
+                std::fs::write(repo.join(path), contents).unwrap();
+            }
+        })
+    }
+
+    fn base_keeps_rules_written_by(&self, write: impl FnOnce(&Path)) -> String {
+        let base = support::rules::committed_by(&self.fixture, write);
         support::git(&self.fixture, &["push", "-q", "origin", BASE]);
         support::git(&self.fixture, &["reset", "-q", "--hard", "HEAD~1"]);
         base
@@ -1804,7 +1812,9 @@ fn the_projects_rules_reach_a_pull_request_run_from_its_base_and_not_from_its_he
         (2, 1),
         "the agent twice and the evaluation once"
     );
-    support::rules::assert_quotes_both(&briefs.agent[0], &base, "agent");
+    for brief in &briefs.agent {
+        support::rules::assert_quotes_both(brief, &base, "agent");
+    }
     support::rules::assert_quotes_both(&briefs.judge[0], &base, "evaluation");
     for brief in briefs.agent.iter().chain(&briefs.judge) {
         assert!(
@@ -1829,5 +1839,115 @@ fn the_projects_rules_reach_a_pull_request_run_from_its_base_and_not_from_its_he
             .iter()
             .all(|brief| !brief.contains("THE AGENT'S REPORT OF ITS CHANGE")),
         "and the agent is not shown a report it has not written"
+    );
+}
+
+const A_FAILURE_EXIT: i32 = 20;
+
+fn a_run_over_rules_written_by(write: impl FnOnce(&Path)) -> (PullRequestWorld, String, String) {
+    let world = PullRequestWorld::serving(a_renaming_change());
+    let base = world.github().base_keeps_rules_written_by(write);
+    let head = world
+        .github()
+        .commit_on_the_head_branch("NOTES.md", "more of the branch's own work\n");
+    world.github().serves_the_pull_request(Pr::Open, &head);
+    world.github().a_member_commented(8_001, THE_MENTION);
+    (world, base, head)
+}
+
+fn refused_before_any_model(
+    world: &PullRequestWorld,
+    run: &std::process::Output,
+    head: &str,
+) -> String {
+    let said = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        stderr_of(run)
+    );
+    assert_eq!(
+        run.status.code(),
+        Some(A_FAILURE_EXIT),
+        "rules fiddle cannot quote whole are a property of the target, so the run fails and \
+         is not retried: {said}"
+    );
+    assert!(
+        world.model_prompts().is_empty(),
+        "no model is asked anything: {:?}",
+        world.model_prompts()
+    );
+    assert_eq!(world.github().head_of(HEAD_REF), head, "nothing is pushed");
+    assert!(
+        world.github().replies().is_empty(),
+        "and nothing is answered: {:?}",
+        world.github().replies()
+    );
+    said
+}
+
+#[test]
+fn a_rules_file_over_the_cap_refuses_the_run_before_any_model_is_asked() {
+    let over = support::rules::over_the_cap();
+    let (world, base, head) = a_run_over_rules_written_by(|repo| {
+        std::fs::write(repo.join("CLAUDE.md"), support::rules::CLAUDE_MD).unwrap();
+        std::fs::write(repo.join("AGENTS.md"), &over).unwrap();
+    });
+
+    let run = world.run(REFERENCE);
+    let said = refused_before_any_model(&world, &run, &head);
+
+    assert!(
+        said.contains(&format!(
+            "`AGENTS.md` at commit `{base}` holds {} bytes",
+            over.len()
+        )) && said.contains("32768"),
+        "the refusal names the file, the commit, its size and the cap: {said}"
+    );
+    assert!(
+        !said.contains(support::rules::OVER_THE_CAP_LINE.trim_end()),
+        "and quotes no part of it: {said}"
+    );
+}
+
+#[test]
+fn a_rules_file_that_is_not_text_refuses_the_run_before_any_model_is_asked() {
+    let (world, base, head) = a_run_over_rules_written_by(|repo| {
+        std::fs::write(repo.join("CLAUDE.md"), [0xff, 0xfe, b'r', b'u', b'l', b'e']).unwrap();
+    });
+
+    let run = world.run(REFERENCE);
+    let said = refused_before_any_model(&world, &run, &head);
+
+    assert!(
+        said.contains(&format!("`CLAUDE.md` at commit `{base}` holds 6 bytes"))
+            && said.contains("not UTF-8 text")
+            && said.contains("32768"),
+        "the refusal names the file, the commit, its kind and the cap: {said}"
+    );
+}
+
+#[test]
+fn a_rules_link_out_of_the_repository_refuses_the_run_and_its_target_is_never_printed() {
+    let (world, base, head) = a_run_over_rules_written_by(|repo| {
+        std::fs::write(repo.join("CLAUDE.md"), support::rules::CLAUDE_MD).unwrap();
+        std::os::unix::fs::symlink(
+            support::rules::A_TARGET_NO_BRIEF_PRINTS,
+            repo.join("AGENTS.md"),
+        )
+        .unwrap();
+    });
+
+    let run = world.run(REFERENCE);
+    let said = refused_before_any_model(&world, &run, &head);
+
+    assert!(
+        said.contains(&format!("`AGENTS.md` at commit `{base}` is a link"))
+            && said.contains("leaves the repository")
+            && said.contains("32768"),
+        "the refusal names the link by its path, its kind and the cap: {said}"
+    );
+    assert!(
+        !said.contains("a-target-no-refusal-prints"),
+        "and never prints where the link points: {said}"
     );
 }

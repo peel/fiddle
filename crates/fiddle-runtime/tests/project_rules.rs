@@ -1,7 +1,9 @@
 mod fixture;
 
 use fiddle_core::AttemptId;
-use fiddle_runtime::agent::{ProjectRules, RuleFile, Withheld, RULES_CAP_BYTES};
+use fiddle_runtime::agent::{
+    ProjectRules, RuleFile, RulesError, Unquotable, UnquotableRules, RULES_CAP_BYTES,
+};
 use fiddle_runtime::workspace::Workspace;
 use std::path::Path;
 use tokio_util::sync::CancellationToken;
@@ -49,12 +51,12 @@ fn a_link_to_a_rules_file_is_quoted_as_the_file_it_names() {
     assert_eq!(
         rules.files(),
         &[
-            RuleFile::Quoted {
+            RuleFile {
                 name: "CLAUDE.md",
                 through: None,
                 text: RULES.to_string(),
             },
-            RuleFile::Quoted {
+            RuleFile {
                 name: "AGENTS.md",
                 through: Some("CLAUDE.md".to_string()),
                 text: RULES.to_string(),
@@ -77,7 +79,7 @@ fn the_rules_are_the_commits_and_not_the_working_trees() {
 
     assert_eq!(
         rules.files(),
-        &[RuleFile::Quoted {
+        &[RuleFile {
             name: "CLAUDE.md",
             through: None,
             text: RULES.to_string(),
@@ -86,81 +88,158 @@ fn the_rules_are_the_commits_and_not_the_working_trees() {
     );
 }
 
-#[test]
-fn a_file_at_the_cap_is_quoted_and_one_byte_more_is_withheld() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo = fixture::trivial_repo(dir.path());
-    let at_the_cap = "x".repeat(RULES_CAP_BYTES as usize);
-    let over_it = "y".repeat(RULES_CAP_BYTES as usize + 1);
-    std::fs::write(repo.join("CLAUDE.md"), &at_the_cap).unwrap();
-    std::fs::write(repo.join("AGENTS.md"), &over_it).unwrap();
-    committed(&repo, "rules at and over the cap");
-    let workspace = cut(&repo, &dir.path().join("ws"), 1);
-
-    let rules = ProjectRules::at(&workspace, workspace.cut_from()).unwrap();
-
-    assert_eq!(
-        rules.files(),
-        &[
-            RuleFile::Quoted {
-                name: "CLAUDE.md",
-                through: None,
-                text: at_the_cap,
-            },
-            RuleFile::Withheld {
-                name: "AGENTS.md",
-                why: Withheld::OverTheCap {
-                    bytes: RULES_CAP_BYTES + 1,
-                },
-            },
-        ]
-    );
-    let fenced = rules.fenced().unwrap();
-    assert!(!fenced.contains(&"y".repeat(64)), "{fenced}");
+fn refused(rules: Result<ProjectRules, RulesError>) -> UnquotableRules {
+    match rules {
+        Err(RulesError::Unquotable(refused)) => refused,
+        other => panic!("these rules cannot be quoted whole, and the read answered {other:?}"),
+    }
 }
 
 #[test]
-fn a_link_out_of_the_project_bytes_that_are_not_text_and_a_directory_quote_nothing() {
+fn a_file_at_the_cap_is_quoted_and_one_byte_more_refuses() {
     let dir = tempfile::TempDir::new().unwrap();
     let repo = fixture::trivial_repo(dir.path());
-    std::fs::write(repo.join("CLAUDE.md"), [0xff, 0xfe, b'r', b'u', b'l', b'e']).unwrap();
-    std::os::unix::fs::symlink("../outside.md", repo.join("AGENTS.md")).unwrap();
-    committed(&repo, "rules nobody can quote");
+    let at_the_cap = "x".repeat(RULES_CAP_BYTES as usize);
+    std::fs::write(repo.join("CLAUDE.md"), &at_the_cap).unwrap();
+    committed(&repo, "rules at the cap");
+    let workspace = cut(&repo, &dir.path().join("ws"), 1);
+
+    assert_eq!(
+        ProjectRules::at(&workspace, workspace.cut_from())
+            .unwrap()
+            .files(),
+        &[RuleFile {
+            name: "CLAUDE.md",
+            through: None,
+            text: at_the_cap,
+        }]
+    );
+
+    std::fs::write(
+        repo.join("AGENTS.md"),
+        "y".repeat(RULES_CAP_BYTES as usize + 1),
+    )
+    .unwrap();
+    let base = committed(&repo, "one rules file a byte over the cap");
+    let workspace = cut(&repo, &dir.path().join("ws2"), 2);
+
+    assert_eq!(
+        refused(ProjectRules::at(&workspace, workspace.cut_from())),
+        UnquotableRules {
+            name: "AGENTS.md",
+            revision: base,
+            why: Unquotable::OverTheCap {
+                bytes: RULES_CAP_BYTES + 1,
+            },
+        }
+    );
+}
+
+fn refusal_over(dir: &Path, n: u8, write: impl FnOnce(&Path)) -> UnquotableRules {
+    let repo = dir.join(format!("repo-{n}"));
+    std::fs::create_dir_all(&repo).unwrap();
+    let repo = fixture::trivial_repo(&repo);
+    write(&repo);
+    committed(&repo, "rules nobody can quote whole");
+    let workspace = cut(&repo, &dir.join(format!("ws-{n}")), n);
+    refused(ProjectRules::at(&workspace, workspace.cut_from()))
+}
+
+#[test]
+fn each_rules_file_fiddle_cannot_quote_whole_refuses_with_its_kind() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let link = |target: &'static str| {
+        move |repo: &Path| std::os::unix::fs::symlink(target, repo.join("AGENTS.md")).unwrap()
+    };
+    let cases: Vec<(&str, UnquotableRules)> = vec![
+        (
+            "not text",
+            refusal_over(dir.path(), 1, |repo| {
+                std::fs::write(repo.join("CLAUDE.md"), [0xff, 0xfe, b'r', b'u', b'l', b'e'])
+                    .unwrap()
+            }),
+        ),
+        (
+            "a link out",
+            refusal_over(dir.path(), 2, link("../outside.md")),
+        ),
+        (
+            "an absolute link",
+            refusal_over(dir.path(), 3, link("/etc/hosts")),
+        ),
+        (
+            "a link to nothing",
+            refusal_over(dir.path(), 4, link("docs/absent.md")),
+        ),
+        (
+            "a link to a directory",
+            refusal_over(dir.path(), 5, |repo| {
+                std::fs::create_dir_all(repo.join("docs")).unwrap();
+                std::fs::write(repo.join("docs/notes.md"), RULES).unwrap();
+                std::os::unix::fs::symlink("docs", repo.join("AGENTS.md")).unwrap();
+            }),
+        ),
+        (
+            "a link to a link",
+            refusal_over(dir.path(), 6, |repo| {
+                std::fs::write(repo.join("rules.md"), RULES).unwrap();
+                std::os::unix::fs::symlink("rules.md", repo.join("CLAUDE.md")).unwrap();
+                std::os::unix::fs::symlink("CLAUDE.md", repo.join("AGENTS.md")).unwrap();
+            }),
+        ),
+    ];
+    let kinds: Vec<(&str, &str, Unquotable)> = cases
+        .iter()
+        .map(|(case, refused)| (*case, refused.name, refused.why))
+        .collect();
+
+    assert_eq!(
+        kinds,
+        vec![
+            ("not text", "CLAUDE.md", Unquotable::NotText { bytes: 6 }),
+            (
+                "a link out",
+                "AGENTS.md",
+                Unquotable::LinkLeavesTheRepository
+            ),
+            (
+                "an absolute link",
+                "AGENTS.md",
+                Unquotable::LinkLeavesTheRepository
+            ),
+            ("a link to nothing", "AGENTS.md", Unquotable::LinkToNoFile),
+            (
+                "a link to a directory",
+                "AGENTS.md",
+                Unquotable::LinkToNoFile
+            ),
+            ("a link to a link", "AGENTS.md", Unquotable::LinkToALink),
+        ]
+    );
+    for (case, refused) in &cases {
+        let told = refused.to_string();
+        assert!(
+            !told.contains("outside.md")
+                && !told.contains("/etc/hosts")
+                && !told.contains("absent.md")
+                && !told.contains("docs"),
+            "{case}: a refusal names a link by its path and never by its target: {told}"
+        );
+    }
+}
+
+#[test]
+fn a_directory_named_like_a_rules_file_is_no_rules_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+    std::fs::create_dir_all(repo.join("CLAUDE.md")).unwrap();
+    std::fs::write(repo.join("CLAUDE.md/notes.md"), RULES).unwrap();
+    committed(&repo, "a directory named like a rules file");
     let workspace = cut(&repo, &dir.path().join("ws"), 1);
 
     let rules = ProjectRules::at(&workspace, workspace.cut_from()).unwrap();
 
-    assert_eq!(
-        rules.files(),
-        &[
-            RuleFile::Withheld {
-                name: "CLAUDE.md",
-                why: Withheld::NotText { bytes: 6 },
-            },
-            RuleFile::Withheld {
-                name: "AGENTS.md",
-                why: Withheld::LinkToNoFile {
-                    target: "../outside.md".to_string(),
-                },
-            },
-        ]
-    );
-    let fenced = rules.fenced().unwrap();
-    assert!(
-        fenced.contains("`CLAUDE.md` holds 6 bytes") && fenced.contains("`read_file`"),
-        "{fenced}"
-    );
-
-    std::fs::remove_file(repo.join("CLAUDE.md")).unwrap();
-    std::fs::remove_file(repo.join("AGENTS.md")).unwrap();
-    std::fs::create_dir_all(repo.join("CLAUDE.md")).unwrap();
-    std::fs::write(repo.join("CLAUDE.md/notes.md"), RULES).unwrap();
-    committed(&repo, "a directory named like a rules file");
-    let workspace = cut(&repo, &dir.path().join("ws2"), 2);
-
-    let rules = ProjectRules::at(&workspace, workspace.cut_from()).unwrap();
-
-    assert_eq!(rules.files(), &[], "a directory is no rules file");
+    assert_eq!(rules.files(), &[]);
     assert_eq!(rules.fenced(), None);
 }
 

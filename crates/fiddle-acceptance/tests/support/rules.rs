@@ -49,10 +49,18 @@ pub fn from_commit(revision: &str) -> String {
     format!("quoted from commit `{revision}`")
 }
 
+pub const A_TARGET_NO_BRIEF_PRINTS: &str = "../a-target-no-refusal-prints.md";
+
 pub fn committed(repo: &Path, files: &[(&str, &str)]) -> String {
-    for (path, contents) in files {
-        std::fs::write(repo.join(path), contents).unwrap();
-    }
+    committed_by(repo, |repo| {
+        for (path, contents) in files {
+            std::fs::write(repo.join(path), contents).unwrap();
+        }
+    })
+}
+
+pub fn committed_by(repo: &Path, write: impl FnOnce(&Path)) -> String {
+    write(repo);
     super::git(repo, &["add", "-A"]);
     super::git(
         repo,

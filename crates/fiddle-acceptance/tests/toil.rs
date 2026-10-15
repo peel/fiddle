@@ -5311,7 +5311,7 @@ fn a_project_with_no_rules_for_agents_gets_no_rules_section() {
 }
 
 #[test]
-fn a_rules_file_over_the_cap_is_named_with_its_size_and_no_part_of_it_is_quoted() {
+fn a_rules_file_over_the_cap_refuses_a_toil_run_before_any_agent_step() {
     let world = ToilWorld::start();
     let over = support::rules::over_the_cap();
     let base = world.keeps_rules_for_agents(&[
@@ -5323,30 +5323,33 @@ fn a_rules_file_over_the_cap_is_named_with_its_size_and_no_part_of_it_is_quoted(
     let run = world.run_toil(REFERENCE);
     let payload = payload_of(&run);
     let briefs = support::rules::by_role(&world.model_prompts());
+    let said = payload.to_string();
 
     assert_eq!(
-        payload["capability_executions"][0]["status"], "completed",
-        "{payload}"
+        run.status.code(),
+        Some(20),
+        "rules fiddle cannot quote whole are a property of the target, so the run fails and \
+         is not retried: {payload}"
     );
-    for brief in [&briefs.agent[0], &briefs.judge[0]] {
-        assert!(
-            brief.contains(&support::rules::from_commit(&base))
-                && brief.contains(&support::rules::quoted_claude_md()),
-            "the file under the cap is still quoted whole: {brief}"
-        );
-        assert!(
-            brief.contains(&format!("`AGENTS.md` holds {} bytes", over.len()))
-                && brief.contains("No part of it is quoted here")
-                && brief.contains("`read_file`"),
-            "the file over the cap is named with its size, said to be unquoted, and the \
-             brief says to read it with `read_file`: {brief}"
-        );
-        assert!(
-            !brief.contains(support::rules::OVER_THE_CAP_LINE.trim_end())
-                && !brief.contains(&format!("{}, `AGENTS.md`", support::rules::LABEL_OPENS)),
-            "and no line of it is quoted: {brief}"
-        );
-    }
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (0, 0),
+        "no agent step and no evaluation ran"
+    );
+    assert!(
+        world.github().branches().is_empty(),
+        "nothing is pushed: {:?}",
+        world.github().branches()
+    );
+    assert!(
+        said.contains(&format!(
+            "`AGENTS.md` at commit `{base}` holds {} bytes",
+            over.len()
+        )) && said.contains("32768")
+            && !said.contains(support::rules::OVER_THE_CAP_LINE.trim_end()),
+        "the refusal names the file, the commit, its size and the cap, and quotes none of it: \
+         {said}"
+    );
 }
 
 #[test]

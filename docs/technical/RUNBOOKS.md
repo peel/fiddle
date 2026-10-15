@@ -1023,16 +1023,24 @@ the repository. ADR 094 records the decision.
 - **What is quoted.** Each file whole, between fence lines, as data. An absent
   file gets no section. fiddle does not follow `@` imports. A link to another
   file in the repository is quoted as the file it names.
-- **The cap.** A file over 32768 bytes is not quoted in part. The brief names the
-  file and its size, and tells the agent and the evaluator to read it with
-  `read_file`. `read_file` reads the workspace, which for a `pr:` run is the pull
-  request's head. Keep each rules file under the cap, so that a pull request
-  cannot change the copy a run reads.
+- **A file fiddle cannot quote whole refuses the run.** That is a file over
+  32768 bytes, a file that is not UTF-8 text, a link that leaves the
+  repository, a link to no file, and a link to another link. The run stops before
+  any agent step. It asks no model, changes nothing, pushes nothing and answers
+  nothing on the pull request. It ends `Failed`, exit 20, and is not retried,
+  because the cause is in the target and another run finds the same file. The
+  reason names the file, the commit, its size or kind, and the cap. It names a
+  link by its own path and never prints where the link points. Change the file
+  on the base, then run again. A `jira:` run asks the ambiguity review before
+  the workflow starts, so that one model call can come first.
 - **The evaluator.** It rejects a change that breaks a quoted rule, and the
   finding names the rule. It also reads the agent's own report, and rejects a
   report that misstates the change.
-- **To see what a run quoted**, record the transcript as the next section says,
-  and search it for `THE PROJECT'S RULES FOR AGENTS`.
+- **To see what a run quoted**, read the files at the commit the brief names:
+  `git show <commit>:CLAUDE.md`. That commit holds the whole text the run
+  quoted. The transcript in the next section records the brief too, but it cuts
+  each field over 16384 characters in the middle, and a brief with both rules
+  files can be longer than that.
 
 ## Record what the model was sent and what it returned
 

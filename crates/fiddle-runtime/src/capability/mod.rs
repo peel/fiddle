@@ -249,6 +249,20 @@ pub enum CapabilityError {
 
     #[error("the local repository was not read: {0}")]
     Tree(#[from] crate::git::GitError),
+
+    #[error("the project's rules for agents cannot be quoted whole: {0}")]
+    UnquotableRules(#[from] crate::agent::UnquotableRules),
+}
+
+impl From<crate::agent::RulesError> for CapabilityError {
+    fn from(error: crate::agent::RulesError) -> Self {
+        match error {
+            crate::agent::RulesError::Unquotable(refused) => {
+                CapabilityError::UnquotableRules(refused)
+            }
+            crate::agent::RulesError::Unread(unread) => CapabilityError::Workspace(unread),
+        }
+    }
 }
 
 impl CapabilityError {
@@ -267,7 +281,8 @@ impl CapabilityError {
             | CapabilityError::Output(_)
             | CapabilityError::OutOfScope(_)
             | CapabilityError::WouldWait { .. }
-            | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
+            | CapabilityError::PublishesElsewhere { .. }
+            | CapabilityError::UnquotableRules(_) => Recurrence::Permanent,
 
             CapabilityError::Unasked(error) => match error {
                 crate::human::PublishError::Channel(_)
