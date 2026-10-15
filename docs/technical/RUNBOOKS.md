@@ -870,6 +870,20 @@ beside it, because the workflow document is read beside the deployment
 document. Ship this repository's `workflows/` there. Paths in the document are
 resolved against the working directory, which is the checkout (ADR 092).
 
+Point `[stub] root` at a directory in the checkout that you do not commit.
+
+```toml
+[stub]
+root = ".fiddle/stub"
+```
+
+A fresh runner has no such directory, and git keeps no empty directory. fiddle
+blocks a run over a `[stub] root` that does not exist, so the template reads
+the root from `fiddle config check --json` and creates it before the run. Do
+not commit the directory or a record in it. A record does not
+stop a `pr:` run, and the runner loses the root when the job ends, so each run
+starts with an empty root and loses nothing (ADR 093).
+
 Two settings belong to the App.
 
 ```toml
@@ -916,6 +930,7 @@ fails on its first run and says so.
 | `if`: `FIDDLE_AI_HANDLE` is set, the text mentions `@` followed by it, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
 | `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a later run never cancels a running one between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment or review that mentions nobody, and fiddle's own answer, are skipped before they queue, so none of them replaces a mention that waits |
 | checkout with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false` | without `ref`, a review event checks out the pull request's merge ref, so the pull request would supply the deployment document, the workflow documents and the prompts, and a pull request that conflicts with its base has no merge ref to check out. With it, every event reads them from the default branch. The workspace's checks, which run the pull request's code, cannot read a persisted token |
+| `mkdir -p` on the `[stub] root` that `fiddle config check --json` reports, before the run | a fresh runner has no root, and fiddle blocks a run over a root that does not exist |
 
 The `if` is a filter, not the rule. fiddle applies its own rule again to every
 comment and review it reads: a mention inside code, a fence or a quote asks for

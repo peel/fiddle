@@ -1570,3 +1570,196 @@ fn inspect_refuses_toil_and_checks_over_a_pull_request_as_run_does() {
         stderr_of(&inspected)
     );
 }
+
+const THE_TEMPLATE: &str = "docs/technical/host-workflow-fiddle-ai.yml";
+
+const THE_RUN_STEP: &str = "      - name: Run fiddle on the pull request";
+
+const THE_RUNBOOKS_STUB_ROOT: &str = ".fiddle/stub";
+
+const A_BLOCKED_RUN_EXIT: i32 = 20;
+
+struct TemplateRunStep {
+    config: String,
+    script: String,
+}
+
+fn the_templates_run_step() -> TemplateRunStep {
+    let text = std::fs::read_to_string(support::repo_root().join(THE_TEMPLATE))
+        .unwrap_or_else(|error| panic!("{THE_TEMPLATE} could not be read: {error}"));
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| *line == THE_RUN_STEP)
+        .unwrap_or_else(|| panic!("{THE_TEMPLATE} holds no step `{THE_RUN_STEP}`"));
+    let step: Vec<&str> = lines[start + 1..]
+        .iter()
+        .take_while(|line| line.is_empty() || line.starts_with("        "))
+        .copied()
+        .collect();
+    let config = step
+        .iter()
+        .find_map(|line| line.strip_prefix("          FIDDLE_CONFIG: "))
+        .unwrap_or_else(|| panic!("the run step sets no FIDDLE_CONFIG: {step:?}"))
+        .to_string();
+    let run = step
+        .iter()
+        .position(|line| *line == "        run: |")
+        .unwrap_or_else(|| panic!("the run step holds no `run: |` block: {step:?}"));
+    let script = step[run + 1..]
+        .iter()
+        .take_while(|line| line.is_empty() || line.starts_with("          "))
+        .map(|line| line.strip_prefix("          ").unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("${{ github.repository }}", REPO);
+    assert!(
+        !script.contains("${{"),
+        "the run step reads an expression this lane does not supply, so it would run \
+         something other than the template: {script}"
+    );
+    TemplateRunStep { config, script }
+}
+
+fn a_fresh_checkout(world: &PullRequestWorld, config: &str) -> PathBuf {
+    let checkout = world.scenario.dir().join("checkout");
+    let document = checkout.join(config);
+    let beside = document.parent().expect("the document is in a directory");
+    let workflows = beside.join("workflows");
+    std::fs::create_dir_all(workflows.join("prompts")).unwrap();
+    let from = support::repo_root().join("workflows");
+    std::fs::copy(
+        from.join("pull_request.toml"),
+        workflows.join("pull_request.toml"),
+    )
+    .unwrap();
+    for prompt in support::walkdir_files(from.join("prompts")) {
+        let name = prompt.file_name().expect("a prompt is a file");
+        std::fs::copy(&prompt, workflows.join("prompts").join(name)).unwrap();
+    }
+    let tables = world
+        .tables(&world.forge.fixture, &world.forge.stub, false)
+        .replacen(
+            &format!("repo = \"{REPO}\"\n"),
+            &format!("repo = \"{REPO}\"\naccount = \"{ACCOUNT}\"\n"),
+            1,
+        );
+    std::fs::write(
+        &document,
+        format!(
+            "[project]\nname = \"icecube\"\n\n[stub]\nroot = \"{THE_RUNBOOKS_STUB_ROOT}\"\n\n\
+             [report]\ndir = \".fiddle/reports\"\n\n{tables}"
+        ),
+    )
+    .unwrap();
+    checkout
+}
+
+fn fiddle_as_the_template_runs_it(checkout: &Path, step: &TemplateRunStep) -> std::process::Output {
+    let runner_temp = checkout
+        .parent()
+        .expect("the checkout is in the scenario")
+        .join("runner-temp");
+    std::fs::create_dir_all(&runner_temp).unwrap();
+    let downloaded = runner_temp.join("fiddle-linux-amd64");
+    if !downloaded.exists() {
+        std::os::unix::fs::symlink(support::fiddle_binary(), &downloaded).unwrap();
+    }
+    let mut command = std::process::Command::new("bash");
+    for name in support::CREDENTIAL_VARS {
+        command.env_remove(name);
+    }
+    command
+        .args(["-c", &step.script])
+        .current_dir(checkout)
+        .env("RUNNER_TEMP", &runner_temp)
+        .env("FIDDLE_CONFIG", &step.config)
+        .env("PULL_REQUEST", NUMBER.to_string())
+        .env(MODEL_CREDENTIAL, MODEL_SENTINEL)
+        .env(FORGE_CREDENTIAL, FORGE_SENTINEL)
+        .output()
+        .unwrap()
+}
+
+fn fiddle_alone_in(checkout: &Path, step: &TemplateRunStep) -> std::process::Output {
+    let mut command = std::process::Command::new(support::fiddle_binary());
+    for name in support::CREDENTIAL_VARS {
+        command.env_remove(name);
+    }
+    command
+        .args(["run", REFERENCE, "--config", &step.config])
+        .current_dir(checkout)
+        .env(MODEL_CREDENTIAL, MODEL_SENTINEL)
+        .env(FORGE_CREDENTIAL, FORGE_SENTINEL)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn the_template_answers_a_member_mention_from_a_fresh_checkout_of_what_the_runbook_commits() {
+    let world = PullRequestWorld::serving(a_renaming_change());
+    world.github().a_member_commented(8_001, THE_MENTION);
+    let step = the_templates_run_step();
+    let checkout = a_fresh_checkout(&world, &step.config);
+    let root = checkout.join(THE_RUNBOOKS_STUB_ROOT);
+    assert!(
+        !root.exists(),
+        "a fresh checkout holds only what the runbook commits, and no [stub] root"
+    );
+
+    let alone = fiddle_alone_in(&checkout, &step);
+
+    assert_eq!(
+        alone.status.code(),
+        Some(A_BLOCKED_RUN_EXIT),
+        "fiddle alone still refuses a [stub] root that does not exist: {} {}",
+        String::from_utf8_lossy(&alone.stdout),
+        stderr_of(&alone)
+    );
+    assert!(
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&alone.stdout),
+            stderr_of(&alone)
+        )
+        .contains("stub root unreadable"),
+        "and names the missing root as the reason: {} {}",
+        String::from_utf8_lossy(&alone.stdout),
+        stderr_of(&alone)
+    );
+    assert!(
+        world.github().replies().is_empty() && world.model_prompts().is_empty(),
+        "so that run asked no model and answered nothing"
+    );
+
+    let templated = fiddle_as_the_template_runs_it(&checkout, &step);
+
+    assert_eq!(
+        templated.status.code(),
+        Some(0),
+        "the template's run step completes from the same fresh checkout: {} {}",
+        String::from_utf8_lossy(&templated.stdout),
+        stderr_of(&templated)
+    );
+    assert!(
+        root.is_dir(),
+        "the template created the [stub] root the document names"
+    );
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        1,
+        "the mention is answered once: {replies:?}"
+    );
+    assert!(
+        replies[0].contains("comments=8001 "),
+        "the answer names the member's mention: {}",
+        replies[0]
+    );
+    let head = world.github().head_of(HEAD_REF);
+    assert_eq!(
+        world.github().parent_of(&head),
+        world.opened_at,
+        "and the run published one commit onto the pull request's head"
+    );
+}

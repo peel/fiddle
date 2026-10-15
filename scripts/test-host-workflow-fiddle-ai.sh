@@ -223,6 +223,7 @@ MUTANTS = [
     ("a local action from the checkout", lambda d: add_step(d, {"uses": "./.github/actions/fiddle"})),
     ("fiddle from another repository", lambda d: set_env(d, DOWNLOAD, "FIDDLE_REPO", "someone/fiddle")),
     ("a self-hosted runner", lambda d: job_of(d).__setitem__("runs-on", "self-hosted")),
+    ("the [stub] root not created", lambda d: step_named(d, RUN).__setitem__("run", replace_in(step_named(d, RUN)["run"], 'mkdir -p "$root"\n', ""))),
 ]
 
 

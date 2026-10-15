@@ -48,6 +48,21 @@
 #   name = "<slug>[bot]"
 #   email = "<bot-id>+<slug>[bot]@users.noreply.github.com"
 #
+# THE [STUB] ROOT
+#
+# fiddle writes the record of a run that answers under the [stub] root the
+# document names, and a run over a root that does not exist is blocked.
+# RUNBOOKS.md names the root:
+#
+#   [stub]
+#   root = ".fiddle/stub"
+#
+# fiddle resolves it against the working directory, which is the checkout. A
+# fresh runner has no root, and git keeps no empty directory, so this workflow
+# reads the root from `fiddle config check --json` and creates it before the
+# run. A record does not stop a pr: run, and the runner loses it when the job
+# ends, so an empty root loses nothing.
+#
 # WHO STEERS
 #
 # The job runs only when the comment or review mentions @<FIDDLE_AI_HANDLE>,
@@ -174,4 +189,6 @@ jobs:
           set -euo pipefail
           fiddle="${RUNNER_TEMP}/fiddle-linux-amd64"
           "$fiddle" config check --config "$FIDDLE_CONFIG"
+          root=$("$fiddle" config check --config "$FIDDLE_CONFIG" --json | jq -er '.stub.root')
+          mkdir -p "$root"
           "$fiddle" run "pr:${{ github.repository }}#${PULL_REQUEST}" --config "$FIDDLE_CONFIG"
