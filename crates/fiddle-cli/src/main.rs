@@ -1727,7 +1727,7 @@ fn build_capability<'a>(
                         base: Some(facts.base_ref),
                         title: Some(facts.title),
                         pull_request: Some(facts.number),
-                        mention: Some(MENTION.to_string()),
+                        mention: Some(github.handle().unwrap_or(MENTION).to_string()),
                         account: github.account.clone(),
                         author: github.author.as_ref().map(config::Author::resolved),
                         ..StepParams::for_capability(capability_id)

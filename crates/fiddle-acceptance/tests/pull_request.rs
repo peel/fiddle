@@ -396,13 +396,17 @@ impl PullRequestWorld {
     }
 
     fn writes_as_its_own_account(&self) {
+        self.writes_as(ACCOUNT);
+    }
+
+    fn writes_as(&self, account: &str) {
         let path = self.scenario.config_path();
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(
             &path,
             text.replacen(
                 &format!("repo = \"{REPO}\"\n"),
-                &format!("repo = \"{REPO}\"\naccount = \"{ACCOUNT}\"\n"),
+                &format!("repo = \"{REPO}\"\naccount = \"{account}\"\n"),
                 1,
             ),
         )
@@ -519,6 +523,63 @@ fn stderr_of(run: &std::process::Output) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+const ANOTHER_APP: &str = "snowplow-identities-ai[bot]";
+
+const THE_OTHER_APPS_MENTION: &str = "@snowplow-identities-ai rename the helper";
+
+#[test]
+fn a_member_mention_of_the_app_the_deployment_names_steers_the_run() {
+    let world = PullRequestWorld::serving(an_accepted_change_described(
+        &format!("{REPAIRED}// renamed\n"),
+        [
+            "Rename the helper the mention names",
+            "Previously the helper had its old name.",
+            "Now it has the name the mention asked for.",
+        ],
+    ));
+    world.writes_as(ANOTHER_APP);
+    world
+        .github()
+        .a_member_commented(8_001, THE_OTHER_APPS_MENTION);
+
+    let run = world.run(REFERENCE);
+
+    assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    let prompts = world.model_prompts();
+    assert!(
+        prompts.iter().any(|it| it.contains(THE_OTHER_APPS_MENTION)),
+        "with `[github] account = \"{ANOTHER_APP}\"`, a member's mention of \
+         @snowplow-identities-ai is the direction: {prompts:?}"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 1, "and it is answered once: {replies:?}");
+    assert!(
+        replies[0].contains("comments=8001 "),
+        "the answer names that mention: {}",
+        replies[0]
+    );
+}
+
+#[test]
+fn a_mention_of_fiddle_ai_steers_nothing_where_the_deployment_names_another_app() {
+    let world = PullRequestWorld::serving(vec![]);
+    world.writes_as(ANOTHER_APP);
+    world.github().a_member_commented(8_001, THE_MENTION);
+
+    let run = world.run(REFERENCE);
+
+    assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    assert!(
+        world.model_prompts().is_empty(),
+        "with `[github] account = \"{ANOTHER_APP}\"`, @fiddle-ai names no handle this \
+         deployment answers to, so no model is asked anything"
+    );
+    assert!(
+        world.github().replies().is_empty(),
+        "and nothing is answered"
+    );
 }
 
 #[test]

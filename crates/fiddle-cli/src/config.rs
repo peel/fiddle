@@ -420,6 +420,14 @@ pub struct GitHub {
     pub author: Option<Author>,
 }
 
+impl GitHub {
+    pub fn handle(&self) -> Option<&str> {
+        self.account
+            .as_deref()
+            .map(|account| account.strip_suffix("[bot]").unwrap_or(account))
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(try_from = "AuthorDocument")]
 pub struct Author {
@@ -2054,6 +2062,32 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
             github(&format!("{FORGE}account = \"fiddle-ai[bot]\"\n")).account,
             Some("fiddle-ai[bot]".to_string()),
             "a written account reaches the deployment as written"
+        );
+    }
+
+    #[test]
+    fn the_handle_is_the_account_without_its_bot_suffix_and_absent_without_one() {
+        assert_eq!(github(FORGE).handle(), None, "no account names no handle");
+        assert_eq!(
+            github(&format!(
+                "{FORGE}account = \"snowplow-identities-ai[bot]\"\n"
+            ))
+            .handle(),
+            Some("snowplow-identities-ai"),
+            "an App's login names the handle people mention"
+        );
+        assert_eq!(
+            github(&format!(
+                "{FORGE}account = \"Snowplow-Identities-AI[bot]\"\n"
+            ))
+            .handle(),
+            Some("Snowplow-Identities-AI"),
+            "the case is kept as written"
+        );
+        assert_eq!(
+            github(&format!("{FORGE}account = \"a-person\"\n")).handle(),
+            Some("a-person"),
+            "a login without the suffix is the handle as written"
         );
     }
 
