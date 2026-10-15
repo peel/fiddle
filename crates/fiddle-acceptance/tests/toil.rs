@@ -1568,6 +1568,10 @@ impl ToilWorld {
         assert!(status.success(), "the fixture takes a dated base commit");
     }
 
+    pub fn keeps_rules_for_agents(&self, files: &[(&str, &str)]) -> String {
+        support::rules::committed(&self.fixture, files)
+    }
+
     pub fn holds_a_hook_that_refuses_every_commit(&self) {
         let hooks = self.fixture.join(".git").join("hooks");
         std::fs::create_dir_all(&hooks).expect("the fixture has a hooks directory");
@@ -5213,4 +5217,190 @@ fn a_bot_comment_is_never_marked_answered_so_a_later_comment_naming_it_still_rea
         "the second answer names only the new member comment: {}",
         replies[1]
     );
+}
+
+fn a_change_that_also_rewrites_the_rules() -> Vec<support::Reply> {
+    vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({
+                "path": "CLAUDE.md",
+                "contents": support::rules::A_RULE_THE_CHANGE_WROTE,
+            }),
+        )),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs", "CLAUDE.md"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::reports(serde_json::json!({
+            "verdict": "accepted",
+        }))),
+    ]
+}
+
+#[test]
+fn the_projects_rules_for_agents_reach_the_toil_agent_and_its_evaluation_from_the_base() {
+    let world = ToilWorld::serving(a_change_that_also_rewrites_the_rules());
+    let base = world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", support::rules::AGENTS_MD),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "{payload}"
+    );
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (3, 1),
+        "the agent three times and the evaluation once"
+    );
+    support::rules::assert_quotes_both(&briefs.agent[0], &base, "agent");
+    support::rules::assert_quotes_both(&briefs.judge[0], &base, "evaluation");
+    assert!(
+        !briefs.judge[0].contains(support::rules::A_RULE_THE_CHANGE_WROTE),
+        "the agent rewrote CLAUDE.md in the workspace, and the evaluation still reads the \
+         base's rules: {}",
+        briefs.judge[0]
+    );
+    assert!(
+        briefs
+            .other
+            .iter()
+            .all(|brief| !brief.contains(support::rules::LABEL_OPENS)),
+        "the ambiguity review is no agent step and quotes no rules"
+    );
+}
+
+#[test]
+fn a_project_with_no_rules_for_agents_gets_no_rules_section() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "{payload}"
+    );
+    assert!(
+        !briefs.agent.is_empty() && !briefs.judge.is_empty(),
+        "the agent and the evaluation were both asked"
+    );
+    for brief in briefs.agent.iter().chain(&briefs.judge) {
+        assert!(
+            !brief.contains(support::rules::FRAME_OPENS)
+                && !brief.contains(support::rules::LABEL_OPENS),
+            "no CLAUDE.md and no AGENTS.md, so no section: {brief}"
+        );
+    }
+}
+
+#[test]
+fn a_rules_file_over_the_cap_is_named_with_its_size_and_no_part_of_it_is_quoted() {
+    let world = ToilWorld::start();
+    let over = support::rules::over_the_cap();
+    let base = world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", &over),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "{payload}"
+    );
+    for brief in [&briefs.agent[0], &briefs.judge[0]] {
+        assert!(
+            brief.contains(&support::rules::from_commit(&base))
+                && brief.contains(&support::rules::quoted_claude_md()),
+            "the file under the cap is still quoted whole: {brief}"
+        );
+        assert!(
+            brief.contains(&format!("`AGENTS.md` holds {} bytes", over.len()))
+                && brief.contains("No part of it is quoted here")
+                && brief.contains("`read_file`"),
+            "the file over the cap is named with its size, said to be unquoted, and the \
+             brief says to read it with `read_file`: {brief}"
+        );
+        assert!(
+            !brief.contains(support::rules::OVER_THE_CAP_LINE.trim_end())
+                && !brief.contains(&format!("{}, `AGENTS.md`", support::rules::LABEL_OPENS)),
+            "and no line of it is quoted: {brief}"
+        );
+    }
+}
+
+#[test]
+fn the_projects_rules_reach_a_checks_run_from_the_base_and_not_from_the_head_it_stands_on() {
+    let world = ToilWorld::serving(
+        a_change_that_also_rewrites_the_rules()
+            .into_iter()
+            .chain(a_diagnosis_that_changes_nothing())
+            .collect(),
+    );
+    let base = world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", support::rules::AGENTS_MD),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        world.github().file_at(&published, "CLAUDE.md"),
+        support::rules::A_RULE_THE_CHANGE_WROTE.trim_end(),
+        "the head the checks run stands on holds rules the change rewrote"
+    );
+    world
+        .github()
+        .a_check_fails_on(&published, 501, "build", A_FAILING_SWAGGER_STEP);
+    world.github().the_branch_is_behind_its_base_by(9);
+    world
+        .github()
+        .a_member_commented(7_101, "Fix the CI failure");
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let run = world.run_capability(REFERENCE, "checks");
+    let payload = payload_of(&run);
+    let bodies: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    let briefs = support::rules::by_role(&bodies);
+
+    assert_eq!(run.status.code(), Some(0), "{payload}");
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (1, 1),
+        "the checks agent once and its evaluation once"
+    );
+    assert!(
+        briefs.agent[0].contains("Fix what a failing check on this pull request names"),
+        "the checks prompt ran"
+    );
+    support::rules::assert_quotes_both(&briefs.agent[0], &base, "checks agent");
+    support::rules::assert_quotes_both(&briefs.judge[0], &base, "checks evaluation");
+    for brief in briefs.agent.iter().chain(&briefs.judge) {
+        assert!(
+            !brief.contains(support::rules::A_RULE_THE_CHANGE_WROTE.trim_end()),
+            "the head's CLAUDE.md is not the rules: {brief}"
+        );
+    }
 }

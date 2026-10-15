@@ -32,7 +32,8 @@ use support::gullible::{
 };
 use support::judging;
 use support::quoting::{
-    carried_by, carrying, longest_run_of_fences, quotation_in, what_each_request_carried, FENCE,
+    carried_by, carrying, longest_run_of_fences, quotation_holding, what_each_request_carried,
+    FENCE,
 };
 use support::stub_jira::{client_for, StubJira};
 use support::{Deployment, INVOCATION_REF, PROJECT};
@@ -2121,7 +2122,7 @@ async fn the_ticket_text_the_run_observed_reaches_every_model_step_of_this_docum
             "request {nth} carried nothing the run observed on the ticket: {texts:?}"
         );
         for sent in quoting {
-            let quotation = quotation_in(sent);
+            let quotation = quotation_holding(sent, A_PLANTED_VALUE);
             assert_eq!(
                 quotation.inside, described,
                 "request {nth} did not carry the ticket text, and nothing else, between its \
@@ -2175,7 +2176,7 @@ async fn a_ticket_carrying_a_fence_cannot_break_out_of_its_own_quotation() {
             "request {nth} carried nothing the run observed on the ticket: {texts:?}"
         );
         for sent in quoting {
-            let quotation = quotation_in(sent);
+            let quotation = quotation_holding(sent, A_PLANTED_VALUE);
             assert_eq!(
                 quotation.fence,
                 FENCE.to_string().repeat(4),

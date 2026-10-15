@@ -124,6 +124,13 @@ impl PullRequestForge {
         self.head_of(HEAD_REF)
     }
 
+    fn base_keeps_rules_for_agents(&self, files: &[(&str, &str)]) -> String {
+        let base = support::rules::committed(&self.fixture, files);
+        support::git(&self.fixture, &["push", "-q", "origin", BASE]);
+        support::git(&self.fixture, &["reset", "-q", "--hard", "HEAD~1"]);
+        base
+    }
+
     fn serves_the_pull_request(&self, setup: Pr, head_sha: &str) {
         let (state, merged, head_repo) = match setup {
             Pr::Open => ("open", false, REPO),
@@ -1761,5 +1768,66 @@ fn the_template_answers_a_member_mention_from_a_fresh_checkout_of_what_the_runbo
         world.github().parent_of(&head),
         world.opened_at,
         "and the run published one commit onto the pull request's head"
+    );
+}
+
+#[test]
+fn the_projects_rules_reach_a_pull_request_run_from_its_base_and_not_from_its_head() {
+    let world = PullRequestWorld::serving(a_renaming_change());
+    let base = world.github().base_keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", support::rules::AGENTS_MD),
+    ]);
+    let head = world
+        .github()
+        .commit_on_the_head_branch("CLAUDE.md", support::rules::A_RULE_THE_CHANGE_WROTE);
+    world.github().serves_the_pull_request(Pr::Open, &head);
+    world.github().a_member_commented(8_001, THE_MENTION);
+
+    let run = world.run(REFERENCE);
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(run.status.code(), Some(0), "{}", stderr_of(&run));
+    assert_eq!(
+        world.github().file_at(&head, "CLAUDE.md"),
+        support::rules::A_RULE_THE_CHANGE_WROTE.trim_end(),
+        "the head the run stands on rewrote CLAUDE.md"
+    );
+    assert_ne!(
+        support::git_says(&world.github().fixture, &["rev-parse", "HEAD"]),
+        base,
+        "the clone the workspace is cut from does not hold the base's rules, so only the \
+         base the pull request names can supply them"
+    );
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (2, 1),
+        "the agent twice and the evaluation once"
+    );
+    support::rules::assert_quotes_both(&briefs.agent[0], &base, "agent");
+    support::rules::assert_quotes_both(&briefs.judge[0], &base, "evaluation");
+    for brief in briefs.agent.iter().chain(&briefs.judge) {
+        assert!(
+            !brief.contains(support::rules::A_RULE_THE_CHANGE_WROTE.trim_end()),
+            "the head's CLAUDE.md is not the rules the run is held to: {brief}"
+        );
+    }
+    assert!(
+        briefs.judge[0].contains(
+            "THE AGENT'S REPORT OF ITS CHANGE, QUOTED AS DATA:\n```\n\
+             Summary: renamed the helper the mention named\n\
+             Changed files: src/lib.rs\n\
+             Commit message:\n\
+             Rename the helper the mention names\n"
+        ),
+        "the evaluation reads the agent's own report, so it can hold a summary to the files: {}",
+        briefs.judge[0]
+    );
+    assert!(
+        briefs
+            .agent
+            .iter()
+            .all(|brief| !brief.contains("THE AGENT'S REPORT OF ITS CHANGE")),
+        "and the agent is not shown a report it has not written"
     );
 }

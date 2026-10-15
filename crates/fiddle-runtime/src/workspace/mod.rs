@@ -49,8 +49,16 @@ pub struct Workspace {
     fixture: PathBuf,
     baseline_ignore: PathBuf,
     stamp: String,
+    cut_from: String,
     cancel: CancellationToken,
     removed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Committed {
+    pub link: bool,
+    pub bytes: u64,
+    object: String,
 }
 
 impl Workspace {
@@ -93,12 +101,16 @@ impl Workspace {
         )?;
         let baseline_ignore = root.join(format!("{}.ignore", attempt.0));
         let stamp = base_date(&path)?;
+        let cut_from = String::from_utf8_lossy(&git_stdout(&path, &["rev-parse", "HEAD"])?)
+            .trim()
+            .to_string();
         let workspace = Workspace {
             root: path,
             home,
             fixture: fixture.to_path_buf(),
             baseline_ignore,
             stamp,
+            cut_from,
             cancel,
             removed: false,
         };
@@ -140,6 +152,50 @@ impl Workspace {
 
     pub fn cancel(&self) -> &CancellationToken {
         &self.cancel
+    }
+
+    pub fn cut_from(&self) -> &str {
+        &self.cut_from
+    }
+
+    pub fn committed_file(
+        &self,
+        revision: &str,
+        path: &str,
+    ) -> Result<Option<Committed>, WorkspaceError> {
+        let listed = git_stdout(&self.root, &["ls-tree", "-z", "-l", revision, "--", path])?;
+        let listed = String::from_utf8_lossy(&listed);
+        let Some((entry, named)) = listed.trim_end_matches('\0').split_once('\t') else {
+            return Ok(None);
+        };
+        if named != path {
+            return Ok(None);
+        }
+        let fields: Vec<&str> = entry.split_whitespace().collect();
+        let [mode, kind, object, bytes] = fields[..] else {
+            return Err(WorkspaceError::Git {
+                command: format!("ls-tree -z -l {revision} -- {path}"),
+                stderr: format!(
+                    "git listed {entry:?}, which is not a mode, a type, an object and a size"
+                ),
+            });
+        };
+        if kind != "blob" {
+            return Ok(None);
+        }
+        let bytes = bytes.parse::<u64>().map_err(|_| WorkspaceError::Git {
+            command: format!("ls-tree -z -l {revision} -- {path}"),
+            stderr: format!("git listed a size of {bytes:?} for a blob"),
+        })?;
+        Ok(Some(Committed {
+            link: mode == "120000",
+            bytes,
+            object: object.to_string(),
+        }))
+    }
+
+    pub fn committed_bytes(&self, committed: &Committed) -> Result<Vec<u8>, WorkspaceError> {
+        git_stdout(&self.root, &["cat-file", "blob", &committed.object])
     }
 
     pub fn resolve(&self, path: &WorkspacePath) -> Result<PathBuf, WorkspaceError> {

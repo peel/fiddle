@@ -1007,6 +1007,33 @@ it leaves, and exits 2. When fiddle named no record, `--forget` removes nothing
 and says so. For a record fiddle reads, removing it changes nothing for a `pr:`
 run; for one fiddle reports unavailable, it ends the block.
 
+## The target's rules for agents
+
+Every agent step and every evaluate step of `toil`, `checks` and
+`pull_request` quotes the target's `CLAUDE.md` and `AGENTS.md`, from the root of
+the repository. ADR 094 records the decision.
+
+- **Where they come from.** From a commit, never from the working tree. A `pr:`
+  run fetches the base branch the pull request names and reads `origin/<base>`.
+  A base that cannot be fetched fails the run. A `jira:` run reads the commit
+  the workspace was cut from, which is the HEAD of `[workspace] fixture`. fiddle
+  builds the run's branch on that commit, so keep that clone on `[github] base`.
+  A change on the run's branch, or a change the agent makes in the workspace,
+  does not change the rules the run is held to.
+- **What is quoted.** Each file whole, between fence lines, as data. An absent
+  file gets no section. fiddle does not follow `@` imports. A link to another
+  file in the repository is quoted as the file it names.
+- **The cap.** A file over 32768 bytes is not quoted in part. The brief names the
+  file and its size, and tells the agent and the evaluator to read it with
+  `read_file`. `read_file` reads the workspace, which for a `pr:` run is the pull
+  request's head. Keep each rules file under the cap, so that a pull request
+  cannot change the copy a run reads.
+- **The evaluator.** It rejects a change that breaks a quoted rule, and the
+  finding names the rule. It also reads the agent's own report, and rejects a
+  report that misstates the change.
+- **To see what a run quoted**, record the transcript as the next section says,
+  and search it for `THE PROJECT'S RULES FOR AGENTS`.
+
 ## Record what the model was sent and what it returned
 
 Off by default. One run, one variable.

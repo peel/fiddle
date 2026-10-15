@@ -1400,7 +1400,7 @@ where
     })
 }
 
-fn origin_ref(branch: &str) -> String {
+pub(crate) fn origin_ref(branch: &str) -> String {
     format!("{REMOTE}/{branch}")
 }
 
