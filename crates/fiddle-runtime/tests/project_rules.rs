@@ -314,3 +314,77 @@ fn a_link_whose_target_holds_a_line_break_a_backtick_or_a_control_character_is_a
         refused_as_a_link_to_no_file(dir.path(), n, target, target);
     }
 }
+
+#[test]
+fn a_link_whose_target_git_would_widen_to_another_file_is_a_link_to_no_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for (n, target) in [(6, ":(top)x"), (7, ":/x"), (8, ":(literal)x")] {
+        let repo = dir.path().join(format!("widened-{n}"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = fixture::trivial_repo(&repo);
+        std::fs::write(
+            repo.join("x"),
+            "A rule that only a widened pathspec reaches.\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(target, repo.join("AGENTS.md")).unwrap();
+        let base = committed(&repo, "a link to a name no file holds");
+        let workspace = cut(&repo, &dir.path().join(format!("widened-ws-{n}")), n);
+
+        let read = ProjectRules::at(&workspace, workspace.cut_from());
+
+        let error = match read {
+            Err(error) => CapabilityError::from(error),
+            Ok(rules) => panic!("{target:?}: no file is named {target:?}, and it quoted {rules:?}"),
+        };
+        assert!(
+            matches!(
+                &error,
+                CapabilityError::UnquotableRules(UnquotableRules {
+                    name: "AGENTS.md",
+                    why: Unquotable::LinkToNoFile,
+                    revision,
+                }) if *revision == base
+            ),
+            "{target:?}: {error:?}"
+        );
+        assert_eq!(error.recurrence(), Recurrence::Permanent, "{target:?}");
+        assert!(
+            !error.to_string().contains("only a widened pathspec"),
+            "{target:?}: no part of `x` is quoted: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_link_to_a_file_whose_name_looks_like_pathspec_magic_quotes_that_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for (n, target) in [(9, ":(top)x"), (10, ":(literal)x")] {
+        let repo = dir.path().join(format!("named-{n}"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = fixture::trivial_repo(&repo);
+        std::fs::write(
+            repo.join("x"),
+            "A rule in the file the pattern would match.\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join(target), RULES).unwrap();
+        std::os::unix::fs::symlink(target, repo.join("AGENTS.md")).unwrap();
+        committed(&repo, "a link to a file with an odd name");
+        let workspace = cut(&repo, &dir.path().join(format!("named-ws-{n}")), n);
+
+        let rules = ProjectRules::at(&workspace, workspace.cut_from());
+
+        assert_eq!(
+            rules.as_ref().map(ProjectRules::files).ok(),
+            Some(
+                &[RuleFile {
+                    name: "AGENTS.md",
+                    through: Some(target.to_string()),
+                    text: RULES.to_string(),
+                }][..]
+            ),
+            "{target:?}: the link names a file that exists under that exact name: {rules:?}"
+        );
+    }
+}
