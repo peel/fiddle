@@ -5267,7 +5267,9 @@ fn the_projects_rules_for_agents_reach_the_toil_agent_and_its_evaluation_from_th
         (3, 1),
         "the agent three times and the evaluation once"
     );
-    support::rules::assert_quotes_both(&briefs.agent[0], &base, "agent");
+    for brief in &briefs.agent {
+        support::rules::assert_quotes_both(brief, &base, "agent");
+    }
     support::rules::assert_quotes_both(&briefs.judge[0], &base, "evaluation");
     assert!(
         !briefs.judge[0].contains(support::rules::A_RULE_THE_CHANGE_WROTE),

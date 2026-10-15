@@ -74,6 +74,12 @@ pub struct ProjectRules {
     files: Vec<RuleFile>,
 }
 
+fn names_a_path(target: &str) -> bool {
+    target
+        .chars()
+        .all(|character| !character.is_control() && character != '`')
+}
+
 fn linked_path(target: &str) -> Option<String> {
     let target = target.trim_end_matches('\n');
     if target.is_empty() || target.starts_with('/') {
@@ -111,9 +117,14 @@ fn read(
         true => {
             let target =
                 String::from_utf8_lossy(&workspace.committed_bytes(&committed)?).to_string();
+            if !names_a_path(&target) {
+                return Err(refused(Unquotable::LinkToNoFile).into());
+            }
             let path = linked_path(&target).ok_or(refused(Unquotable::LinkLeavesTheRepository))?;
             let named = workspace
-                .committed_file(revision, &path)?
+                .committed_file(revision, &path)
+                .ok()
+                .flatten()
                 .ok_or(refused(Unquotable::LinkToNoFile))?;
             match named.link {
                 true => return Err(refused(Unquotable::LinkToALink).into()),

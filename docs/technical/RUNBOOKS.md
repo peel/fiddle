@@ -1030,7 +1030,10 @@ the repository. ADR 094 records the decision.
   nothing on the pull request. It ends `Failed`, exit 20, and is not retried,
   because the cause is in the target and another run finds the same file. The
   reason names the file, the commit, its size or kind, and the cap. It names a
-  link by its own path and never prints where the link points. Change the file
+  link by its own path and never prints where the link points. A link whose
+  target holds a line break, a backtick or another control character counts as
+  a link to no file, and fiddle reads every target as a plain path, never as git
+  pathspec magic. Change the file
   on the base, then run again. A `jira:` run asks the ambiguity review before
   the workflow starts, so that one model call can come first.
 - **The evaluator.** It rejects a change that breaks a quoted rule, and the

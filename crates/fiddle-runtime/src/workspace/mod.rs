@@ -163,7 +163,18 @@ impl Workspace {
         revision: &str,
         path: &str,
     ) -> Result<Option<Committed>, WorkspaceError> {
-        let listed = git_stdout(&self.root, &["ls-tree", "-z", "-l", revision, "--", path])?;
+        let listed = git_stdout(
+            &self.root,
+            &[
+                "--literal-pathspecs",
+                "ls-tree",
+                "-z",
+                "-l",
+                revision,
+                "--",
+                path,
+            ],
+        )?;
         let listed = String::from_utf8_lossy(&listed);
         let Some((entry, named)) = listed.trim_end_matches('\0').split_once('\t') else {
             return Ok(None);
