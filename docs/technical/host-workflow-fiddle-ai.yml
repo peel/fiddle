@@ -1,16 +1,19 @@
-# The @fiddle-ai trigger: a template for the target repository.
+# The App-mention trigger: a template for the target repository.
 #
 # Copy this file to .github/workflows/fiddle-ai.yml in the repository fiddle
-# works on. A person who speaks for the project mentions @fiddle-ai on a pull
-# request, and this workflow runs `fiddle run "pr:<owner>/<repo>#<n>"` once for
-# that pull request. RUNBOOKS.md, "The @fiddle-ai trigger", installs it, and
-# ADR 093 records the decision.
+# works on. A person who speaks for the project mentions the deployment's App
+# on a pull request, and this workflow runs `fiddle run
+# "pr:<owner>/<repo>#<n>"` once for that pull request. RUNBOOKS.md, "The
+# App-mention trigger", installs it, and ADR 093 records the decision.
 #
 # THE GITHUB APP
 #
-# fiddle writes as a GitHub App named fiddle-ai. This workflow mints one
-# installation token per run and passes it as FIDDLE_GITHUB_TOKEN. The App
-# needs these repository permissions and nothing else:
+# fiddle writes as the deployment's GitHub App. The App's slug is the handle
+# people mention: an App with the slug snowplow-identities-ai writes as
+# snowplow-identities-ai[bot] and answers @snowplow-identities-ai. This
+# workflow mints one installation token per run and passes it as
+# FIDDLE_GITHUB_TOKEN. The App needs these repository permissions and nothing
+# else:
 #
 #   contents: write        fetch the head branch and push onto it
 #   pull-requests: write   read the pull request and its reviews
@@ -27,26 +30,32 @@
 # A mention in an inline review comment, on a line of the diff, starts no run.
 # fiddle reads the conversation and the reviews, and no inline comment.
 #
-# THE DEPLOYMENT DOCUMENT
+# THE HANDLE AND THE DEPLOYMENT DOCUMENT
+#
+# Set the repository variable FIDDLE_AI_HANDLE to the App's slug. The job's
+# `if` reads the handle from it, and the job is skipped while it is empty.
 #
 # The document FIDDLE_CONFIG names sets the login the App writes as, and the
-# author of every commit fiddle makes. <app-user-id> is the id of the App's bot
-# user: `gh api users/fiddle-ai%5Bbot%5D --jq .id`.
+# author of every commit fiddle makes. fiddle takes the handle it answers to
+# from that login, without its [bot] suffix, so the variable and the account
+# name the same App. <bot-id> is the id of the App's bot user:
+# `gh api /users/<slug>%5Bbot%5D --jq .id`.
 #
 #   [github]
-#   account = "fiddle-ai[bot]"
+#   account = "<slug>[bot]"
 #
 #   [github.author]
-#   name = "fiddle-ai[bot]"
-#   email = "<app-user-id>+fiddle-ai[bot]@users.noreply.github.com"
+#   name = "<slug>[bot]"
+#   email = "<bot-id>+<slug>[bot]@users.noreply.github.com"
 #
 # WHO STEERS
 #
-# The job runs only when the comment or review mentions @fiddle-ai, its author
-# is an OWNER, MEMBER or COLLABORATOR, and the sender is not a bot. fiddle
-# applies its own rule again to every comment and review it reads, so a wrong
-# `if` here cannot widen who steers: a mention in code, a fence or a quote, a
-# mention by a stranger and every bot's comment steer nothing.
+# The job runs only when the comment or review mentions @<FIDDLE_AI_HANDLE>,
+# its author is an OWNER, MEMBER or COLLABORATOR, and the sender is not a bot.
+# fiddle applies its own rule again to every comment and review it reads, with
+# the handle from the account, so a wrong `if` here cannot widen who steers: a
+# mention in code, a fence or a quote, a mention by a stranger and every bot's
+# comment steer nothing.
 #
 # One run at a time per pull request. The queue is on the job, not on the
 # workflow, so only a run that passed the `if` enters it. Every other comment or
@@ -86,17 +95,18 @@ permissions:
 jobs:
   fiddle:
     if: >-
-      github.event.sender.type != 'Bot'
+      vars.FIDDLE_AI_HANDLE != ''
+      && github.event.sender.type != 'Bot'
       && (
         (
           github.event_name == 'issue_comment'
           && github.event.issue.pull_request
-          && contains(github.event.comment.body, '@fiddle-ai')
+          && contains(github.event.comment.body, format('@{0}', vars.FIDDLE_AI_HANDLE))
           && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
         )
         || (
           github.event_name == 'pull_request_review'
-          && contains(github.event.review.body, '@fiddle-ai')
+          && contains(github.event.review.body, format('@{0}', vars.FIDDLE_AI_HANDLE))
           && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.review.author_association)
         )
       )
@@ -112,7 +122,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Mint the fiddle-ai installation token
+      - name: Mint the App's installation token
         id: app
         uses: actions/create-github-app-token@v2
         with:

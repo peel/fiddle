@@ -3,18 +3,16 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEMPLATE="${1:-$ROOT/docs/technical/host-workflow-fiddle-ai.yml}"
-MAIN="${2:-$ROOT/crates/fiddle-cli/src/main.rs}"
-HELD="${3:-$ROOT/docs/technical/host-workflow-fiddle-ai.sha256}"
+HELD="${2:-$ROOT/docs/technical/host-workflow-fiddle-ai.sha256}"
 
 [ -f "$TEMPLATE" ] || { echo "test-host-workflow-fiddle-ai: no template at $TEMPLATE, so nothing was checked" >&2; exit 2; }
-[ -f "$MAIN" ] || { echo "test-host-workflow-fiddle-ai: no $MAIN, so fiddle's own handle cannot be read" >&2; exit 2; }
 [ -f "$HELD" ] || { echo "test-host-workflow-fiddle-ai: no held sha256 at $HELD, so the template has nothing to equal" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 \
   || { echo "test-host-workflow-fiddle-ai: python3 is not on the PATH, so nothing was checked" >&2; exit 2; }
 python3 -c 'import yaml' >/dev/null 2>&1 \
   || { echo "test-host-workflow-fiddle-ai: python3 has no PyYAML, so the reasons cannot be named and nothing was checked" >&2; exit 2; }
 
-python3 - "$TEMPLATE" "$MAIN" "$HELD" <<'PYTHON'
+python3 - "$TEMPLATE" "$HELD" <<'PYTHON'
 import copy
 import hashlib
 import re
@@ -22,7 +20,7 @@ import sys
 
 import yaml
 
-template_path, main_path, held_path = sys.argv[1:4]
+template_path, held_path = sys.argv[1:3]
 NAME = "test-host-workflow-fiddle-ai"
 MEASURES = ("the template's bytes must equal the reviewed copy's (its sha256 is held beside it); "
             "any edit to the template, a comment included, fails the gate until the held sha256 is changed")
@@ -33,10 +31,7 @@ def refuse(reason):
     sys.exit(2)
 
 
-found = re.findall(r'^const MENTION: &str = "([^"]+)";$', open(main_path, encoding="utf-8").read(), re.M)
-if len(found) != 1:
-    refuse(f"{main_path} names {len(found)} MENTION constants, so fiddle's own handle cannot be compared")
-HANDLE = found[0]
+HANDLE = "format('@{0}', vars.FIDDLE_AI_HANDLE)"
 
 held = open(held_path, encoding="utf-8").read().split()
 if not held or not re.fullmatch(r"[0-9a-f]{64}", held[0]):
@@ -65,17 +60,18 @@ UniqueKeys.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, uniqu
 
 ASSOCIATIONS = """fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]')"""
 EXPECTED_IF = " ".join(f"""
-github.event.sender.type != 'Bot'
+vars.FIDDLE_AI_HANDLE != ''
+&& github.event.sender.type != 'Bot'
 && (
   (
     github.event_name == 'issue_comment'
     && github.event.issue.pull_request
-    && contains(github.event.comment.body, '@{HANDLE}')
+    && contains(github.event.comment.body, {HANDLE})
     && contains({ASSOCIATIONS}, github.event.comment.author_association)
   )
   || (
     github.event_name == 'pull_request_review'
-    && contains(github.event.review.body, '@{HANDLE}')
+    && contains(github.event.review.body, {HANDLE})
     && contains({ASSOCIATIONS}, github.event.review.author_association)
   )
 )
@@ -104,14 +100,15 @@ def reasons(text):
     jobs = document.get("jobs") if isinstance(document.get("jobs"), dict) else {}
     job = jobs.get("fiddle") if isinstance(jobs.get("fiddle"), dict) else {}
     if " ".join(str(job.get("if", "")).split()) != EXPECTED_IF:
-        found.append(f"the job's if is not the guard on @{HANDLE}, an entitled association and a sender that is no bot")
+        found.append("the job's if is not the guard on the handle in vars.FIDDLE_AI_HANDLE, an entitled association and a sender that is no bot")
     if job.get("concurrency") != {"group": f"fiddle-ai-{NUMBER}", "cancel-in-progress": False}:
         found.append("the job does not queue one run per pull request without cancelling one")
     steps = job.get("steps") if isinstance(job.get("steps"), list) else []
     if not steps or steps[0] != CHECKOUT:
         found.append("the first step is not a checkout of the default branch that persists no credential")
-    if f"'@{HANDLE}'" not in str(job.get("if", "")):
-        found.append(f"the guard's handle is not @{HANDLE}, the handle main.rs names in MENTION")
+    guard = " ".join(str(job.get("if", "")).split())
+    if guard.count(HANDLE) != 2 or not guard.startswith("vars.FIDDLE_AI_HANDLE != '' && "):
+        found.append("the guard does not read the handle from vars.FIDDLE_AI_HANDLE in both events, or does not skip the job while it is empty")
     return found
 
 
@@ -151,9 +148,9 @@ def step_named(document, name):
 
 RUN = "Run fiddle on the pull request"
 DOWNLOAD = "Download fiddle and verify it before it runs"
-MINT = "Mint the fiddle-ai installation token"
+MINT = "Mint the App's installation token"
 REVIEW_ASSOCIATION = "&& contains(fromJSON('[\"OWNER\", \"MEMBER\", \"COLLABORATOR\"]'), github.event.review.author_association)"
-REVIEW_BODY = f"&& contains(github.event.review.body, '@{HANDLE}')"
+REVIEW_BODY = f"&& contains(github.event.review.body, {HANDLE})"
 SHA_CHECK = """if [ "$measured" != "$FIDDLE_SHA256" ]; then
   echo "${FIDDLE_TAG} publishes a binary this job does not pin." >&2
   echo "  published ${measured}" >&2
@@ -205,7 +202,8 @@ MUTANTS = [
     ("pull_request_target", lambda d: d["on"].__setitem__("pull_request_target", {"types": ["opened"]})),
     ("--capability toil", lambda d: step_named(d, RUN).__setitem__("run", replace_in(step_named(d, RUN)["run"], '--config "$FIDDLE_CONFIG"\n', '--config "$FIDDLE_CONFIG" --capability toil\n'))),
     ("an alternative that is always true", lambda d: job_of(d).__setitem__("if", job_of(d)["if"] + " || true")),
-    ("another handle", lambda d: set_if(d, f"'@{HANDLE}'", "'@fiddle'")),
+    ("a handle written into the guard", lambda d: set_if(d, HANDLE, "'@fiddle-ai'")),
+    ("the empty-handle guard dropped", lambda d: set_if(d, "vars.FIDDLE_AI_HANDLE != '' && ", "")),
     ("the workflow token writes contents", lambda d: d["permissions"].__setitem__("contents", "write")),
     ("the run reads the workflow token", lambda d: set_env(d, RUN, "FIDDLE_GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}")),
     ("a second issue_comment type", lambda d: d["on"]["issue_comment"]["types"].append("edited")),
