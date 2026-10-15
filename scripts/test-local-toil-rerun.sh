@@ -7,7 +7,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FIDDLE="${TEST_FIDDLE:-$ROOT/target/debug/fiddle}"
 
 [ -x "$FIDDLE" ] || { echo "test-local-toil-rerun: no fiddle binary at $FIDDLE; build it with cargo build --bin fiddle (the gate's cargo test builds it before the shell suites run), and nothing was checked" >&2; exit 2; }
-STALE=$(find "$ROOT/crates" -name '*.rs' -newer "$FIDDLE" -print -quit)
+STALE=$(find "$ROOT"/crates/*/src "$ROOT"/crates/*/Cargo.toml "$ROOT/Cargo.lock" \( -name '*.rs' -o -name Cargo.toml -o -name Cargo.lock \) -newer "$FIDDLE" -print -quit)
 [ -z "$STALE" ] || { echo "test-local-toil-rerun: $FIDDLE is older than $STALE, so its answers may not be this tree's; rebuild it, and nothing was checked" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || { echo "test-local-toil-rerun: jq is not on the PATH, and the script reads fiddle's answer with it; nothing was checked" >&2; exit 2; }
 [ "$(id -u)" -ne 0 ] || { echo "test-local-toil-rerun: running as root, a directory with mode 000 is still readable, so the permission case would measure nothing; nothing was checked" >&2; exit 2; }
