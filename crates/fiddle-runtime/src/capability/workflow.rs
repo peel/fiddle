@@ -1050,6 +1050,7 @@ where
         let mut checked: Option<String> = None;
         let mut reported: Option<RepairReport> = None;
         let mut committed_for_direction = false;
+        let mut rules: Option<Option<String>> = None;
         let mut params = StepParams {
             earned: StepOutputs::default(),
             ..self.params.clone()
@@ -1066,6 +1067,15 @@ where
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .push(params.earned.clone());
+            if rules.is_none()
+                && matches!(
+                    step,
+                    Ready::Agent { .. } | Ready::Evaluate { .. } | Ready::Check { .. }
+                )
+            {
+                rules = Some(self.rules(steered.as_ref())?);
+            }
+            let rules_read = rules.as_ref().and_then(Option::as_ref);
             match step {
                 Ready::Checks => checked = Some(self.checks(steered.as_ref()).await?),
                 Ready::Steer => match self.steer().await? {
@@ -1086,14 +1096,13 @@ where
                         (Some(_), Some(bounded)) => bounded,
                         _ => max_turns,
                     };
-                    let rules = self.rules(steered.as_ref())?;
                     let attempted = self
                         .attempt(
                             &widened(
                                 with_checks(
                                     task_carrying(
                                         task,
-                                        rules.as_ref(),
+                                        rules_read,
                                         quoted.as_ref(),
                                         steered_task(&steered),
                                     ),
@@ -1153,14 +1162,13 @@ where
                     self.within_scope()?
                 }
                 Ready::Evaluate { task, max_turns } => {
-                    let rules = self.rules(steered.as_ref())?;
                     self.evaluate(
                         &widened(
                             with_report(
                                 with_checks(
                                     task_carrying(
                                         task,
-                                        rules.as_ref(),
+                                        rules_read,
                                         quoted.as_ref(),
                                         steered_task(&steered),
                                     ),

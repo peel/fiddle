@@ -5343,6 +5343,15 @@ fn a_rules_file_over_the_cap_refuses_a_toil_run_before_any_agent_step() {
         "nothing is pushed: {:?}",
         world.github().branches()
     );
+    assert_eq!(
+        (
+            world.jira().last_comment_on(TICKET),
+            world.jira().links_for(TICKET),
+            world.jira().transition_requests(),
+        ),
+        (None, Vec::<String>::new(), 0),
+        "and nothing is answered on the ticket: no comment, no link and no transition"
+    );
     assert!(
         said.contains(&format!(
             "`AGENTS.md` at commit `{base}` holds {} bytes",

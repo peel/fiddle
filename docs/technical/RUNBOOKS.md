@@ -1019,7 +1019,10 @@ the repository. ADR 094 records the decision.
   the workspace was cut from, which is the HEAD of `[workspace] fixture`. fiddle
   builds the run's branch on that commit, so keep that clone on `[github] base`.
   A change on the run's branch, or a change the agent makes in the workspace,
-  does not change the rules the run is held to.
+  does not change the rules the run is held to. fiddle reads the rules once,
+  before the first step that can run a project command, and every agent and
+  evaluate step quotes that read. It ignores `refs/replace`, so code the run
+  executes cannot change the rules a later step quotes.
 - **What is quoted.** Each file whole, between fence lines, as data. An absent
   file gets no section. fiddle does not follow `@` imports. A link to another
   file in the repository is quoted as the file it names.

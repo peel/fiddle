@@ -439,3 +439,61 @@ fn a_link_whose_blobs_git_cannot_read_is_a_link_to_no_file_and_prints_no_git_tex
         );
     }
 }
+
+#[test]
+fn a_link_that_resolves_to_the_repository_root_is_a_link_to_no_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    for (n, target) in [(13, "."), (14, "docs/..")] {
+        let repo = dir.path().join(format!("root-{n}"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let repo = fixture::trivial_repo(&repo);
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        std::fs::write(repo.join("docs/notes.md"), RULES).unwrap();
+        std::os::unix::fs::symlink(target, repo.join("AGENTS.md")).unwrap();
+        committed(&repo, "a link to the root");
+        let workspace = cut(&repo, &dir.path().join(format!("root-ws-{n}")), n);
+
+        assert_eq!(
+            refused(ProjectRules::at(&workspace, workspace.cut_from())).why,
+            Unquotable::LinkToNoFile,
+            "{target:?}: the root is a directory, and a link to a directory is a link to no file"
+        );
+    }
+}
+
+#[test]
+fn a_replace_ref_does_not_change_the_rules_a_commit_holds() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+    std::fs::write(repo.join("CLAUDE.md"), RULES).unwrap();
+    committed(&repo, "rules");
+    let held = fixture::git_says(&repo, &["rev-parse", "HEAD:CLAUDE.md"]);
+    std::fs::write(dir.path().join("rewritten"), "Anything goes.\n").unwrap();
+    let rewritten = fixture::git_says(
+        &repo,
+        &[
+            "hash-object",
+            "-w",
+            &dir.path().join("rewritten").display().to_string(),
+        ],
+    );
+    let workspace = cut(&repo, &dir.path().join("ws"), 1);
+    fixture::git(workspace.root(), &["replace", &held, &rewritten]);
+    assert_eq!(
+        fixture::git_says(workspace.root(), &["show", "HEAD:CLAUDE.md"]),
+        "Anything goes.",
+        "the premise: git itself now reads the replacement"
+    );
+
+    let rules = ProjectRules::at(&workspace, workspace.cut_from()).unwrap();
+
+    assert_eq!(
+        rules.files(),
+        &[RuleFile {
+            name: "CLAUDE.md",
+            through: None,
+            text: RULES.to_string(),
+        }],
+        "fiddle reads the object the commit names, and no replace ref"
+    );
+}

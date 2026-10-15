@@ -164,7 +164,15 @@ impl Workspace {
     ) -> Result<Option<Committed>, WorkspaceError> {
         let listed = git_stdout(
             &self.root,
-            &["--literal-pathspecs", "ls-tree", "-z", revision, "--", path],
+            &[
+                "--no-replace-objects",
+                "--literal-pathspecs",
+                "ls-tree",
+                "-z",
+                revision,
+                "--",
+                path,
+            ],
         )?;
         let listed = String::from_utf8_lossy(&listed);
         let Some((entry, named)) = listed.trim_end_matches('\0').split_once('\t') else {
@@ -190,7 +198,10 @@ impl Workspace {
     }
 
     pub fn committed_size(&self, committed: &Committed) -> Result<u64, WorkspaceError> {
-        let told = git_stdout(&self.root, &["cat-file", "-s", &committed.object])?;
+        let told = git_stdout(
+            &self.root,
+            &["--no-replace-objects", "cat-file", "-s", &committed.object],
+        )?;
         let told = String::from_utf8_lossy(&told);
         told.trim().parse::<u64>().map_err(|_| WorkspaceError::Git {
             command: format!("cat-file -s {}", committed.object),
@@ -199,7 +210,15 @@ impl Workspace {
     }
 
     pub fn committed_bytes(&self, committed: &Committed) -> Result<Vec<u8>, WorkspaceError> {
-        git_stdout(&self.root, &["cat-file", "blob", &committed.object])
+        git_stdout(
+            &self.root,
+            &[
+                "--no-replace-objects",
+                "cat-file",
+                "blob",
+                &committed.object,
+            ],
+        )
     }
 
     pub fn resolve(&self, path: &WorkspacePath) -> Result<PathBuf, WorkspaceError> {

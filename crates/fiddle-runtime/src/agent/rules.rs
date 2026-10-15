@@ -80,23 +80,32 @@ fn names_a_path(target: &str) -> bool {
         .all(|character| !character.is_control() && character != '`')
 }
 
-fn linked_path(target: &str) -> Option<String> {
-    if target.is_empty() || target.starts_with('/') {
-        return None;
+#[derive(Debug, Eq, PartialEq)]
+enum Linked {
+    Path(String),
+    NoFile,
+    Outside,
+}
+
+fn linked_path(target: &str) -> Linked {
+    if target.starts_with('/') {
+        return Linked::Outside;
     }
     let mut parts: Vec<&str> = Vec::new();
     for part in target.split('/') {
         match part {
             "" | "." => {}
             ".." => {
-                parts.pop()?;
+                if parts.pop().is_none() {
+                    return Linked::Outside;
+                }
             }
             name => parts.push(name),
         }
     }
     match parts.is_empty() {
-        true => None,
-        false => Some(parts.join("/")),
+        true => Linked::NoFile,
+        false => Linked::Path(parts.join("/")),
     }
 }
 
@@ -121,7 +130,11 @@ fn read(
             if !names_a_path(&target) {
                 return Err(refused(Unquotable::LinkToNoFile).into());
             }
-            let path = linked_path(&target).ok_or(refused(Unquotable::LinkLeavesTheRepository))?;
+            let path = match linked_path(&target) {
+                Linked::Path(path) => path,
+                Linked::NoFile => return Err(refused(Unquotable::LinkToNoFile).into()),
+                Linked::Outside => return Err(refused(Unquotable::LinkLeavesTheRepository).into()),
+            };
             let named = workspace
                 .committed_file(revision, &path)
                 .ok()
@@ -287,17 +300,15 @@ mod tests {
 
     #[test]
     fn a_link_resolves_inside_the_project_and_not_outside_it() {
-        assert_eq!(linked_path("CLAUDE.md"), Some("CLAUDE.md".to_string()));
-        assert_eq!(
-            linked_path("docs/../AGENTS.md"),
-            Some("AGENTS.md".to_string())
-        );
-        assert_eq!(
-            linked_path("./docs/rules.md"),
-            Some("docs/rules.md".to_string())
-        );
-        assert_eq!(linked_path("../outside.md"), None);
-        assert_eq!(linked_path("/etc/passwd"), None);
-        assert_eq!(linked_path(""), None);
+        let path = |it: &str| Linked::Path(it.to_string());
+        assert_eq!(linked_path("CLAUDE.md"), path("CLAUDE.md"));
+        assert_eq!(linked_path("docs/../AGENTS.md"), path("AGENTS.md"));
+        assert_eq!(linked_path("./docs/rules.md"), path("docs/rules.md"));
+        assert_eq!(linked_path("../outside.md"), Linked::Outside);
+        assert_eq!(linked_path("docs/../../outside.md"), Linked::Outside);
+        assert_eq!(linked_path("/etc/passwd"), Linked::Outside);
+        assert_eq!(linked_path("."), Linked::NoFile);
+        assert_eq!(linked_path("docs/.."), Linked::NoFile);
+        assert_eq!(linked_path(""), Linked::NoFile);
     }
 }
