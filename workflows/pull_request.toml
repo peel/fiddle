@@ -1,0 +1,27 @@
+version = 1
+name = "pull_request"
+stage = "pull_request"
+
+[[steps]]
+kind = "steer"
+
+[[steps]]
+kind = "checks"
+
+[[steps]]
+kind = "agent"
+prompt = "pull_request.md"
+max_turns = 40
+max_turns_when_steered = 40
+
+[[steps]]
+kind = "evaluate"
+prompt = "pull_request_evaluate.md"
+max_turns = 30
+
+[[steps]]
+kind = "commit"
+
+[[steps]]
+kind = "effect"
+name = "ensure_branch_published"

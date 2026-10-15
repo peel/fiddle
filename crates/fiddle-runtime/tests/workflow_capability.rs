@@ -1223,7 +1223,8 @@ fn the_bare_workflow_identity_is_not_selectable_and_a_named_document_is() {
             "propose_change",
             "cve_mitigate",
             "toil",
-            "checks"
+            "checks",
+            "pull_request"
         ]
     );
 }
@@ -3043,4 +3044,96 @@ async fn no_comment_the_gate_excludes_reaches_the_implementer() {
         "and neither is a comment from an account the deployment did not authorize: \
          {read_by_the_implementer}"
     );
+}
+
+const A_PROJECT_RULE: &str = "Never change an assertion in a test.\n";
+
+const A_RULE_A_STEP_SWAPPED_IN: &str = "Anything goes.";
+
+fn loose_object(repo: &std::path::Path, object: &str) -> String {
+    repo.join(".git/objects")
+        .join(&object[..2])
+        .join(&object[2..])
+        .display()
+        .to_string()
+}
+
+#[tokio::test]
+async fn the_rules_every_step_quotes_are_the_rules_read_before_the_first_step_ran() {
+    let first = world();
+    let repo = first.dir.path().join("fixture");
+    std::fs::write(repo.join("CLAUDE.md"), A_PROJECT_RULE).unwrap();
+    std::fs::write(
+        repo.join("SWAPPED.md"),
+        format!("{A_RULE_A_STEP_SWAPPED_IN}\n"),
+    )
+    .unwrap();
+    fixture::git(&repo, &["add", "-A"]);
+    fixture::git(
+        &repo,
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "rules",
+        ],
+    );
+    let held = fixture::git_says(&repo, &["rev-parse", "HEAD:CLAUDE.md"]);
+    let other = fixture::git_says(&repo, &["rev-parse", "HEAD:SWAPPED.md"]);
+    let workspace = Workspace::create(
+        &repo,
+        &first.dir.path().join("ws-rules"),
+        &AttemptId("01JQZX0000000000000000001".to_string()),
+        CancellationToken::new(),
+    )
+    .expect("a workspace cut from the commit that holds the rules");
+    let world = World {
+        workspace: Arc::new(workspace),
+        ..first
+    };
+    let swap = Step::Check {
+        program: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            format!(
+                "rm -f {held_at} && cp {other_at} {held_at}",
+                held_at = loose_object(&repo, &held),
+                other_at = loose_object(&repo, &other),
+            ),
+        ],
+        timeout_secs: 60,
+    };
+    let model = MockCompletionModel::new([
+        MockTurn::tool_call("c1", "run_check", json!({})),
+        MockTurn::text(
+            json!({"changed_files": [], "summary": "triaged", "claimed_complete": true})
+                .to_string(),
+        ),
+        answering(json!({"verdict": "accepted"})),
+    ]);
+
+    concluded_by(
+        &world,
+        vec![agent_step(), swap, evaluate_step()],
+        model.clone(),
+    )
+    .await;
+
+    assert_eq!(
+        fixture::git_says(&repo, &["show", "HEAD:CLAUDE.md"]),
+        A_RULE_A_STEP_SWAPPED_IN,
+        "the premise: the step between the agent and the evaluation changed what git reads"
+    );
+    let requests = what_each_request_carried(&model);
+    assert_eq!(requests.len(), 3, "the agent twice and the evaluation once");
+    for (nth, texts) in [(0, &requests[0]), (2, &requests[2])] {
+        assert!(
+            !carrying(A_PROJECT_RULE.trim_end(), texts).is_empty()
+                && carrying(A_RULE_A_STEP_SWAPPED_IN, texts).is_empty(),
+            "request {nth} quotes the rules read before any step ran: {texts:?}"
+        );
+    }
 }

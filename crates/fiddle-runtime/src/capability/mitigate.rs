@@ -13,7 +13,7 @@ use crate::cve::verdict::{
     disposition, ticket_proposals, Attempted, BoundReached, Budget, Disposition, FiledTickets,
     InProgress, Run, TicketFiled, TicketFiling, TicketProposal, Verdict,
 };
-use crate::effect::{EffectContext, Executor, IntegrationOperation};
+use crate::effect::{CommitAuthor, EffectContext, Executor, IntegrationOperation};
 use crate::evaluate::{
     evaluate, Check, Contract, Evaluation, InWorkspace, Outcome, Repair, Rescan,
 };
@@ -83,6 +83,8 @@ pub struct MitigateConfig {
     pub settle: Duration,
 
     pub filing: Option<TicketFiling>,
+
+    pub author: Option<CommitAuthor>,
 
     pub cancel: CancellationToken,
 }
@@ -298,26 +300,7 @@ where
             .findings
             .apply(projection.all().cloned().collect());
 
-        let (mut asked, reviewed) = self.reviews(&approved).await?;
-        let (also_asked, also_reviewed) = self.reviews(&unproved).await?;
-        asked.extend(also_asked);
-
-        let citing: Vec<String> = asked
-            .iter()
-            .map(|it| it.body.clone())
-            .chain(
-                reviewed
-                    .iter()
-                    .chain(also_reviewed.iter())
-                    .filter(|it| it.entitled)
-                    .map(|it| it.body.clone()),
-            )
-            .collect();
-
-        let mut said = self.conversation(&approved, &citing).await?;
-        said.extend(self.conversation(&unproved, &citing).await?);
-        said.extend(reviewed);
-        said.extend(also_reviewed);
+        let (asked, said) = self.direction(&approved, &unproved).await?;
 
         let spent = counted.as_ref().map_or(0, |it| it.spent);
         let mut ignored_citation: Option<String> = None;
@@ -366,6 +349,7 @@ where
                         &group.status,
                         &group.attempt.changed,
                         onto,
+                        self.config.author.as_ref(),
                     )
                     .await?;
                     if landing == Landed::CommittedForJudgement {
@@ -571,10 +555,58 @@ where
         }
     }
 
+    pub async fn direction(
+        &self,
+        approved: &Approved,
+        unproved: &Approved,
+    ) -> Result<(Vec<ChangesRequested>, Vec<HumanSaid>), CapabilityError> {
+        let (mut asked, reviewed) = self.reviews(approved).await?;
+        let (also_asked, also_reviewed) = self.reviews(unproved).await?;
+        asked.extend(also_asked);
+        let reviewed: Vec<crate::github::Reviewed> =
+            reviewed.into_iter().chain(also_reviewed).collect();
+        let speaks = |it: &crate::github::Reviewed| {
+            crate::capability::speaks(it.author_kind, &it.author_association)
+        };
+
+        let mut citing: Vec<String> = asked
+            .iter()
+            .map(|it| it.body.clone())
+            .chain(
+                reviewed
+                    .iter()
+                    .filter(|it| speaks(it))
+                    .map(|it| it.body.clone()),
+            )
+            .collect();
+
+        let mut said = self.conversation(approved, &citing).await?;
+        said.extend(self.conversation(unproved, &citing).await?);
+        citing.extend(
+            said.iter()
+                .filter(|it| it.entitled)
+                .map(|it| it.body.clone()),
+        );
+        said.extend(
+            reviewed
+                .iter()
+                .filter(|it| {
+                    !it.author_kind.is_a_bot()
+                        || crate::capability::cited(&it.author.login, &citing)
+                })
+                .map(|it| HumanSaid {
+                    author: it.author.login.clone(),
+                    body: it.body.clone(),
+                    entitled: speaks(it),
+                }),
+        );
+        Ok((asked, said))
+    }
+
     pub async fn reviews(
         &self,
         approved: &Approved,
-    ) -> Result<(Vec<ChangesRequested>, Vec<HumanSaid>), CapabilityError> {
+    ) -> Result<(Vec<ChangesRequested>, Vec<crate::github::Reviewed>), CapabilityError> {
         let Some(number) = approved.reused() else {
             return Ok((Vec::new(), Vec::new()));
         };
@@ -609,16 +641,11 @@ where
                     .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED),
             })
             .collect();
-        let said = spoken
-            .iter()
+        let reviewed = spoken
+            .into_iter()
             .filter(|it| !crate::capability::steers(it, &head))
-            .map(|it| HumanSaid {
-                author: it.author.login.clone(),
-                body: it.body.clone(),
-                entitled: crate::capability::entitled(&it.author_association),
-            })
             .collect();
-        Ok((asked, said))
+        Ok((asked, reviewed))
     }
 
     pub async fn conversation(
@@ -648,16 +675,19 @@ where
                     conversation
                         .iter()
                         .filter(|it| {
-                            !it.is_bot && crate::capability::entitled(&it.author_association)
+                            crate::capability::speaks(it.author_kind, &it.author_association)
                         })
                         .map(|it| it.body.clone()),
                 );
                 Ok(conversation
                     .into_iter()
-                    .filter(|it| !it.is_bot || crate::capability::cited(&it.author.login, &citing))
+                    .filter(|it| {
+                        !it.author_kind.is_a_bot()
+                            || crate::capability::cited(&it.author.login, &citing)
+                    })
                     .map(|it| HumanSaid {
+                        entitled: crate::capability::speaks(it.author_kind, &it.author_association),
                         author: it.author.login,
-                        entitled: crate::capability::entitled(&it.author_association),
                         body: it.body,
                     })
                     .collect())

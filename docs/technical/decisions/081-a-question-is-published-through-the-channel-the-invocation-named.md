@@ -34,9 +34,9 @@ observed a Jira issue for another reason still asks on the pull request.
 holds that direction.
 
 `named_by` answers zero channels or one, never two. `no_invocation_names_two_channels`
-enumerates seven invocation references against three observations against two
-pull-request states, which is 42 combinations, and asserts the distribution those
-combinations produce: 4 name the issue, 15 name the pull request, and 23 name nobody.
+enumerates eight invocation references against three observations against two
+pull-request states, which is 48 combinations, and asserts the distribution those
+combinations produce: 4 name the issue, 18 name the pull request, and 26 name nobody.
 The bound alone is satisfied by a derivation that answers nothing for every input, so
 the sweep counts what it names rather than only what it refuses.
 
@@ -228,8 +228,8 @@ is neither. Each claim below carries its class.
   `crates/fiddle-runtime/src/capability/propose.rs:215`. The instrument is a
   search of the source. Nothing runs.
 - **Measured by an executing test.** `named_by` names one channel or none across
-  all 42 combinations `no_invocation_names_two_channels` enumerates, distributed
-  4, 15 and 23. The test builds every input and reads every answer.
+  all 48 combinations `no_invocation_names_two_channels` enumerates, distributed
+  4, 18 and 26. The test builds every input and reads every answer.
 - **Argued.** `NotOne` earns its place although no derivation reaches it.
 - **Not reached.** A workflow document that spells a `publish_decision_request`
   step reaches `PublishDecisionRequest` without passing through `publish`. A

@@ -237,6 +237,7 @@ impl World {
             today: TODAY.to_string(),
             settle: Duration::ZERO,
             filing: None,
+            author: None,
             cancel: CancellationToken::new(),
         }
     }

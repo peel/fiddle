@@ -174,7 +174,7 @@ impl Listed {
             comment: comment.comment.to_string(),
             order: comment.comment,
             author: Decider::GitHubAuthor(comment.author.id),
-            written_by_fiddle: comment.is_bot,
+            written_by_fiddle: comment.author_kind.is_automated(),
             body: comment.body.clone(),
             created_at: comment.created_at.clone(),
             updated_at: comment.updated_at.clone(),
@@ -501,7 +501,10 @@ mod tests {
             body: String::new(),
             created_at: STAMP.to_string(),
             updated_at: STAMP.to_string(),
-            is_bot,
+            author_kind: match is_bot {
+                true => crate::github::AuthorKind::Bot,
+                false => crate::github::AuthorKind::Person,
+            },
             author_association: "COLLABORATOR".to_string(),
         })
     }
@@ -589,7 +592,7 @@ mod tests {
             body: String::new(),
             created_at: STAMP.to_string(),
             updated_at: STAMP.to_string(),
-            is_bot: false,
+            author_kind: crate::github::AuthorKind::Person,
             author_association: "COLLABORATOR".to_string(),
         };
         let listed = Listed::of_github(&impostor);

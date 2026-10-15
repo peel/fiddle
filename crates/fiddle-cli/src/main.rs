@@ -122,6 +122,22 @@ enum CliError {
     #[error(transparent)]
     #[diagnostic(transparent)]
     TicketUnread(#[from] TicketUnread),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    ForeignPullRequest(#[from] ForeignPullRequest),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    PullRequestRefused(#[from] PullRequestRefused),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    PullRequestUnread(#[from] PullRequestUnread),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    CapabilityOverAPullRequest(#[from] CapabilityOverAPullRequest),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -144,6 +160,7 @@ enum Selection {
     Mitigate,
     Toil,
     Checks,
+    PullRequest,
 }
 
 impl Selection {
@@ -156,11 +173,19 @@ impl Selection {
             Selection::Mitigate => fiddle_core::CVE_MITIGATE,
             Selection::Toil => fiddle_core::TOIL,
             Selection::Checks => fiddle_core::CHECKS,
+            Selection::PullRequest => fiddle_core::PULL_REQUEST,
         }
     }
 
     fn sweeps(self) -> bool {
         matches!(self, Selection::Mitigate)
+    }
+
+    fn runs_a_workflow(self) -> bool {
+        matches!(
+            self,
+            Selection::Toil | Selection::Checks | Selection::PullRequest
+        )
     }
 
     fn parse(requested: &str) -> Result<Self, UnknownCapability> {
@@ -178,6 +203,8 @@ impl Selection {
             Ok(Selection::Toil)
         } else if requested == fiddle_core::CHECKS.0 {
             Ok(Selection::Checks)
+        } else if requested == fiddle_core::PULL_REQUEST.0 {
+            Ok(Selection::PullRequest)
         } else {
             Err(UnknownCapability {
                 requested: requested.to_string(),
@@ -204,6 +231,7 @@ impl Selection {
         match scheme {
             InvocationScheme::Cve => Selection::Mitigate,
             InvocationScheme::Jira => Selection::Toil,
+            InvocationScheme::Pr => Selection::PullRequest,
             InvocationScheme::Beans | InvocationScheme::Scheduled | InvocationScheme::Scanner => {
                 Selection::Mark
             }
@@ -379,9 +407,20 @@ const CHECKS_DOCUMENT: &str = "checks.toml";
 
 const CHECKS_STAGE: &str = "checks";
 
+const PULL_REQUEST_DOCUMENT: &str = "pull_request.toml";
+
+const PULL_REQUEST_STAGE: &str = "pull_request";
+
+const MENTION: &str = "fiddle-ai";
+
 fn workflow_of(selection: Selection) -> (CapabilityId, &'static str, &'static str) {
     match selection {
         Selection::Checks => (fiddle_core::CHECKS, CHECKS_STAGE, CHECKS_DOCUMENT),
+        Selection::PullRequest => (
+            fiddle_core::PULL_REQUEST,
+            PULL_REQUEST_STAGE,
+            PULL_REQUEST_DOCUMENT,
+        ),
         _ => (fiddle_core::TOIL, TOIL_STAGE, TOIL_DOCUMENT),
     }
 }
@@ -421,6 +460,7 @@ struct Resolved<'a> {
     transcripts: Option<&'a Transcripts>,
     workflow: Option<SelectedWorkflow>,
     qualification: Option<Eligible>,
+    pull_request: Option<fiddle_runtime::github::PullRequestFacts>,
 }
 
 fn selected_workflow(
@@ -428,7 +468,7 @@ fn selected_workflow(
     config_path: &Path,
 ) -> Result<Option<SelectedWorkflow>, WorkflowDocumentUnusable> {
     match selection {
-        Selection::Toil | Selection::Checks => {
+        Selection::Toil | Selection::Checks | Selection::PullRequest => {
             let (_, stage, named) = workflow_of(selection);
             let document = workflows_root(config_path).join(named);
             let workflow = workflow_document(&document, stage)?;
@@ -455,6 +495,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "fiddle::invocation_ref::illegal_value_character"
             }
+            InvocationRefError::MalformedPullRequest(_) => {
+                "fiddle::invocation_ref::malformed_pull_request"
+            }
         }))
     }
 
@@ -474,6 +517,7 @@ impl miette::Diagnostic for InvalidInvocationRef {
                      `{scheme}` to sweep what the configuration names; acting on one named \
                      item is not implemented in this build"
                 ),
+                Some(InvocationScheme::Pr) => "the scheme is recognised but names no pull request; write `pr:<owner>/<repo>#<number>`, as in `pr:snowplow-incubator/snowplow-identities#275`".to_string(),
                 Some(_) => "the scheme is recognised but names no work; append the identifier, as in `beans:fiddle-m0-demo`".to_string(),
                 None => format!(
                     "no value follows the scheme, and the scheme is not one fiddle knows. \
@@ -483,6 +527,9 @@ impl miette::Diagnostic for InvalidInvocationRef {
             },
             InvocationRefError::IllegalValueCharacter { .. } => {
                 "a reference names work, never a location: fiddle derives the paths it writes from this value, so it is an identifier only — write it with ASCII letters, digits, `-`, `_` and `:`, as in `beans:fiddle-m0-demo`".to_string()
+            }
+            InvocationRefError::MalformedPullRequest(_) => {
+                "a `pr` reference names one pull request by its repository and number, as in `pr:snowplow-incubator/snowplow-identities#275`; the owner and the repository are written with ASCII letters, digits, `-`, `_` and `.`, and the number is a positive decimal with no leading zero".to_string()
             }
         };
         Some(Box::new(help))
@@ -531,9 +578,11 @@ fn exit_code_for(termination: &Termination) -> u8 {
         Termination::Ran(RunOutcome::Retryable { .. }) => EXIT_RETRYABLE,
         Termination::Ran(RunOutcome::Rejected { .. }) => 12,
         Termination::Ran(RunOutcome::Failed { .. }) => 20,
-        Termination::Rejected(CliError::TicketUnread(_) | CliError::ReviewUnreachable(_)) => {
-            EXIT_RETRYABLE
-        }
+        Termination::Rejected(
+            CliError::TicketUnread(_)
+            | CliError::ReviewUnreachable(_)
+            | CliError::PullRequestUnread(_),
+        ) => EXIT_RETRYABLE,
         Termination::Rejected(
             CliError::Config(
                 ConfigError::NotFound(_)
@@ -552,7 +601,10 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::TranscriptSwitch(_)
             | CliError::WorkflowDocument(_)
             | CliError::WorkflowUnrunnable(_)
-            | CliError::Ineligible(_),
+            | CliError::Ineligible(_)
+            | CliError::ForeignPullRequest(_)
+            | CliError::PullRequestRefused(_)
+            | CliError::CapabilityOverAPullRequest(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -573,7 +625,8 @@ fn port_kind_for(scheme: InvocationScheme) -> PortKind {
         InvocationScheme::Beans
         | InvocationScheme::Scheduled
         | InvocationScheme::Scanner
-        | InvocationScheme::Cve => PortKind::Stub,
+        | InvocationScheme::Cve
+        | InvocationScheme::Pr => PortKind::Stub,
     }
 }
 
@@ -730,6 +783,180 @@ impl Ineligible {
 struct TicketUnread {
     work_item: String,
     reason: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{reference}` names the repository {named}, and this deployment serves {served}")]
+#[diagnostic(
+    code(fiddle::config::foreign_pull_request),
+    help(
+        "a deployment works on pull requests in the repository `[github] repo` names; run \
+         `pr:{served}#<number>`, or run this reference from a deployment that serves {named}"
+    )
+)]
+struct ForeignPullRequest {
+    reference: String,
+    named: String,
+    served: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{pull_request} {reason}")]
+#[diagnostic(code(fiddle::pull_request::refused), help("{remedy}"))]
+struct PullRequestRefused {
+    pull_request: String,
+    reason: String,
+    remedy: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("{pull_request} could not be read, so nothing was run: {reason}")]
+#[diagnostic(
+    code(fiddle::pull_request::unread),
+    help(
+        "a pull request this build cannot read is one it cannot work on; the reference \
+         parsed and the obstacle is in front of the request, so the same command can be \
+         sent again"
+    )
+)]
+struct PullRequestUnread {
+    pull_request: String,
+    reason: String,
+}
+
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error("`{reference}` names a pull request, and `{capability}` {reason}; nothing was run")]
+#[diagnostic(
+    code(fiddle::capability::over_a_pull_request),
+    help(
+        "run `{reference}` with `--capability pull_request`, which is what it selects with \
+         no flag; `pull_request` reads the pull request's failing checks, pushes onto its own \
+         branch and answers the mention"
+    )
+)]
+struct CapabilityOverAPullRequest {
+    capability: CapabilityId,
+    reason: &'static str,
+    reference: String,
+}
+
+fn only_pull_request_works_a_pull_request(
+    selection: Selection,
+    reference: &InvocationRef,
+) -> Result<(), CapabilityOverAPullRequest> {
+    if reference.scheme() != InvocationScheme::Pr {
+        return Ok(());
+    }
+    let reason = match selection {
+        Selection::PullRequest => return Ok(()),
+        Selection::Toil => "works a tracker ticket, and there is no ticket for it to work",
+        Selection::Checks => {
+            "opens a pull request of its own after it pushes, so it would push and then stop \
+             without an answer to the mention"
+        }
+        Selection::Mark
+        | Selection::Repair
+        | Selection::Publish
+        | Selection::Propose
+        | Selection::Mitigate => "does not read a pull request",
+    };
+    Err(CapabilityOverAPullRequest {
+        capability: selection.id(),
+        reason,
+        reference: reference.as_str().to_string(),
+    })
+}
+
+fn served_pull_request(
+    config: &config::Config,
+    config_path: &Path,
+    selection: Selection,
+    reference: &InvocationRef,
+) -> Result<Option<(fiddle_core::PullRequestRef, String)>, CliError> {
+    if !selection.runs_a_workflow() {
+        return Ok(None);
+    }
+    let Some(named) = reference.pull_request() else {
+        return Ok(None);
+    };
+    let github = config.github.as_ref().ok_or_else(|| Unconfigured {
+        capability: selection.id(),
+        missing: "[github]",
+        path: config_path.display().to_string(),
+    })?;
+    let served = github.repo.to_string();
+    match named.full_name().eq_ignore_ascii_case(&served) {
+        true => Ok(Some((named, served))),
+        false => Err(ForeignPullRequest {
+            reference: reference.as_str().to_string(),
+            named: named.full_name(),
+            served,
+        }
+        .into()),
+    }
+}
+
+async fn open_on_the_served_repository(
+    named: &fiddle_core::PullRequestRef,
+    served: &str,
+    forge: &Forge,
+    cancel: &CancellationToken,
+) -> Result<fiddle_runtime::github::PullRequestFacts, CliError> {
+    let pull_request = format!("{served}#{}", named.number);
+    let unread = |reason: String| PullRequestUnread {
+        pull_request: pull_request.clone(),
+        reason,
+    };
+    let gh = forge
+        .ctx
+        .gh_client()
+        .map_err(|error| unread(error.to_string()))?;
+    let facts = fiddle_runtime::github::read_pull_request(gh, served, named.number, cancel)
+        .await
+        .map_err(|error| unread(error.to_string()))?;
+    let refused = |reason: String, remedy: &str| PullRequestRefused {
+        pull_request: pull_request.clone(),
+        reason,
+        remedy: remedy.to_string(),
+    };
+    let nothing_to_do = "a pull request that is no longer open takes no change; mention \
+                         `@fiddle-ai` on an open one";
+    if facts.merged {
+        return Err(refused(
+            "is merged, so there is nothing to do".to_string(),
+            nothing_to_do,
+        )
+        .into());
+    }
+    if !facts.open {
+        return Err(refused(
+            "is closed, so there is nothing to do".to_string(),
+            nothing_to_do,
+        )
+        .into());
+    }
+    match facts.head_repo.as_deref() {
+        Some(head) if head.eq_ignore_ascii_case(served) => Ok(facts),
+        Some(fork) => Err(refused(
+            format!(
+                "has its head branch `{}` in {fork}, and fiddle cannot push to a fork",
+                facts.head_ref
+            ),
+            "push the branch to the repository this deployment serves and open the pull \
+             request from there",
+        )
+        .into()),
+        None => Err(refused(
+            format!(
+                "has its head branch `{}` in a repository that no longer exists, so there is \
+                 no branch to push to",
+                facts.head_ref
+            ),
+            "push the branch to the repository this deployment serves and open the pull \
+             request from there",
+        )
+        .into()),
+    }
 }
 
 fn qualifies_a_ticket(selection: Selection, reference: &InvocationRef) -> bool {
@@ -1060,7 +1287,11 @@ async fn resolve_forge(
                     .ok_or_else(|| missing("github.workflow"))?,
             ),
         ),
-        Selection::Propose | Selection::Mitigate | Selection::Toil | Selection::Checks => {
+        Selection::Propose
+        | Selection::Mitigate
+        | Selection::Toil
+        | Selection::Checks
+        | Selection::PullRequest => {
             let workspace = config
                 .workspace
                 .as_ref()
@@ -1129,6 +1360,7 @@ fn build_capability<'a>(
         transcripts,
         workflow: selected,
         qualification,
+        pull_request,
     } = resolved;
     let missing = |missing: &'static str| Unconfigured {
         capability: selection.id(),
@@ -1311,6 +1543,7 @@ fn build_capability<'a>(
                     transcripts: transcripts.cloned(),
                     deciders,
                     interpretation: interpretation_bounds(agent),
+                    author: github.author.as_ref().map(config::Author::resolved),
                     cancel: cancel.clone(),
                 },
             )))
@@ -1427,12 +1660,13 @@ fn build_capability<'a>(
                         .jira
                         .as_ref()
                         .and_then(|jira| jira.filing.as_ref().map(config::JiraFiling::resolved)),
+                    author: github.author.as_ref().map(config::Author::resolved),
                     cancel: cancel.clone(),
                 },
             )))
         }
 
-        Selection::Toil | Selection::Checks => {
+        Selection::Toil | Selection::Checks | Selection::PullRequest => {
             let (capability_id, stage, named) = workflow_of(selection);
             let SelectedWorkflow { document, workflow } =
                 selected.ok_or_else(|| WorkflowDocumentUnusable {
@@ -1500,28 +1734,44 @@ fn build_capability<'a>(
                 stage,
                 workflow,
                 executor,
-                StepParams {
-                    repo: Some(github.repo.to_string()),
-                    head_owner: Some(github.repo.owner.clone()),
-                    branch: Some(fiddle_runtime::toil::branch(
-                        &github.branch_prefix,
-                        reference.value(),
-                    )),
-                    base: Some(github.base.clone()),
-                    title: Some(fiddle_runtime::toil::pull_request_title(
-                        reference.value(),
-                        None,
-                    )),
-                    body: Some(format!(
-                        "Opened by fiddle for {} in project {}.\n\n\
-                         The steps this run took are the steps {} names, in the \
-                         order it names them.\n",
-                        reference.as_str(),
-                        config.project.name,
-                        document.display(),
-                    )),
-                    draft: true,
-                    ..StepParams::for_capability(capability_id)
+                match pull_request {
+                    Some(facts) => StepParams {
+                        repo: Some(github.repo.to_string()),
+                        head_owner: Some(github.repo.owner.clone()),
+                        branch: Some(facts.head_ref),
+                        base: Some(facts.base_ref),
+                        title: Some(facts.title),
+                        pull_request: Some(facts.number),
+                        mention: Some(github.handle().unwrap_or(MENTION).to_string()),
+                        account: github.account.clone(),
+                        author: github.author.as_ref().map(config::Author::resolved),
+                        ..StepParams::for_capability(capability_id)
+                    },
+                    None => StepParams {
+                        repo: Some(github.repo.to_string()),
+                        head_owner: Some(github.repo.owner.clone()),
+                        branch: Some(fiddle_runtime::toil::branch(
+                            &github.branch_prefix,
+                            reference.value(),
+                        )),
+                        base: Some(github.base.clone()),
+                        title: Some(fiddle_runtime::toil::pull_request_title(
+                            reference.value(),
+                            None,
+                        )),
+                        body: Some(format!(
+                            "Opened by fiddle for {} in project {}.\n\n\
+                             The steps this run took are the steps {} names, in the \
+                             order it names them.\n",
+                            reference.as_str(),
+                            config.project.name,
+                            document.display(),
+                        )),
+                        draft: true,
+                        account: github.account.clone(),
+                        author: github.author.as_ref().map(config::Author::resolved),
+                        ..StepParams::for_capability(capability_id)
+                    },
                 },
                 WorkflowPorts {
                     model: gateway.model,
@@ -1649,6 +1899,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
+            only_pull_request_works_a_pull_request(selection, &reference)?;
             let config = config::load(&cli.config)?;
             let cancel = CancellationToken::new();
             cancel_on_interrupt(&cancel);
@@ -1693,7 +1944,9 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
+            only_pull_request_works_a_pull_request(selection, &reference)?;
             let config = config::load(&cli.config)?;
+            let named = served_pull_request(&config, &cli.config, selection, &reference)?;
             let document = selected_workflow(selection, &cli.config)?;
 
             let recording = transcripts(&config.report.dir, &reference)?;
@@ -1715,10 +1968,17 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                 | Selection::Propose
                 | Selection::Mitigate
                 | Selection::Toil
-                | Selection::Checks => {
+                | Selection::Checks
+                | Selection::PullRequest => {
                     Some(resolve_forge(&config, &cli.config, &cancel, selection, &reference).await?)
                 }
                 Selection::Mark | Selection::Repair => None,
+            };
+            let pull_request = match (named, forge.as_ref()) {
+                (Some((named, served)), Some(forge)) => {
+                    Some(open_on_the_served_repository(&named, &served, forge, &cancel).await?)
+                }
+                _ => None,
             };
             let selected = build_capability(
                 selection,
@@ -1731,6 +1991,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
                     transcripts: recording.as_ref(),
                     workflow: document,
                     qualification,
+                    pull_request,
                 },
             )?;
             let record = fiddle_runtime::attempt(&AttemptContext {
@@ -1890,6 +2151,65 @@ mod tests {
     }
 
     #[test]
+    fn a_pull_request_reference_that_names_no_pull_request_is_refused_as_input_with_its_own_shape()
+    {
+        let refused = match reference_from("pr:acme/icecube") {
+            Err(CliError::InvocationRef(refused)) => refused,
+            other => panic!("`pr:acme/icecube` names no pull request number, got {other:?}"),
+        };
+        assert_eq!(
+            miette::Diagnostic::code(&refused).map(|code| code.to_string()),
+            Some("fiddle::invocation_ref::malformed_pull_request".to_string())
+        );
+        let help = miette::Diagnostic::help(&refused)
+            .map(|help| help.to_string())
+            .unwrap_or_default();
+        assert!(
+            help.contains("pr:snowplow-incubator/snowplow-identities#275"),
+            "the advice shows the shape a `pr` reference takes, got {help}"
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(CliError::InvocationRef(refused))),
+            EXIT_INVALID_INPUT,
+            "a reference this build could not use is input no retry corrects"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_reference_with_no_value_is_advised_in_the_shape_a_pull_request_takes() {
+        let advice = |reference: &str| -> String {
+            let refused = match reference_from(reference) {
+                Err(CliError::InvocationRef(refused)) => refused,
+                other => panic!("`{reference}` names no work, got {other:?}"),
+            };
+            assert_eq!(
+                miette::Diagnostic::code(&refused).map(|code| code.to_string()),
+                Some("fiddle::invocation_ref::empty_value".to_string()),
+                "`{reference}` is refused for its empty value"
+            );
+            miette::Diagnostic::help(&refused)
+                .map(|help| help.to_string())
+                .unwrap_or_default()
+        };
+        let pull_request = advice("pr:");
+        assert!(
+            pull_request.contains("pr:<owner>/<repo>#<number>"),
+            "a `pr` reference is a repository and a number, so its advice shows that shape, \
+             got {pull_request}"
+        );
+        assert!(
+            !pull_request.contains("beans:"),
+            "and it does not offer a `beans` identifier a `pr` reference cannot take, got \
+             {pull_request}"
+        );
+        let beans = advice("beans:");
+        assert!(
+            beans.contains("beans:fiddle-m0-demo"),
+            "a scheme whose value is an identifier keeps the identifier example, got {beans}"
+        );
+    }
+
+    #[test]
     fn a_ticket_that_could_not_be_read_and_a_reference_that_could_not_be_parsed_exit_apart() {
         let unread = Termination::Rejected(CliError::TicketUnread(TicketUnread {
             work_item: "ISP-42".into(),
@@ -1948,6 +2268,116 @@ mod tests {
         assert_eq!(
             Selection::default_for(InvocationScheme::Cve),
             Selection::Mitigate
+        );
+    }
+
+    #[test]
+    fn the_pr_scheme_resolves_to_the_pull_request_document() {
+        assert_eq!(
+            Selection::parse("pull_request").unwrap(),
+            Selection::PullRequest
+        );
+        assert_eq!(
+            Selection::default_for(InvocationScheme::Pr),
+            Selection::PullRequest,
+            "a `pr` reference with no flag runs the pull request's own workflow"
+        );
+        assert_eq!(
+            workflow_of(Selection::PullRequest),
+            (
+                fiddle_core::PULL_REQUEST,
+                PULL_REQUEST_STAGE,
+                PULL_REQUEST_DOCUMENT
+            ),
+            "and that workflow is `pull_request.toml`, filed under its own stage"
+        );
+        assert_eq!(
+            Selection::default_for(InvocationScheme::Jira),
+            Selection::Toil,
+            "while a `jira` reference still runs toil"
+        );
+    }
+
+    #[test]
+    fn every_capability_but_pull_request_is_refused_over_a_pull_request() {
+        let pr: InvocationRef = "pr:acme/icecube#7".parse().unwrap();
+        let jira: InvocationRef = "jira:IDENT-1".parse().unwrap();
+        let mut refused = Vec::new();
+        for registered in CAPABILITIES {
+            let selection = Selection::parse(registered.0).unwrap();
+            match only_pull_request_works_a_pull_request(selection, &pr) {
+                Ok(()) => assert_eq!(
+                    selection,
+                    Selection::PullRequest,
+                    "only `pull_request` works a pull request, and `{registered}` was let through"
+                ),
+                Err(refusal) => {
+                    assert_eq!(refusal.capability, registered);
+                    assert_eq!(
+                        exit_code_for(&Termination::Rejected(refusal.into())),
+                        EXIT_INVALID_INPUT
+                    );
+                    refused.push(registered);
+                }
+            }
+            assert!(
+                only_pull_request_works_a_pull_request(selection, &jira).is_ok(),
+                "`{registered}` over a reference that names no pull request is not this refusal"
+            );
+        }
+        assert_eq!(
+            refused.len(),
+            CAPABILITIES.len() - 1,
+            "every registered capability but `pull_request` is refused: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_is_qualified_by_no_ticket_gate() {
+        let pr: InvocationRef = "pr:acme/icecube#7".parse().unwrap();
+        let jira: InvocationRef = "jira:IDENT-1".parse().unwrap();
+        assert!(
+            !qualifies_a_ticket(Selection::PullRequest, &pr),
+            "a pr: run has no ticket, so no gate qualifies it"
+        );
+        assert!(
+            !qualifies_a_ticket(Selection::Toil, &pr),
+            "not even when toil is asked for over it"
+        );
+        assert!(
+            qualifies_a_ticket(Selection::Toil, &jira),
+            "while a jira: toil run is still qualified"
+        );
+    }
+
+    #[test]
+    fn a_refused_or_foreign_pull_request_is_invalid_input_and_an_unread_one_is_retryable() {
+        let foreign = CliError::ForeignPullRequest(ForeignPullRequest {
+            reference: "pr:someone/else#7".into(),
+            named: "someone/else".into(),
+            served: "acme/icecube".into(),
+        });
+        let refused = CliError::PullRequestRefused(PullRequestRefused {
+            pull_request: "acme/icecube#7".into(),
+            reason: "is closed, so there is nothing to do".into(),
+            remedy: "mention it on an open one".into(),
+        });
+        let unread = CliError::PullRequestUnread(PullRequestUnread {
+            pull_request: "acme/icecube#7".into(),
+            reason: "the forge answered 502".into(),
+        });
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(foreign)),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(refused)),
+            EXIT_INVALID_INPUT
+        );
+        assert_eq!(
+            exit_code_for(&Termination::Rejected(unread)),
+            EXIT_RETRYABLE,
+            "a pull request the forge could not answer for is an obstacle a retry can pass"
         );
     }
 
@@ -2044,6 +2474,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("nothing exports that variable, so no endpoint exists")
@@ -2133,6 +2564,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("the deterministic capability needs nothing but the document")
@@ -2171,6 +2603,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("no forge was supplied, so nothing can be built")
@@ -2219,6 +2652,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("a publication needs a forge to publish to")
@@ -2383,6 +2817,7 @@ mod tests {
                 transcripts: None,
                 workflow: None,
                 qualification: None,
+                pull_request: None,
             },
         ) else {
             panic!("a repair needs a model and somewhere to work")
@@ -2489,12 +2924,13 @@ mod tests {
 
     #[test]
     fn every_scheme_names_the_port_it_uses_and_none_falls_through_to_the_stub() {
-        let pinned: [(InvocationScheme, PortKind); 5] = [
+        let pinned: [(InvocationScheme, PortKind); 6] = [
             (InvocationScheme::Beans, PortKind::Stub),
             (InvocationScheme::Jira, PortKind::Jira),
             (InvocationScheme::Scheduled, PortKind::Stub),
             (InvocationScheme::Scanner, PortKind::Stub),
             (InvocationScheme::Cve, PortKind::Stub),
+            (InvocationScheme::Pr, PortKind::Stub),
         ];
         for (scheme, expected) in pinned {
             assert_eq!(
@@ -2659,6 +3095,7 @@ mod tests {
             InvocationScheme::Scheduled => "scheduled:nightly",
             InvocationScheme::Scanner => "scanner:s-1",
             InvocationScheme::Cve => "cve",
+            InvocationScheme::Pr => "pr:acme/icecube#7",
         };
         let parsed: InvocationRef = spelled.parse().unwrap_or_else(|error| {
             panic!("`{spelled}` is a reference this build parses: {error:?}")
@@ -2902,7 +3339,7 @@ mod tests {
             rows,
             InvocationScheme::ALL.len(),
             "the row above passes by matching every scheme this build has, so a help \
-             text that names four of five must red: {help}"
+             text that names one scheme fewer than this build has must red: {help}"
         );
     }
 

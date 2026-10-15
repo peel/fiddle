@@ -412,6 +412,71 @@ pub struct GitHub {
 
     #[serde(default)]
     pub decision: Option<Decision>,
+
+    #[serde(default)]
+    pub account: Option<String>,
+
+    #[serde(default)]
+    pub author: Option<Author>,
+}
+
+impl GitHub {
+    pub fn handle(&self) -> Option<&str> {
+        self.account
+            .as_deref()
+            .map(|account| account.strip_suffix("[bot]").unwrap_or(account))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "AuthorDocument")]
+pub struct Author {
+    pub name: String,
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorDocument {
+    name: String,
+    email: String,
+}
+
+impl TryFrom<AuthorDocument> for Author {
+    type Error = String;
+
+    fn try_from(document: AuthorDocument) -> Result<Self, String> {
+        if document.name.trim().is_empty() {
+            return Err(
+                "`[github.author] name` is empty, and git refuses a commit whose \
+                 author has no name. Name the author fiddle commits as, or leave \
+                 `[github.author]` out so fiddle commits as itself"
+                    .to_string(),
+            );
+        }
+        if !document.email.contains('@') {
+            return Err(format!(
+                "`[github.author] email = \"{}\"` holds no `@`, so it is not an email \
+                 address and the forge links the commit to no account. Write the \
+                 address the author's account verified, or leave `[github.author]` out \
+                 so fiddle commits as itself",
+                document.email
+            ));
+        }
+        Ok(Self {
+            name: document.name,
+            email: document.email,
+        })
+    }
+}
+
+impl Author {
+    pub fn resolved(&self) -> fiddle_runtime::CommitAuthor {
+        fiddle_runtime::CommitAuthor {
+            name: self.name.clone(),
+            email: self.email.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1917,6 +1982,113 @@ token = { env = "FIDDLE_GITHUB_TOKEN" }
         assert!(github.required_checks.is_empty());
         assert_eq!(github.work, None);
         assert_eq!(github.workflow, None);
+    }
+
+    #[test]
+    fn the_author_fiddle_commits_as_is_read_when_written_and_absent_otherwise() {
+        assert!(
+            github(FORGE).author.is_none(),
+            "a table that names no author leaves fiddle committing as itself"
+        );
+        let author = github(&format!(
+            "{FORGE}\n[github.author]\nname = \"fiddle-ai[bot]\"\nemail = \"1+fiddle-ai[bot]@users.noreply.github.com\"\n"
+        ))
+        .author
+        .expect("a written author reaches the deployment");
+        assert_eq!(
+            author.resolved(),
+            fiddle_runtime::CommitAuthor {
+                name: "fiddle-ai[bot]".to_string(),
+                email: "1+fiddle-ai[bot]@users.noreply.github.com".to_string(),
+            },
+            "the author reaches the runtime as written"
+        );
+    }
+
+    fn refusal_of_author(table: &str) -> String {
+        toml::from_str::<Config>(&format!("{FORGE}\n[github.author]\n{table}"))
+            .expect_err("the author table is refused")
+            .message()
+            .to_string()
+    }
+
+    #[test]
+    fn an_author_with_an_empty_name_is_refused_naming_the_key() {
+        let refused = refusal_of_author("name = \" \"\nemail = \"bot@example.com\"\n");
+        assert!(
+            refused.contains("`[github.author] name`"),
+            "the refusal names the key it refuses: {refused}"
+        );
+        assert!(
+            toml::from_str::<Config>(&format!(
+                "{FORGE}\n[github.author]\nname = \"bot\"\nemail = \"bot@example.com\"\n"
+            ))
+            .is_ok(),
+            "and the same table with a name loads, so the refusal is about the name"
+        );
+    }
+
+    #[test]
+    fn an_author_email_without_an_at_sign_is_refused_naming_the_key() {
+        let refused = refusal_of_author("name = \"bot\"\nemail = \"bot.example.com\"\n");
+        assert!(
+            refused.contains("`[github.author] email"),
+            "the refusal names the key it refuses: {refused}"
+        );
+        assert!(
+            refused.contains("bot.example.com"),
+            "and the value it refuses: {refused}"
+        );
+    }
+
+    #[test]
+    fn an_author_table_refuses_a_key_it_does_not_read() {
+        let refused =
+            refusal_of_author("name = \"bot\"\nemail = \"bot@example.com\"\nlogin = \"bot\"\n");
+        assert!(
+            refused.contains("unknown field `login`"),
+            "a key nothing reads is refused, not ignored: {refused}"
+        );
+    }
+
+    #[test]
+    fn the_account_fiddle_writes_as_is_read_when_written_and_absent_otherwise() {
+        assert_eq!(
+            github(FORGE).account,
+            None,
+            "a table that names no account leaves today's rule in force"
+        );
+        assert_eq!(
+            github(&format!("{FORGE}account = \"fiddle-ai[bot]\"\n")).account,
+            Some("fiddle-ai[bot]".to_string()),
+            "a written account reaches the deployment as written"
+        );
+    }
+
+    #[test]
+    fn the_handle_is_the_account_without_its_bot_suffix_and_absent_without_one() {
+        assert_eq!(github(FORGE).handle(), None, "no account names no handle");
+        assert_eq!(
+            github(&format!(
+                "{FORGE}account = \"snowplow-identities-ai[bot]\"\n"
+            ))
+            .handle(),
+            Some("snowplow-identities-ai"),
+            "an App's login names the handle people mention"
+        );
+        assert_eq!(
+            github(&format!(
+                "{FORGE}account = \"Snowplow-Identities-AI[bot]\"\n"
+            ))
+            .handle(),
+            Some("Snowplow-Identities-AI"),
+            "the case is kept as written"
+        );
+        assert_eq!(
+            github(&format!("{FORGE}account = \"a-person\"\n")).handle(),
+            Some("a-person"),
+            "a login without the suffix is the handle as written"
+        );
     }
 
     #[test]

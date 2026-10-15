@@ -62,8 +62,8 @@ async fn the_direction_on_a_real_pull_request_is_read_through_fiddles_own_reader
     }
     for comment in &conversation {
         println!(
-            "live: comment by {} ({}) bot={}",
-            comment.author.login, comment.author_association, comment.is_bot
+            "live: comment by {} ({}) author={:?}",
+            comment.author.login, comment.author_association, comment.author_kind
         );
     }
 

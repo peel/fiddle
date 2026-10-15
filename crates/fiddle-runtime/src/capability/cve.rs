@@ -1,4 +1,4 @@
-use super::commit::COMMITTER;
+use super::commit::committer;
 use super::CapabilityError;
 use crate::agent::{
     attempt_briefed, unaccounted, AgentBudget, Brief, Declarations, FindingDisposition, Held,
@@ -6,7 +6,7 @@ use crate::agent::{
 };
 use crate::cve::attempts;
 use crate::cve::dedup::{Local, Spawn};
-use crate::effect::{Executor, IntegrationOperation};
+use crate::effect::{CommitAuthor, Executor, IntegrationOperation};
 use crate::evaluate::{Evaluation, RescanVerdict};
 use crate::gateway::Redaction;
 use crate::git::{GitCli, GitError};
@@ -295,6 +295,10 @@ pub fn entitled(author_association: &str) -> bool {
     ENTITLED.contains(&author_association.to_ascii_uppercase().as_str())
 }
 
+pub fn speaks(kind: crate::github::AuthorKind, author_association: &str) -> bool {
+    !kind.is_a_bot() && entitled(author_association)
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Direction {
     pub asked: Vec<ChangesRequested>,
@@ -379,36 +383,37 @@ impl Direction {
                     .eq_ignore_ascii_case(crate::github::CHANGES_REQUESTED),
             })
             .collect();
-        let mut said: Vec<HumanSaid> = spoken
-            .iter()
-            .filter(|it| !steers(it, head))
-            .map(|it| HumanSaid {
-                author: it.author.login.clone(),
-                body: it.body.clone(),
-                entitled: entitled(&it.author_association),
-            })
-            .collect();
-
         let mut citing: Vec<String> = asked.iter().map(|it| it.body.clone()).collect();
         citing.extend(
-            said.iter()
-                .filter(|it| it.entitled)
+            spoken
+                .iter()
+                .filter(|it| !steers(it, head) && speaks(it.author_kind, &it.author_association))
                 .map(|it| it.body.clone()),
         );
         citing.extend(
             conversation
                 .iter()
-                .filter(|it| !it.is_bot && entitled(&it.author_association))
+                .filter(|it| speaks(it.author_kind, &it.author_association))
                 .map(|it| it.body.clone()),
         );
 
+        let mut said: Vec<HumanSaid> = spoken
+            .iter()
+            .filter(|it| !steers(it, head))
+            .filter(|it| !it.author_kind.is_a_bot() || cited(&it.author.login, &citing))
+            .map(|it| HumanSaid {
+                author: it.author.login.clone(),
+                body: it.body.clone(),
+                entitled: speaks(it.author_kind, &it.author_association),
+            })
+            .collect();
         said.extend(
             conversation
                 .into_iter()
-                .filter(|it| !it.is_bot || cited(&it.author.login, &citing))
+                .filter(|it| !it.author_kind.is_a_bot() || cited(&it.author.login, &citing))
                 .map(|it| HumanSaid {
                     author: it.author.login,
-                    entitled: entitled(&it.author_association),
+                    entitled: speaks(it.author_kind, &it.author_association),
                     body: it.body,
                 }),
         );
@@ -479,8 +484,8 @@ fn names_the_account(text: &str, named: &str) -> bool {
 }
 
 pub fn steers(review: &crate::github::Reviewed, head: &str) -> bool {
-    !review.state.eq_ignore_ascii_case(crate::github::APPROVED)
-        && entitled(&review.author_association)
+    speaks(review.author_kind, &review.author_association)
+        && !review.state.eq_ignore_ascii_case(crate::github::APPROVED)
         && review.commit_id == head
 }
 
@@ -982,6 +987,7 @@ pub async fn land<G>(
     status: &GroupStatus,
     changed: &[WorkspacePath],
     onto: Option<&str>,
+    author: Option<&CommitAuthor>,
 ) -> Result<Landed, CapabilityError>
 where
     G: Git + ?Sized,
@@ -994,7 +1000,7 @@ where
             stage(git, changed).await?;
             let subject = commit_subject(advisories);
             let body = commit_body(advisories);
-            commit(git, &["commit", "-q", "-m", &subject, "-m", &body]).await?;
+            commit(git, author, &["commit", "-q", "-m", &subject, "-m", &body]).await?;
             Ok(Landed::Committed)
         }
         GroupStatus::NeedsWork { .. } if changed.is_empty() => Ok(Landed::NothingToLand),
@@ -1006,6 +1012,7 @@ where
             let subject = judgement_subject(advisories);
             commit(
                 git,
+                author,
                 &[
                     "commit",
                     "-q",
@@ -1032,14 +1039,16 @@ where
     git.run(&add).await.map(|_output| ())
 }
 
-async fn commit<G>(git: &G, arguments: &[&str]) -> Result<(), CapabilityError>
+async fn commit<G>(
+    git: &G,
+    author: Option<&CommitAuthor>,
+    arguments: &[&str],
+) -> Result<(), CapabilityError>
 where
     G: Git + ?Sized,
 {
-    let mut spelled: Vec<&str> = COMMITTER
-        .iter()
-        .flat_map(|setting| ["-c", setting])
-        .collect();
+    let identity = committer(author);
+    let mut spelled: Vec<&str> = identity.iter().map(String::as_str).collect();
     spelled.extend_from_slice(arguments);
     git.run(&spelled).await.map(|_output| ())
 }
@@ -1391,7 +1400,7 @@ where
     })
 }
 
-fn origin_ref(branch: &str) -> String {
+pub(crate) fn origin_ref(branch: &str) -> String {
     format!("{REMOTE}/{branch}")
 }
 
@@ -2089,6 +2098,7 @@ mod direction {
             state: crate::github::CHANGES_REQUESTED.to_string(),
             body: "bump the transitive one too".to_string(),
             commit_id: commit.to_string(),
+            author_kind: crate::github::AuthorKind::Person,
         };
 
         let head = "abc123";
@@ -2102,6 +2112,97 @@ mod direction {
             head,
             "and one written on an older commit has been answered by the push since, so \
              it must not start a run every night for ever"
+        );
+    }
+
+    #[test]
+    fn a_person_speaks_for_the_project_through_an_app_and_a_bot_never_does() {
+        use crate::github::AuthorKind;
+        assert!(speaks(AuthorKind::Person, "MEMBER"));
+        assert!(
+            speaks(AuthorKind::PersonThroughAnApp, "owner"),
+            "a person posting through an App still speaks, whatever the case of the association"
+        );
+        assert!(
+            !speaks(AuthorKind::Bot, "MEMBER"),
+            "a bot never speaks for the project, even with an entitled association"
+        );
+        assert!(
+            !speaks(AuthorKind::Person, "NONE"),
+            "and a person outside the project does not"
+        );
+    }
+
+    #[test]
+    fn a_bot_review_is_never_work_and_is_quoted_only_when_a_person_names_it() {
+        use crate::github::{AuthorKind, HumanResponse, Reviewed};
+        use fiddle_core::ActorRef;
+
+        let head = "abc123";
+        let by = |login: &str, kind: AuthorKind, body: &str| Reviewed {
+            id: 1,
+            submitted_at: None,
+            author: ActorRef {
+                login: login.to_string(),
+                id: 1,
+            },
+            author_association: "MEMBER".to_string(),
+            state: "COMMENTED".to_string(),
+            body: body.to_string(),
+            commit_id: head.to_string(),
+            author_kind: kind,
+        };
+        let naming = HumanResponse {
+            comment: 2,
+            author: ActorRef {
+                login: "peel".to_string(),
+                id: 2,
+            },
+            body: "do Claude's comment 1".to_string(),
+            created_at: "t".to_string(),
+            updated_at: "t".to_string(),
+            author_kind: AuthorKind::Person,
+            author_association: "OWNER".to_string(),
+        };
+
+        let named = Direction::read_from(
+            vec![by("claude[bot]", AuthorKind::Bot, "1. rename it")],
+            vec![naming.clone()],
+            head,
+        );
+        assert!(
+            named.asked.is_empty(),
+            "a MEMBER bot's review on the head is never work to do"
+        );
+        assert!(
+            named
+                .said
+                .iter()
+                .any(|it| it.author == "claude[bot]" && !it.entitled),
+            "and when a person names it, it is quoted as one that does not speak for the \
+             project: {:?}",
+            named.said
+        );
+
+        let unnamed = Direction::read_from(
+            vec![by("claude[bot]", AuthorKind::Bot, "1. rename it")],
+            vec![],
+            head,
+        );
+        assert!(
+            unnamed.is_empty(),
+            "a bot review nobody names is not read at all: {unnamed:?}"
+        );
+
+        let person = Direction::read_from(
+            vec![by("peel", AuthorKind::Person, "rename it")],
+            vec![],
+            head,
+        );
+        assert_eq!(
+            person.asked.len(),
+            1,
+            "while the same review by a person is work to do"
         );
     }
 

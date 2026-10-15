@@ -989,6 +989,7 @@ async fn publish(forge: &Forge, world: &RemoteWorld) -> Published {
         &GroupStatus::Clean,
         &changed,
         None,
+        None,
     )
     .await
     .expect("a clean group over a tree that really changed");
@@ -1147,6 +1148,7 @@ async fn the_same_bump_landed_twice_in_two_workspaces_is_the_same_commit() {
             &advisories_of(&world.findings),
             &GroupStatus::Clean,
             &changed,
+            None,
             None,
         )
         .await
@@ -1373,6 +1375,7 @@ async fn discover_then_land(forge: &Forge, world: &LandingWorld) -> Result<Appro
         &advisories_of(&world.findings),
         &fiddle_runtime::capability::GroupStatus::Clean,
         &world.changed,
+        None,
         None,
     )
     .await

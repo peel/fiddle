@@ -63,6 +63,7 @@ fn inspect_rejects_a_malformed_invocation_ref() {
         ("beans:", "must not be empty"),
         ("cve:", "must not be empty"),
         ("beans:../../../pwned", "ASCII letters, digits"),
+        ("pr:acme/icecube", "does not name a pull request"),
     ] {
         let out = support::fiddle_command()
             .args([

@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod retry;
 pub mod returns;
+pub mod rules;
 pub mod spend;
 pub mod tools;
 pub mod transcript;
@@ -8,6 +9,10 @@ pub mod transcript;
 pub use audit::AuditHook;
 pub use retry::{RetryingModel, RETRIES};
 pub use returns::{Declarations, Held, LastReturn, ReturnHook, Spent, RETURNS};
+pub use rules::{
+    ProjectRules, RuleFile, RulesError, Unquotable, UnquotableRules, UnreadRules, RULES_CAP_BYTES,
+    RULE_FILES,
+};
 pub use tools::{
     CheckOutcome, EditFile, EditFileArgs, ListFiles, ListFilesArgs, Listing, NoArgs, ReadFile,
     ReadFileArgs, RunCheck, RunCommand, RunCommandArgs, SearchFiles, ToolError, ToolHost,

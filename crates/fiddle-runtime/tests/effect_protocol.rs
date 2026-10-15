@@ -1957,7 +1957,8 @@ fn the_registry_holds_every_capability_this_build_offers() {
             "propose_change",
             "cve_mitigate",
             "toil",
-            "checks"
+            "checks",
+            "pull_request"
         ]
     );
 }

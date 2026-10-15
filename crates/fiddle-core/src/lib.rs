@@ -11,7 +11,7 @@ pub mod report;
 
 pub use assessment::{
     assess, correlation_key, derive_next, CapabilityAssessment, NextAction, CHECKS, CVE_MITIGATE,
-    FIXTURE_REPAIR, PROPOSE_CHANGE, PUBLISH_CHANGE, STUB_MARK, TOIL,
+    FIXTURE_REPAIR, PROPOSE_CHANGE, PUBLISH_CHANGE, PULL_REQUEST, STUB_MARK, TOIL,
 };
 pub use decision::{
     decision_request_id, parse_marker, render_marker, ActorRef, DecisionBinding, DecisionRequestId,
@@ -29,7 +29,8 @@ pub use finding::{
     SeveritiesError, Severity,
 };
 pub use identity::{
-    AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, WorkRef,
+    AttemptId, CapabilityId, InvocationRef, InvocationRefError, InvocationScheme, PullRequestRef,
+    WorkRef,
 };
 pub use observation::{
     ChangeSetState, Observation, ProjectedStatus, Publication, ReviewState, SourceRef,

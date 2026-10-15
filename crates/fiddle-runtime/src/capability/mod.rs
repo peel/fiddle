@@ -8,9 +8,10 @@ pub mod stub;
 pub mod workflow;
 
 pub use cve::{
-    breached, cited, entitled, land, steers, undeclared, ChangesRequested, DeclarationBreach,
-    Direction, FailedCheck, Followed, Git, GroupMigration, GroupStatus, HumanSaid, InRepository,
-    InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork, Referenced, Unproved,
+    breached, cited, entitled, land, speaks, steers, undeclared, ChangesRequested,
+    DeclarationBreach, Direction, FailedCheck, Followed, Git, GroupMigration, GroupStatus,
+    HumanSaid, InRepository, InWorktree, Landed, MigrationAttempt, MigrationConfig, NeedsWork,
+    Referenced, Unproved,
 };
 pub use mitigate::{CveMitigate, MitigateConfig};
 pub use propose::{attempt_worktree, ProposeChange, ProposeConfig};
@@ -31,7 +32,7 @@ use fiddle_core::{
 };
 use std::path::PathBuf;
 
-pub const CAPABILITIES: [CapabilityId; 7] = [
+pub const CAPABILITIES: [CapabilityId; 8] = [
     fiddle_core::STUB_MARK,
     fiddle_core::FIXTURE_REPAIR,
     fiddle_core::PUBLISH_CHANGE,
@@ -39,6 +40,7 @@ pub const CAPABILITIES: [CapabilityId; 7] = [
     fiddle_core::CVE_MITIGATE,
     fiddle_core::TOIL,
     fiddle_core::CHECKS,
+    fiddle_core::PULL_REQUEST,
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,6 +249,23 @@ pub enum CapabilityError {
 
     #[error("the local repository was not read: {0}")]
     Tree(#[from] crate::git::GitError),
+
+    #[error("the project's rules for agents cannot be quoted whole: {0}")]
+    UnquotableRules(#[from] crate::agent::UnquotableRules),
+
+    #[error("the project's rules for agents were not read: {0}")]
+    RulesUnread(#[from] crate::agent::UnreadRules),
+}
+
+impl From<crate::agent::RulesError> for CapabilityError {
+    fn from(error: crate::agent::RulesError) -> Self {
+        match error {
+            crate::agent::RulesError::Unquotable(refused) => {
+                CapabilityError::UnquotableRules(refused)
+            }
+            crate::agent::RulesError::Unread(unread) => CapabilityError::RulesUnread(unread),
+        }
+    }
 }
 
 impl CapabilityError {
@@ -257,7 +276,8 @@ impl CapabilityError {
             | CapabilityError::CheckFailed { .. }
             | CapabilityError::Workspace(_)
             | CapabilityError::NothingProposed
-            | CapabilityError::Agent(_) => Recurrence::Correctable,
+            | CapabilityError::Agent(_)
+            | CapabilityError::RulesUnread(_) => Recurrence::Correctable,
 
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Unsteerable { .. }
@@ -265,7 +285,8 @@ impl CapabilityError {
             | CapabilityError::Output(_)
             | CapabilityError::OutOfScope(_)
             | CapabilityError::WouldWait { .. }
-            | CapabilityError::PublishesElsewhere { .. } => Recurrence::Permanent,
+            | CapabilityError::PublishesElsewhere { .. }
+            | CapabilityError::UnquotableRules(_) => Recurrence::Permanent,
 
             CapabilityError::Unasked(error) => match error {
                 crate::human::PublishError::Channel(_)
@@ -361,6 +382,7 @@ mod tests {
                 fiddle_core::CVE_MITIGATE,
                 fiddle_core::TOIL,
                 fiddle_core::CHECKS,
+                fiddle_core::PULL_REQUEST,
             ]
         );
     }

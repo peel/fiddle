@@ -79,7 +79,8 @@ impl DecisionChannel {
             InvocationScheme::Beans
             | InvocationScheme::Scheduled
             | InvocationScheme::Scanner
-            | InvocationScheme::Cve => false,
+            | InvocationScheme::Cve
+            | InvocationScheme::Pr => false,
         }
     }
 
@@ -605,6 +606,7 @@ mod tests {
             "scanner:s-1",
             "scheduled:nightly",
             "cve",
+            "pr:acme/widget#7",
             "this is not a reference",
         ] {
             for item in &items {
@@ -624,17 +626,21 @@ mod tests {
 
         assert_eq!(
             jira + github + none,
-            42,
-            "seven invocations against three observations against two pull-request states is \
+            48,
+            "eight invocations against three observations against two pull-request states is \
              the denominator this sweep reports against"
         );
         assert_eq!(
             (jira, github, none),
-            (4, 15, 23),
+            (4, 18, 26),
             "the bound alone passes on a `named_by` that answers nothing, so the sweep counts \
              what it names: the two jira references name the issue only when the observation \
-             carries a revision, the five other references name the pull request only when the \
-             run holds one, and the remaining cases name nobody"
+             carries a revision, which is 4 and unchanged because a `pr` reference is not carried \
+             by the issue; the six other references name the pull request only when the run \
+             holds one, which is 18, three more than before because the `pr` reference names it \
+             under each of the three observations; and the remaining cases name nobody, which is \
+             26, three more than before because the `pr` reference names nobody under each \
+             observation when the run holds no pull request"
         );
     }
 

@@ -95,3 +95,42 @@ pub fn quotation_in(sent: &str) -> Quotation {
         inside: lines[outermost[0] + 1..outermost[1]].join("\n"),
     }
 }
+
+pub fn quotations_in(sent: &str) -> Vec<Quotation> {
+    let lines: Vec<&str> = sent.lines().collect();
+    let is_fence = |line: &str| {
+        let trimmed = line.trim();
+        !trimmed.is_empty() && trimmed.chars().all(|character| character == FENCE)
+    };
+    let mut quotations = Vec::new();
+    let mut at = 0;
+    while at < lines.len() {
+        if !is_fence(lines[at]) {
+            at += 1;
+            continue;
+        }
+        let fence = lines[at].trim();
+        let Some(closed) = (at + 1..lines.len()).find(|it| lines[*it].trim() == fence) else {
+            panic!("the fence line {at} is never closed: {sent}");
+        };
+        quotations.push(Quotation {
+            fence: fence.to_string(),
+            inside: lines[at + 1..closed].join("\n"),
+        });
+        at = closed + 1;
+    }
+    quotations
+}
+
+pub fn quotation_holding(sent: &str, planted: &str) -> Quotation {
+    let mut holding: Vec<Quotation> = quotations_in(sent)
+        .into_iter()
+        .filter(|quotation| quotation.inside.contains(planted))
+        .collect();
+    assert_eq!(
+        holding.len(),
+        1,
+        "one quotation in this text holds `{planted}`: {sent}"
+    );
+    holding.remove(0)
+}

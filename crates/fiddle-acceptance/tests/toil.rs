@@ -850,6 +850,28 @@ impl ToilForge {
         .unwrap();
     }
 
+    fn conversation_is(&self, said: &[(u64, &str, &str, &str, &str)]) {
+        let conversation: Vec<serde_json::Value> = said
+            .iter()
+            .map(|(id, login, kind, association, body)| {
+                serde_json::json!({
+                    "id": id,
+                    "body": body,
+                    "created_at": "2026-10-01T17:10:14Z",
+                    "updated_at": "2026-10-01T17:10:14Z",
+                    "author_association": association,
+                    "user": { "login": login, "id": id, "type": kind },
+                    "performed_via_github_app": null,
+                })
+            })
+            .collect();
+        std::fs::write(
+            self.stub.join("issue-comments").join("page-1.json"),
+            serde_json::Value::Array(conversation).to_string(),
+        )
+        .unwrap();
+    }
+
     fn a_check_fails_on(&self, head: &str, job: u64, name: &str, log: &str) {
         std::fs::write(
             self.stub.join("checks_seed"),
@@ -1544,6 +1566,10 @@ impl ToilWorld {
             .status()
             .expect("git runs");
         assert!(status.success(), "the fixture takes a dated base commit");
+    }
+
+    pub fn keeps_rules_for_agents(&self, files: &[(&str, &str)]) -> String {
+        support::rules::committed(&self.fixture, files)
     }
 
     pub fn holds_a_hook_that_refuses_every_commit(&self) {
@@ -5091,6 +5117,304 @@ fn a_relative_workspace_root_lists_the_change_an_absolute_one_lists() {
                 .file_at(&world.github().head_of(&branch), "src/lib.rs")
                 .contains(REPAIRED.trim()),
             "a {name} root lists the agent's change, and the change is published"
+        );
+    }
+}
+
+const CLAUDES_UNNAMED_POINT: &str = "the deprecated helper still has one caller in workspace.rs";
+
+const A_CLAUDE_COMMENT: u64 = 7_301;
+
+const A_MEMBER_COMMENT_NAMING_NOBODY: u64 = 7_302;
+
+const A_MEMBER_COMMENT_NAMING_CLAUDE: u64 = 7_303;
+
+#[test]
+fn a_bot_comment_is_never_marked_answered_so_a_later_comment_naming_it_still_reaches_it() {
+    let world = ToilWorld::serving(
+        an_accepted_change()
+            .into_iter()
+            .chain(an_answer_that_changes_nothing())
+            .chain(an_answer_that_changes_nothing())
+            .collect(),
+    );
+    world.jira().holds_eligible_ticket(TICKET);
+    let first = payload_of(&world.run_toil(REFERENCE));
+    assert_eq!(
+        world.github().pull_requests().len(),
+        1,
+        "the row's own premise: the first run opened a pull request: {first}"
+    );
+
+    let bot = (
+        A_CLAUDE_COMMENT,
+        "claude[bot]",
+        "Bot",
+        "NONE",
+        CLAUDES_UNNAMED_POINT,
+    );
+    let member = (
+        A_MEMBER_COMMENT_NAMING_NOBODY,
+        "spenes",
+        "User",
+        "MEMBER",
+        "Rename the helper the ticket names, please",
+    );
+    world.github().conversation_is(&[bot, member]);
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let second = payload_of(&world.run_toil(REFERENCE));
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    let replies = world.github().replies();
+    assert_eq!(
+        replies.len(),
+        1,
+        "the member's comment is answered: {second}"
+    );
+    assert!(
+        replies[0].contains(&format!("comments={A_MEMBER_COMMENT_NAMING_NOBODY} ")),
+        "the answer names the member's comment, and only it: {}",
+        replies[0]
+    );
+    assert!(
+        !replies[0].contains(&A_CLAUDE_COMMENT.to_string()),
+        "a bot comment nobody named was not read, so it is not marked answered: {}",
+        replies[0]
+    );
+    assert!(
+        briefs
+            .iter()
+            .all(|brief| !brief.contains(CLAUDES_UNNAMED_POINT)),
+        "and nobody named it, so it did not reach the brief"
+    );
+
+    let naming = (
+        A_MEMBER_COMMENT_NAMING_CLAUDE,
+        "spenes",
+        "User",
+        "MEMBER",
+        "Claude's point about the caller is right, do it",
+    );
+    world.github().conversation_is(&[bot, member, naming]);
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let third = payload_of(&world.run_toil(REFERENCE));
+    let briefs: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    assert!(
+        briefs
+            .iter()
+            .any(|brief| brief.contains(CLAUDES_UNNAMED_POINT)
+                && brief.contains("claude[bot] wrote (this person does not speak for the project")),
+        "a member now names Claude, so the bot comment the last run left unmarked reaches the \
+         brief, quoted as one to read and not to follow: {third}"
+    );
+    let replies = world.github().replies();
+    assert_eq!(replies.len(), 2, "{replies:?}");
+    assert!(
+        replies[1].contains(&format!("comments={A_MEMBER_COMMENT_NAMING_CLAUDE} ")),
+        "the second answer names only the new member comment: {}",
+        replies[1]
+    );
+}
+
+fn a_change_that_also_rewrites_the_rules() -> Vec<support::Reply> {
+    vec![
+        a_review_that_reads_a_change(),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({
+                "path": "CLAUDE.md",
+                "contents": support::rules::A_RULE_THE_CHANGE_WROTE,
+            }),
+        )),
+        support::accepted(support::calls(
+            "write_file",
+            serde_json::json!({ "path": "src/lib.rs", "contents": REPAIRED }),
+        )),
+        support::accepted(support::reports(serde_json::json!({
+            "changed_files": ["src/lib.rs", "CLAUDE.md"],
+            "commit_message": {"title": "Correct the off-by-one the ticket names", "previously": "Previously the function returned one past the end.", "now": "Now it returns the last element."},
+            "summary": "corrected the off-by-one the ticket named",
+            "claimed_complete": true,
+        }))),
+        support::accepted(support::reports(serde_json::json!({
+            "verdict": "accepted",
+        }))),
+    ]
+}
+
+#[test]
+fn the_projects_rules_for_agents_reach_the_toil_agent_and_its_evaluation_from_the_base() {
+    let world = ToilWorld::serving(a_change_that_also_rewrites_the_rules());
+    let base = world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", support::rules::AGENTS_MD),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "{payload}"
+    );
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (3, 1),
+        "the agent three times and the evaluation once"
+    );
+    for brief in &briefs.agent {
+        support::rules::assert_quotes_both(brief, &base, "agent");
+    }
+    support::rules::assert_quotes_both(&briefs.judge[0], &base, "evaluation");
+    assert!(
+        !briefs.judge[0].contains(support::rules::A_RULE_THE_CHANGE_WROTE),
+        "the agent rewrote CLAUDE.md in the workspace, and the evaluation still reads the \
+         base's rules: {}",
+        briefs.judge[0]
+    );
+    assert!(
+        briefs
+            .other
+            .iter()
+            .all(|brief| !brief.contains(support::rules::LABEL_OPENS)),
+        "the ambiguity review is no agent step and quotes no rules"
+    );
+}
+
+#[test]
+fn a_project_with_no_rules_for_agents_gets_no_rules_section() {
+    let world = ToilWorld::start();
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "{payload}"
+    );
+    assert!(
+        !briefs.agent.is_empty() && !briefs.judge.is_empty(),
+        "the agent and the evaluation were both asked"
+    );
+    for brief in briefs.agent.iter().chain(&briefs.judge) {
+        assert!(
+            !brief.contains(support::rules::FRAME_OPENS)
+                && !brief.contains(support::rules::LABEL_OPENS),
+            "no CLAUDE.md and no AGENTS.md, so no section: {brief}"
+        );
+    }
+}
+
+#[test]
+fn a_rules_file_over_the_cap_refuses_a_toil_run_before_any_agent_step() {
+    let world = ToilWorld::start();
+    let over = support::rules::over_the_cap();
+    let base = world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", &over),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let run = world.run_toil(REFERENCE);
+    let payload = payload_of(&run);
+    let briefs = support::rules::by_role(&world.model_prompts());
+    let said = payload.to_string();
+
+    assert_eq!(
+        run.status.code(),
+        Some(20),
+        "rules fiddle cannot quote whole are a property of the target, so the run fails and \
+         is not retried: {payload}"
+    );
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (0, 0),
+        "no agent step and no evaluation ran"
+    );
+    assert!(
+        world.github().branches().is_empty(),
+        "nothing is pushed: {:?}",
+        world.github().branches()
+    );
+    assert_eq!(
+        (
+            world.jira().last_comment_on(TICKET),
+            world.jira().links_for(TICKET),
+            world.jira().transition_requests(),
+        ),
+        (None, Vec::<String>::new(), 0),
+        "and nothing is answered on the ticket: no comment, no link and no transition"
+    );
+    assert!(
+        said.contains(&format!(
+            "`AGENTS.md` at commit `{base}` holds {} bytes",
+            over.len()
+        )) && said.contains("32768")
+            && !said.contains(support::rules::OVER_THE_CAP_LINE.trim_end()),
+        "the refusal names the file, the commit, its size and the cap, and quotes none of it: \
+         {said}"
+    );
+}
+
+#[test]
+fn the_projects_rules_reach_a_checks_run_from_the_base_and_not_from_the_head_it_stands_on() {
+    let world = ToilWorld::serving(
+        a_change_that_also_rewrites_the_rules()
+            .into_iter()
+            .chain(a_diagnosis_that_changes_nothing())
+            .collect(),
+    );
+    let base = world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", support::rules::AGENTS_MD),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+    payload_of(&world.run_toil(REFERENCE));
+    let branch = world.github().only_branch();
+    let published = world.github().head_of(&branch);
+    assert_eq!(
+        world.github().file_at(&published, "CLAUDE.md"),
+        support::rules::A_RULE_THE_CHANGE_WROTE.trim_end(),
+        "the head the checks run stands on holds rules the change rewrote"
+    );
+    world
+        .github()
+        .a_check_fails_on(&published, 501, "build", A_FAILING_SWAGGER_STEP);
+    world.github().the_branch_is_behind_its_base_by(9);
+    world
+        .github()
+        .a_member_commented(7_101, "Fix the CI failure");
+    world.forgets_that_the_work_was_completed();
+
+    let before = world.model_prompts().len();
+    let run = world.run_capability(REFERENCE, "checks");
+    let payload = payload_of(&run);
+    let bodies: Vec<String> = world.model_prompts().into_iter().skip(before).collect();
+    let briefs = support::rules::by_role(&bodies);
+
+    assert_eq!(run.status.code(), Some(0), "{payload}");
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (1, 1),
+        "the checks agent once and its evaluation once"
+    );
+    assert!(
+        briefs.agent[0].contains("Fix what a failing check on this pull request names"),
+        "the checks prompt ran"
+    );
+    support::rules::assert_quotes_both(&briefs.agent[0], &base, "checks agent");
+    support::rules::assert_quotes_both(&briefs.judge[0], &base, "checks evaluation");
+    for brief in briefs.agent.iter().chain(&briefs.judge) {
+        assert!(
+            !brief.contains(support::rules::A_RULE_THE_CHANGE_WROTE.trim_end()),
+            "the head's CLAUDE.md is not the rules: {brief}"
         );
     }
 }

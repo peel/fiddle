@@ -15,6 +15,8 @@ literal secret does not load.
 | `FIDDLE_GITHUB_TOKEN` | the local live forge lane | opt-in, writes to a disposable repository |
 | `FIDDLE_EFFECTS_TOKEN` | the dispatched forge lane | the same value, as a repository secret |
 | `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
+| `FIDDLE_AI_APP_ID` | the target's App-mention trigger | the target repository's secret; the id of the deployment's GitHub App |
+| `FIDDLE_AI_PRIVATE_KEY` | the target's App-mention trigger | the target repository's secret; the App's private key. The workflow mints the installation token from it and passes that as `FIDDLE_GITHUB_TOKEN` |
 | `WIZ_CLIENT_ID` | the host's `setup-wiz` step | the host repository's secret; the Wiz service account the scan runs as |
 | `WIZ_CLIENT_SECRET` | the host's `setup-wiz` step | the host repository's secret; that account's secret |
 | `JIRA_USER_EMAIL` | every live Jira lane, and the toil route | opt-in; the account the read or the write is performed as |
@@ -779,6 +781,279 @@ completion, so the next run works the ticket again. And where `[stub] root`
 points decides what a fresh checkout inherits: a root inside the working copy
 leaves its completions behind, and a root on an absolute path outside the
 checkout carries every one of them across.
+
+## The App-mention trigger, which works one pull request
+
+A person who speaks for the project mentions the deployment's GitHub App,
+`@<slug>`, on a pull request.
+The target repository's workflow runs `fiddle run "pr:<owner>/<repo>#<n>"` for
+that pull request. fiddle does what the mention asks, pushes onto the pull
+request's own branch when it changed something, and answers the mention. ADR 093 records the decision.
+
+The workflow lives in the target repository, not here.
+`docs/technical/host-workflow-fiddle-ai.yml` is its template, and
+`scripts/test-host-workflow-fiddle-ai.sh` holds it in the gate: the template's
+bytes must equal the reviewed copy's (its sha256 is held beside it, in
+`docs/technical/host-workflow-fiddle-ai.sha256`); any edit to the template, a
+comment included, fails the gate until the held sha256 is changed. The suite
+needs python3 with PyYAML, and refuses without them.
+
+### 1. Create the App
+
+Creating an App on an organisation needs an organisation admin. Create it under
+**Settings → Developer settings → GitHub Apps → New GitHub App**.
+
+- Name: the App's name decides its slug, and the slug decides both the login
+  fiddle writes as, `<slug>[bot]`, and the handle people mention, `@<slug>`.
+  For snowplow-incubator/snowplow-identities the App is
+  `snowplow-identities-ai`, so people mention `@snowplow-identities-ai`.
+  fiddle takes its handle from `[github] account` without the `[bot]` suffix,
+  and the workflow takes it from the repository variable `FIDDLE_AI_HANDLE`.
+  With no `account`, fiddle's handle is `fiddle-ai`.
+- Webhook: off. The workflow receives the events, not the App.
+- Repository permissions, and nothing else:
+
+| permission | access | what fiddle spends it on |
+| --- | --- | --- |
+| Contents | Read and write | fetch the head branch and push onto it |
+| Pull requests | Read and write | read the pull request and its reviews |
+| Issues | Read and write | read the conversation and post the answer |
+| Checks | Read | read the failing check runs on the head |
+| Actions | Read | read a failing Actions job's log |
+
+- Subscribe to no event. The webhook is off, and the workflow receives the
+  events from the repository: an issue comment and a pull request review. A
+  mention in an inline review comment, on a line of the diff, starts no run:
+  fiddle reads the conversation and the reviews, and no inline comment.
+- Where it can be installed: only on this account.
+
+Generate a private key and note the App id. Then read the id of the App's bot
+user, which the commit author's address needs.
+
+```sh
+gh api '/users/<slug>%5Bbot%5D' --jq .id
+```
+
+### 2. Install it on the repository
+
+Install the App on the target repository alone, not on every repository of the
+organisation. The installation token the workflow mints is scoped to the
+repository the event came from in any case.
+
+### 3. The secrets and the handle
+
+```sh
+host=snowplow-incubator/snowplow-identities
+
+gh secret set FIDDLE_AI_APP_ID --repo "$host" --body "<app id>"
+gh secret set FIDDLE_AI_PRIVATE_KEY --repo "$host" < fiddle-ai.private-key.pem
+gh secret set LITELLM_API_KEY --repo "$host" < litellm.txt
+gh secret list --repo "$host"
+
+gh variable set FIDDLE_AI_HANDLE --repo "$host" --body "<slug>"
+gh variable list --repo "$host"
+```
+
+`FIDDLE_AI_HANDLE` is a repository variable, not a secret: the job's `if`
+reads it, and an `if` cannot read a secret. The job is skipped while it is
+empty or unset.
+
+No personal token is involved. The workflow mints an installation token on
+every run with `actions/create-github-app-token` and passes it to fiddle as
+`FIDDLE_GITHUB_TOKEN`. Its own `GITHUB_TOKEN` reads contents and nothing else.
+
+### 4. The deployment document
+
+The template reads `.github/fiddle-ai/deployment.toml`, and
+`.github/fiddle-ai/workflows/pull_request.toml` with `workflows/prompts/`
+beside it, because the workflow document is read beside the deployment
+document. Ship this repository's `workflows/` there. Paths in the document are
+resolved against the working directory, which is the checkout (ADR 092).
+
+Point `[stub] root` at a directory in the checkout that you do not commit.
+
+```toml
+[stub]
+root = ".fiddle/stub"
+```
+
+A fresh runner has no such directory, and git keeps no empty directory. fiddle
+blocks a run over a `[stub] root` that does not exist, so the template reads
+the root from `fiddle config check --json` and creates it before the run. Do
+not commit the directory or a record in it. A record does not
+stop a `pr:` run, and the runner loses the root when the job ends, so each run
+starts with an empty root and loses nothing (ADR 093).
+
+Two settings belong to the App.
+
+```toml
+[github]
+repo = "snowplow-incubator/snowplow-identities"
+base = "main"
+token = { env = "FIDDLE_GITHUB_TOKEN" }
+account = "<slug>[bot]"
+
+[github.author]
+name = "<slug>[bot]"
+email = "<bot-id>+<slug>[bot]@users.noreply.github.com"
+```
+
+`account` is the login fiddle writes as, and fiddle's handle is that login
+without its `[bot]` suffix, in the case written; matching a mention ignores
+ASCII case. Set `account` to the same slug as `FIDDLE_AI_HANDLE`, or the
+workflow starts runs that fiddle reads no mention in. An App's comment carries the author
+association `NONE`, so without `account` fiddle trusts no answer it wrote and
+answers every mention again on every run. With it, a marker in that login's
+comment is trusted, and that login's comments never steer.
+
+`[github.author]` is the author and committer of every commit fiddle makes.
+Without it the commits carry `fiddle <fiddle@invalid>`. With the noreply address
+GitHub shows the App's avatar on them. fiddle disables hooks on its commits in
+either case.
+
+`fiddle config check --config .github/fiddle-ai/deployment.toml` loads the
+document and refuses an author with an empty name or an address without `@`.
+It does not print `account` or `author`, so read them in the document. The
+template runs the check before the run, so a document that does not load fails
+the job before any read.
+
+### 5. The workflow
+
+Copy the template to `.github/workflows/fiddle-ai.yml` in the target
+repository. Set `FIDDLE_TAG` and `FIDDLE_SHA256` together, as "Cut a release"
+publishes them. The placeholder digest matches nothing, so an unedited copy
+fails on its first run and says so.
+
+| what the template holds | why |
+| --- | --- |
+| `issue_comment` on a pull request, `pull_request_review` | the two places fiddle reads a mention of its handle: the conversation and a review's body |
+| `if`: `FIDDLE_AI_HANDLE` is set, the text mentions `@` followed by it, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
+| `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a later run never cancels a running one between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment or review that mentions nobody, and fiddle's own answer, are skipped before they queue, so none of them replaces a mention that waits |
+| checkout with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false` | without `ref`, a review event checks out the pull request's merge ref, so the pull request would supply the deployment document, the workflow documents and the prompts, and a pull request that conflicts with its base has no merge ref to check out. With it, every event reads them from the default branch. The workspace's checks, which run the pull request's code, cannot read a persisted token |
+| `mkdir -p` on the `[stub] root` that `fiddle config check --json` reports, before the run | a fresh runner has no root, and fiddle blocks a run over a root that does not exist |
+
+The `if` is a filter, not the rule. fiddle applies its own rule again to every
+comment and review it reads: a mention inside code, a fence or a quote asks for
+nothing, a bot never steers, and a bot a mention names is quoted and not
+followed. So a wrong `if` can start a run it should not, and that run answers
+only the mentions fiddle's own rule admits. It cannot widen who steers.
+
+### What a run refuses
+
+| the pull request | the answer | exit |
+| --- | --- | --- |
+| on a repository other than `[github] repo` | a configuration error naming both | 2 |
+| closed or merged | refused, nothing to do | 2 |
+| its head branch in a fork | refused, naming the fork, because fiddle cannot push to it | 2 |
+| unreadable | the forge failed, and the run can be retried | 11 |
+| no unanswered mention | completed with nothing to do, and no agent paid for | 0 |
+| its branch moved during the run | the push is refused and not forced; the next mention starts again | non-zero |
+
+Over a `pr:` reference only `pull_request` runs, and it is what the reference
+selects with no flag. Every other `--capability` exits 2 before any request and
+names `--capability pull_request` as the remedy. Do not run `--capability checks`
+over a `pr:` reference: `pull_request` already reads the failing checks and
+answers the mention (ADR 093).
+
+### Run a mention again
+
+A run that steers, answers and is not rejected writes
+`<[stub] root>/changes/<owner>+<repo>+<n>.json`. A record fiddle wrote does not
+stop the next run. A pull request is not a work item, so a marker over it is not
+a completion, and a second run over the same pull request reads the pull request
+again. A record fiddle cannot read blocks every run over that reference until
+it is removed. fiddle reports these unreadable: a record that is not JSON, one
+whose marker is not a string, a directory at the record's path, a records
+directory fiddle may not read, and a `[stub] root` that is a file. What decides whether there is work is the
+answer on the pull request: each run answers only the mentions not yet answered, and with
+every mention answered it completes with nothing to do and pays for no agent.
+
+So a local run and a runner behave the same while the record is one fiddle
+wrote. To run a mention again, delete fiddle's answer comment or post a new
+mention.
+
+`scripts/local-toil-rerun.sh` decides nothing itself. It runs `fiddle inspect
+<ref> --config <document> --json` and prints fiddle's change observation and
+fiddle's assessment as `jq -c` prints them from fiddle's answer, with one sentence that restates
+whether fiddle reports the record available or unavailable, and why. When
+fiddle refuses, for example a malformed reference, the script prints fiddle's
+error as it is and exits with fiddle's code: for `pr:acme#7`, fiddle exits 2
+and says to write `pr:<owner>/<repo>#<number>`. When fiddle cannot be run, or
+answers in a shape the script does not read, the script exits 2. The fiddle it
+runs is `--fiddle <path>`, else `$FIDDLE`, else `fiddle` on the PATH. For a
+`jira:` reference, `fiddle inspect` makes a live request to the Jira site the
+document configures. Run it from the directory you run fiddle from, because
+fiddle resolves a relative `[stub] root` against it. The script prints the run
+for you to type, and does not run it.
+
+```sh
+scripts/local-toil-rerun.sh --config .fiddle/live/deployment.toml \
+  --ref 'pr:snowplow-incubator/snowplow-identities#275'
+```
+
+Quote the reference. In bash, sh and zsh a `#` inside a word is literal, but
+zsh with `extendedglob` set reads it as a glob operator and refuses the word
+with `no matches found`.
+
+`--forget` removes the record fiddle named in its answer,
+`stub:changes/<name>.json`, under the `[stub] root` that `fiddle config check
+--config <document> --json` reports. It refuses, with exit 2 and nothing
+removed, a name outside `[A-Za-z0-9._:+-]` or not ending in `.json`, a root
+that is not absolute, and a root that holds a control character (C0, DEL or
+C1). It removes the record only when it is a regular file, a symlink or an
+empty directory, and checks that the path is gone; anything else, including a
+directory that holds files, a path it cannot examine, or nothing at the path,
+it leaves, and exits 2. When fiddle named no record, `--forget` removes nothing
+and says so. For a record fiddle reads, removing it changes nothing for a `pr:`
+run; for one fiddle reports unavailable, it ends the block.
+
+## The target's rules for agents
+
+Every agent step and every evaluate step of `toil`, `checks` and
+`pull_request` quotes the target's `CLAUDE.md` and `AGENTS.md`, from the root of
+the repository. ADR 094 records the decision.
+
+- **Where they come from.** From a commit, never from the working tree. A `pr:`
+  run fetches the base branch the pull request names and reads `origin/<base>`.
+  A base that cannot be fetched stops the run as retryable, exit 11. A `jira:` run reads the commit
+  the workspace was cut from, which is the HEAD of `[workspace] fixture`. fiddle
+  builds the run's branch on that commit, so keep that clone on `[github] base`.
+  A change on the run's branch, or a change the agent makes in the workspace,
+  does not change the rules the run is held to. fiddle reads the rules once,
+  before the first step that can run a project command, and every agent and
+  evaluate step quotes that read. It ignores `refs/replace`, so code the run
+  executes cannot change the rules a later step quotes.
+- **What is quoted.** Each file whole, between fence lines, as data. An absent
+  file gets no section. fiddle does not follow `@` imports. A link to another
+  file in the repository is quoted as the file it names.
+- **A file fiddle cannot quote whole refuses the run.** That is a file over
+  32768 bytes, a file that is not UTF-8 text, a link that leaves the
+  repository, a link to no file, and a link to another link. The run stops before
+  any agent step. It asks no model, changes nothing, pushes nothing and answers
+  nothing on the pull request. It ends `Failed`, exit 20, and is not retried,
+  because the cause is in the target and another run finds the same file. The
+  reason names the file, the commit, its size or kind, and the cap. It names a
+  link by its own path and never prints where the link points. A link whose
+  target holds a line break, a backtick or another control character counts as
+  a link to no file, and fiddle reads every target as a plain path, never as git
+  pathspec magic. Change the file on the base, then run again. A link whose
+  own blob, or whose target's blob, git cannot read is a link to no file, so
+  that run also ends `Failed`, exit 20. A git failure is different when fiddle
+  lists `CLAUDE.md` or `AGENTS.md`, or sizes or reads one that is not a link:
+  the run ends retryable, exit 11, and the message names the file and the
+  commit. A `jira:` run asks the ambiguity review before the workflow starts,
+  so that one model call can come first.
+- **The evaluator.** Its prompt tells it to reject a change that breaks a quoted
+  rule, with a finding that names the rule, and to reject a report that
+  misstates the change. The evaluate step quotes the agent's own report.
+- **To see what a run quoted**, read the files at the commit the brief names.
+  Each label names the file it quoted: `git show <commit>:CLAUDE.md` for a
+  plain file. For a link the label reads `` `AGENTS.md`, A LINK TO `<path>` ``,
+  and `git show <commit>:<path>` shows the quoted text; `git show` of the link
+  itself prints only where it points. That commit holds the whole text the run
+  quoted. The transcript in the next section records the brief too, but it cuts
+  each field over 16384 characters in the middle, and a brief with both rules
+  files can be longer than that.
 
 ## Record what the model was sent and what it returned
 

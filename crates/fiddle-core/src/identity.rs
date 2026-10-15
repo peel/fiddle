@@ -8,6 +8,7 @@ pub enum InvocationScheme {
     Scheduled,
     Scanner,
     Cve,
+    Pr,
 }
 
 impl InvocationScheme {
@@ -18,6 +19,7 @@ impl InvocationScheme {
             InvocationScheme::Scheduled => "scheduled",
             InvocationScheme::Scanner => "scanner",
             InvocationScheme::Cve => "cve",
+            InvocationScheme::Pr => "pr",
         }
     }
 
@@ -27,6 +29,7 @@ impl InvocationScheme {
         InvocationScheme::Scheduled,
         InvocationScheme::Scanner,
         InvocationScheme::Cve,
+        InvocationScheme::Pr,
     ];
 
     fn of(text: &str) -> Option<Self> {
@@ -101,6 +104,46 @@ impl std::fmt::Display for AttemptId {
 pub struct InvocationRef {
     scheme: InvocationScheme,
     value: String,
+    record: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PullRequestRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+}
+
+impl PullRequestRef {
+    pub fn full_name(&self) -> String {
+        format!("{}/{}", self.owner, self.repo)
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        let (full, number) = value.split_once('#')?;
+        let (owner, repo) = full.split_once('/')?;
+        let named = |it: &str| {
+            !it.is_empty()
+                && it
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        let numbered = !number.is_empty()
+            && !number.starts_with('0')
+            && number.chars().all(|c| c.is_ascii_digit());
+        if !(named(owner) && named(repo) && numbered) {
+            return None;
+        }
+        Some(PullRequestRef {
+            owner: owner.to_string(),
+            repo: repo.to_string(),
+            number: number.parse().ok()?,
+        })
+    }
+
+    fn record_key(&self) -> String {
+        format!("{}+{}+{}", self.owner, self.repo, self.number)
+    }
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, fiddle_macros::VariantCount)]
@@ -128,6 +171,9 @@ pub enum InvocationRefError {
          a value is written with ASCII letters, digits, `-`, `_` and `:` only"
     )]
     IllegalValueCharacter { value: String, character: char },
+
+    #[error("`pr:{0}` does not name a pull request; write `pr:<owner>/<repo>#<number>`")]
+    MalformedPullRequest(String),
 }
 
 impl FromStr for InvocationRef {
@@ -139,6 +185,7 @@ impl FromStr for InvocationRef {
                 Some(scheme) if scheme.stands_alone() => Ok(InvocationRef {
                     scheme,
                     value: String::new(),
+                    record: String::new(),
                 }),
                 _ => Err(InvocationRefError::Malformed(s.to_string())),
             };
@@ -146,6 +193,15 @@ impl FromStr for InvocationRef {
         if value.is_empty() {
             return Err(InvocationRefError::EmptyValue {
                 scheme: InvocationScheme::of(scheme),
+            });
+        }
+        if InvocationScheme::of(scheme) == Some(InvocationScheme::Pr) {
+            let pull_request = PullRequestRef::parse(value)
+                .ok_or_else(|| InvocationRefError::MalformedPullRequest(value.to_string()))?;
+            return Ok(InvocationRef {
+                scheme: InvocationScheme::Pr,
+                value: value.to_string(),
+                record: pull_request.record_key(),
             });
         }
         if let Some(character) = value.chars().find(|c| !InvocationRef::admits(*c)) {
@@ -159,6 +215,7 @@ impl FromStr for InvocationRef {
         Ok(InvocationRef {
             scheme,
             value: value.to_string(),
+            record: value.to_string(),
         })
     }
 }
@@ -178,6 +235,21 @@ impl InvocationRef {
         &self.value
     }
 
+    pub fn record_key(&self) -> &str {
+        &self.record
+    }
+
+    pub fn pull_request(&self) -> Option<PullRequestRef> {
+        match self.scheme {
+            InvocationScheme::Pr => PullRequestRef::parse(&self.value),
+            InvocationScheme::Beans
+            | InvocationScheme::Jira
+            | InvocationScheme::Scheduled
+            | InvocationScheme::Scanner
+            | InvocationScheme::Cve => None,
+        }
+    }
+
     pub fn as_str(&self) -> String {
         if self.value.is_empty() {
             self.scheme.as_str().to_string()
@@ -190,7 +262,7 @@ impl InvocationRef {
         if self.value.is_empty() {
             self.scheme.as_str().to_string()
         } else {
-            format!("{}-{}", self.scheme.as_str(), self.value)
+            format!("{}-{}", self.scheme.as_str(), self.record)
         }
     }
 }
@@ -213,6 +285,7 @@ mod tests {
             ("scheduled:nightly", InvocationScheme::Scheduled),
             ("scanner:cve-2026-1", InvocationScheme::Scanner),
             ("cve", InvocationScheme::Cve),
+            ("pr:acme/icecube#7", InvocationScheme::Pr),
         ];
         for (text, expected) in examples {
             let parsed: InvocationRef = text.parse().unwrap();
@@ -266,6 +339,10 @@ mod tests {
                     value: "../../../pwned".to_string(),
                     character: '.',
                 },
+            ),
+            (
+                "pr:acme/icecube",
+                InvocationRefError::MalformedPullRequest("acme/icecube".to_string()),
             ),
         ];
         let mut reached = std::collections::HashSet::new();
@@ -422,9 +499,13 @@ mod tests {
             .parse::<InvocationRef>()
             .expect_err("an unknown scheme is refused")
             .to_string();
+        let offered: Vec<&str> = rendered
+            .split_once("expected one of ")
+            .map(|(_, listed)| listed.split(", ").collect())
+            .unwrap_or_default();
         for scheme in InvocationScheme::ALL {
             assert!(
-                rendered.contains(scheme.as_str()),
+                offered.contains(&scheme.as_str()),
                 "`{scheme}` is a scheme a caller may write and must be offered, got {rendered}"
             );
         }
@@ -434,11 +515,14 @@ mod tests {
     fn every_scheme_is_advised_by_exactly_one_half_of_the_set() {
         let naming = InvocationScheme::listed_naming_work();
         let alone = InvocationScheme::listed_standing_alone();
+        let names =
+            |listed: &str| -> Vec<String> { listed.split(", ").map(str::to_string).collect() };
         for scheme in InvocationScheme::ALL {
+            let name = scheme.as_str().to_string();
             assert_eq!(
                 (
-                    naming.contains(scheme.as_str()),
-                    alone.contains(scheme.as_str())
+                    names(&naming).contains(&name),
+                    names(&alone).contains(&name)
                 ),
                 (!scheme.stands_alone(), scheme.stands_alone()),
                 "`{scheme}` belongs to whichever half `stands_alone` puts it in and to \
@@ -450,6 +534,168 @@ mod tests {
             "each half is read as a list in a sentence, so neither may be empty: \
              naming={naming:?} alone={alone:?}"
         );
+    }
+
+    #[test]
+    fn a_pull_request_reference_names_its_repository_and_number() {
+        let parsed: InvocationRef = "pr:snowplow-incubator/snowplow-identities#275"
+            .parse()
+            .unwrap();
+        assert_eq!(parsed.scheme(), InvocationScheme::Pr);
+        assert_eq!(
+            parsed.pull_request(),
+            Some(PullRequestRef {
+                owner: "snowplow-incubator".to_string(),
+                repo: "snowplow-identities".to_string(),
+                number: 275,
+            })
+        );
+        assert_eq!(
+            parsed.slug(),
+            "pr-snowplow-incubator+snowplow-identities+275"
+        );
+        assert_eq!(
+            parsed.record_key(),
+            "snowplow-incubator+snowplow-identities+275"
+        );
+        assert_eq!(
+            parsed.as_str(),
+            "pr:snowplow-incubator/snowplow-identities#275"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_reference_that_is_not_owner_repo_number_is_refused() {
+        for value in [
+            "acme#7",
+            "acme/icecube",
+            "acme/icecube#",
+            "acme/icecube#07",
+            "acme/icecube#0",
+            "acme/ice cube#7",
+            "acme/icecube#7#8",
+            "/icecube#7",
+            "acme/#7",
+            "acme/icecube#-7",
+            "acme/ice/cube#7",
+            "acme/icecube#99999999999999999999999",
+            "a+b/c#1",
+        ] {
+            assert!(
+                matches!(
+                    format!("pr:{value}").parse::<InvocationRef>(),
+                    Err(InvocationRefError::MalformedPullRequest(_))
+                ),
+                "{value} is not <owner>/<repo>#<n>"
+            );
+        }
+    }
+
+    #[test]
+    fn each_refused_pull_request_parses_once_its_one_fault_is_corrected() {
+        for (refused, corrected) in [
+            ("acme#7", "acme/icecube#7"),
+            ("acme/icecube", "acme/icecube#7"),
+            ("acme/icecube#", "acme/icecube#7"),
+            ("acme/icecube#07", "acme/icecube#7"),
+            ("acme/icecube#0", "acme/icecube#1"),
+            ("acme/ice cube#7", "acme/ice-cube#7"),
+            ("acme/icecube#7#8", "acme/icecube#78"),
+            ("/icecube#7", "acme/icecube#7"),
+            ("acme/#7", "acme/icecube#7"),
+            ("acme/icecube#-7", "acme/icecube#7"),
+            ("acme/ice/cube#7", "acme/ice.cube#7"),
+            (
+                "acme/icecube#99999999999999999999999",
+                "acme/icecube#9999999999",
+            ),
+            ("a+b/c#1", "a-b/c#1"),
+        ] {
+            assert!(
+                matches!(
+                    format!("pr:{refused}").parse::<InvocationRef>(),
+                    Err(InvocationRefError::MalformedPullRequest(_))
+                ),
+                "{refused} is refused as a pull request"
+            );
+            assert!(
+                format!("pr:{corrected}").parse::<InvocationRef>().is_ok(),
+                "{corrected} corrects only the fault {refused} carries, so it is admitted, \
+                 and the refusal above was for that fault and not for another"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dot_is_a_name_character_and_the_other_schemes_keep_their_rule() {
+        assert!("pr:acme/ice.cube#7".parse::<InvocationRef>().is_ok());
+        assert!(matches!(
+            "jira:ISP/263".parse::<InvocationRef>(),
+            Err(InvocationRefError::IllegalValueCharacter { .. })
+        ));
+        assert_eq!(
+            "jira:ISP-263"
+                .parse::<InvocationRef>()
+                .unwrap()
+                .record_key(),
+            "ISP-263"
+        );
+    }
+
+    #[test]
+    fn only_a_pull_request_reference_answers_a_pull_request() {
+        for scheme in InvocationScheme::ALL {
+            let text = match scheme {
+                InvocationScheme::Beans => "beans:fiddle-1",
+                InvocationScheme::Jira => "jira:ICE-1",
+                InvocationScheme::Scheduled => "scheduled:nightly",
+                InvocationScheme::Scanner => "scanner:s-1",
+                InvocationScheme::Cve => "cve",
+                InvocationScheme::Pr => "pr:acme/icecube#7",
+            };
+            let parsed: InvocationRef = text.parse().unwrap();
+            assert_eq!(
+                parsed.pull_request().is_some(),
+                scheme == InvocationScheme::Pr,
+                "`{text}` answers a pull request exactly when its scheme is `pr`"
+            );
+        }
+    }
+
+    #[test]
+    fn two_pull_requests_whose_names_differ_only_where_a_dash_falls_keep_apart() {
+        let owner_holds_the_dash: InvocationRef = "pr:a-b/c#1".parse().unwrap();
+        let repo_holds_the_dash: InvocationRef = "pr:a/b-c#1".parse().unwrap();
+        assert_eq!(owner_holds_the_dash.record_key(), "a-b+c+1");
+        assert_eq!(repo_holds_the_dash.record_key(), "a+b-c+1");
+        assert_ne!(
+            owner_holds_the_dash.record_key(),
+            repo_holds_the_dash.record_key(),
+            "`-` is a name character in GitHub owners and repositories, so a key joined with \
+             it would give two pull requests one change record"
+        );
+        assert_ne!(
+            owner_holds_the_dash.slug(),
+            repo_holds_the_dash.slug(),
+            "and the slug is built from the key, so it keeps them apart too"
+        );
+    }
+
+    #[test]
+    fn a_pull_request_record_key_holds_no_path_or_number_separator() {
+        for text in [
+            "pr:acme/icecube#7",
+            "pr:a.b/c_d#12",
+            "pr:snowplow-incubator/snowplow-identities#275",
+        ] {
+            let parsed: InvocationRef = text.parse().unwrap();
+            for derived in [parsed.record_key().to_string(), parsed.slug()] {
+                assert!(
+                    !derived.contains('/') && !derived.contains('#'),
+                    "`{text}` derives `{derived}`, and a record path holds no `/` or `#`"
+                );
+            }
+        }
     }
 
     #[test]
