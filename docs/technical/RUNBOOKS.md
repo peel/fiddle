@@ -15,8 +15,8 @@ literal secret does not load.
 | `FIDDLE_GITHUB_TOKEN` | the local live forge lane | opt-in, writes to a disposable repository |
 | `FIDDLE_EFFECTS_TOKEN` | the dispatched forge lane | the same value, as a repository secret |
 | `FIDDLE_CVE_TOKEN` | the host's CVE sweep | the host repository's secret; it needs `Checks: read`, which the two above do not carry |
-| `FIDDLE_AI_APP_ID` | the target's `@fiddle-ai` trigger | the target repository's secret; the id of the `fiddle-ai` App |
-| `FIDDLE_AI_PRIVATE_KEY` | the target's `@fiddle-ai` trigger | the target repository's secret; the App's private key. The workflow mints the installation token from it and passes that as `FIDDLE_GITHUB_TOKEN` |
+| `FIDDLE_AI_APP_ID` | the target's App-mention trigger | the target repository's secret; the id of the deployment's GitHub App |
+| `FIDDLE_AI_PRIVATE_KEY` | the target's App-mention trigger | the target repository's secret; the App's private key. The workflow mints the installation token from it and passes that as `FIDDLE_GITHUB_TOKEN` |
 | `WIZ_CLIENT_ID` | the host's `setup-wiz` step | the host repository's secret; the Wiz service account the scan runs as |
 | `WIZ_CLIENT_SECRET` | the host's `setup-wiz` step | the host repository's secret; that account's secret |
 | `JIRA_USER_EMAIL` | every live Jira lane, and the toil route | opt-in; the account the read or the write is performed as |
@@ -782,9 +782,10 @@ points decides what a fresh checkout inherits: a root inside the working copy
 leaves its completions behind, and a root on an absolute path outside the
 checkout carries every one of them across.
 
-## The @fiddle-ai trigger, which works one pull request
+## The App-mention trigger, which works one pull request
 
-A person who speaks for the project mentions `@fiddle-ai` on a pull request.
+A person who speaks for the project mentions the deployment's GitHub App,
+`@<slug>`, on a pull request.
 The target repository's workflow runs `fiddle run "pr:<owner>/<repo>#<n>"` for
 that pull request. fiddle does what the mention asks, pushes onto the pull
 request's own branch when it changed something, and answers the mention. ADR 093 records the decision.
@@ -802,9 +803,13 @@ needs python3 with PyYAML, and refuses without them.
 Creating an App on an organisation needs an organisation admin. Create it under
 **Settings → Developer settings → GitHub Apps → New GitHub App**.
 
-- Name: `fiddle-ai`. The name decides the login fiddle writes as,
-  `fiddle-ai[bot]`. The handle fiddle reads, `@fiddle-ai`, is fixed in fiddle
-  as `MENTION`, so name the App `fiddle-ai` and the two agree.
+- Name: the App's name decides its slug, and the slug decides both the login
+  fiddle writes as, `<slug>[bot]`, and the handle people mention, `@<slug>`.
+  For snowplow-incubator/snowplow-identities the App is
+  `snowplow-identities-ai`, so people mention `@snowplow-identities-ai`.
+  fiddle takes its handle from `[github] account` without the `[bot]` suffix,
+  and the workflow takes it from the repository variable `FIDDLE_AI_HANDLE`.
+  With no `account`, fiddle's handle is `fiddle-ai`.
 - Webhook: off. The workflow receives the events, not the App.
 - Repository permissions, and nothing else:
 
@@ -826,7 +831,7 @@ Generate a private key and note the App id. Then read the id of the App's bot
 user, which the commit author's address needs.
 
 ```sh
-gh api 'users/fiddle-ai%5Bbot%5D' --jq .id
+gh api '/users/<slug>%5Bbot%5D' --jq .id
 ```
 
 ### 2. Install it on the repository
@@ -835,7 +840,7 @@ Install the App on the target repository alone, not on every repository of the
 organisation. The installation token the workflow mints is scoped to the
 repository the event came from in any case.
 
-### 3. The secrets
+### 3. The secrets and the handle
 
 ```sh
 host=snowplow-incubator/snowplow-identities
@@ -844,7 +849,14 @@ gh secret set FIDDLE_AI_APP_ID --repo "$host" --body "<app id>"
 gh secret set FIDDLE_AI_PRIVATE_KEY --repo "$host" < fiddle-ai.private-key.pem
 gh secret set LITELLM_API_KEY --repo "$host" < litellm.txt
 gh secret list --repo "$host"
+
+gh variable set FIDDLE_AI_HANDLE --repo "$host" --body "<slug>"
+gh variable list --repo "$host"
 ```
+
+`FIDDLE_AI_HANDLE` is a repository variable, not a secret: the job's `if`
+reads it, and an `if` cannot read a secret. The job is skipped while it is
+empty or unset.
 
 No personal token is involved. The workflow mints an installation token on
 every run with `actions/create-github-app-token` and passes it to fiddle as
@@ -865,14 +877,17 @@ Two settings belong to the App.
 repo = "snowplow-incubator/snowplow-identities"
 base = "main"
 token = { env = "FIDDLE_GITHUB_TOKEN" }
-account = "fiddle-ai[bot]"
+account = "<slug>[bot]"
 
 [github.author]
-name = "fiddle-ai[bot]"
-email = "<app-user-id>+fiddle-ai[bot]@users.noreply.github.com"
+name = "<slug>[bot]"
+email = "<bot-id>+<slug>[bot]@users.noreply.github.com"
 ```
 
-`account` is the login fiddle writes as. An App's comment carries the author
+`account` is the login fiddle writes as, and fiddle's handle is that login
+without its `[bot]` suffix, in the case written; matching a mention ignores
+ASCII case. Set `account` to the same slug as `FIDDLE_AI_HANDLE`, or the
+workflow starts runs that fiddle reads no mention in. An App's comment carries the author
 association `NONE`, so without `account` fiddle trusts no answer it wrote and
 answers every mention again on every run. With it, a marker in that login's
 comment is trusted, and that login's comments never steer.
@@ -897,8 +912,8 @@ fails on its first run and says so.
 
 | what the template holds | why |
 | --- | --- |
-| `issue_comment` on a pull request, `pull_request_review` | the two places fiddle reads a mention of `@fiddle-ai`: the conversation and a review's body |
-| `if`: the text mentions `@fiddle-ai`, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
+| `issue_comment` on a pull request, `pull_request_review` | the two places fiddle reads a mention of its handle: the conversation and a review's body |
+| `if`: `FIDDLE_AI_HANDLE` is set, the text mentions `@` followed by it, the author is `OWNER`, `MEMBER` or `COLLABORATOR`, the sender is not a `Bot` | a run starts only for someone who speaks for the project |
 | `concurrency` on the job, one group per pull request, `cancel-in-progress: false` | one run at a time on one branch, and a later run never cancels a running one between its push and its answer. The group is on the job, so only a run that passed the `if` queues. A comment or review that mentions nobody, and fiddle's own answer, are skipped before they queue, so none of them replaces a mention that waits |
 | checkout with `ref: ${{ github.event.repository.default_branch }}` and `persist-credentials: false` | without `ref`, a review event checks out the pull request's merge ref, so the pull request would supply the deployment document, the workflow documents and the prompts, and a pull request that conflicts with its base has no merge ref to check out. With it, every event reads them from the default branch. The workspace's checks, which run the pull request's code, cannot read a persisted token |
 
