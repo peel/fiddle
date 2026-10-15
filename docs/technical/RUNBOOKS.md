@@ -1036,10 +1036,13 @@ the repository. ADR 094 records the decision.
   link by its own path and never prints where the link points. A link whose
   target holds a line break, a backtick or another control character counts as
   a link to no file, and fiddle reads every target as a plain path, never as git
-  pathspec magic. Change the file
-  on the base, then run again. A rules file git cannot read is different: the
-  run ends retryable, exit 11, and the message names the file and the commit. A `jira:` run asks the ambiguity review before
-  the workflow starts, so that one model call can come first.
+  pathspec magic. Change the file on the base, then run again. A link whose
+  own blob, or whose target's blob, git cannot read is a link to no file, so
+  that run also ends `Failed`, exit 20. A git failure is different when fiddle
+  lists `CLAUDE.md` or `AGENTS.md`, or sizes or reads one that is not a link:
+  the run ends retryable, exit 11, and the message names the file and the
+  commit. A `jira:` run asks the ambiguity review before the workflow starts,
+  so that one model call can come first.
 - **The evaluator.** Its prompt tells it to reject a change that breaks a quoted
   rule, with a finding that names the rule, and to reject a report that
   misstates the change. The evaluate step quotes the agent's own report.
