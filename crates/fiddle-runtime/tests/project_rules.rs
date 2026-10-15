@@ -497,3 +497,33 @@ fn a_replace_ref_does_not_change_the_rules_a_commit_holds() {
         "fiddle reads the object the commit names, and no replace ref"
     );
 }
+
+#[test]
+fn a_rules_file_git_cannot_read_is_retried_and_its_message_holds_no_object_or_git_text() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let repo = fixture::trivial_repo(dir.path());
+    std::fs::write(repo.join("CLAUDE.md"), RULES).unwrap();
+    let base = committed(&repo, "rules whose blob will be lost");
+    let object = fixture::git_says(&repo, &["rev-parse", "HEAD:CLAUDE.md"]);
+    let workspace = cut(&repo, &dir.path().join("ws"), 1);
+    without_the_object(&repo, &object);
+
+    let error = match ProjectRules::at(&workspace, workspace.cut_from()) {
+        Err(error) => CapabilityError::from(error),
+        Ok(rules) => panic!("the blob is gone, and the read quoted {rules:?}"),
+    };
+    let told = error.to_string();
+
+    assert_eq!(error.recurrence(), Recurrence::Correctable, "{error:?}");
+    assert!(
+        told.contains("`CLAUDE.md`") && told.contains(&base),
+        "the message names the file and the revision: {told}"
+    );
+    assert!(
+        !told.contains(&object)
+            && !told.contains("cat-file")
+            && !told.contains("fatal")
+            && !told.contains(&dir.path().display().to_string()),
+        "and holds no object, no git text and no path on this machine: {told}"
+    );
+}

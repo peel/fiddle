@@ -52,13 +52,23 @@ fn said(why: &Unquotable) -> String {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error(
+    "`{name}` at commit `{revision}` could not be read from the repository, so the run stops \
+     before any agent step. Run it again"
+)]
+pub struct UnreadRules {
+    pub name: &'static str,
+    pub revision: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RulesError {
     #[error(transparent)]
     Unquotable(#[from] UnquotableRules),
 
     #[error(transparent)]
-    Unread(#[from] WorkspaceError),
+    Unread(#[from] UnreadRules),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -146,9 +156,12 @@ fn read(
             }
         }
     };
-    let followed = |read: WorkspaceError| match through {
+    let followed = |_: WorkspaceError| match through {
         Some(_) => RulesError::from(refused(Unquotable::LinkToNoFile)),
-        None => RulesError::from(read),
+        None => RulesError::from(UnreadRules {
+            name,
+            revision: revision.to_string(),
+        }),
     };
     let bytes = workspace.committed_size(&committed).map_err(followed)?;
     if bytes > RULES_CAP_BYTES {
@@ -167,7 +180,13 @@ impl ProjectRules {
     pub fn at(workspace: &Workspace, revision: &str) -> Result<Self, RulesError> {
         let mut files = Vec::new();
         for name in RULE_FILES {
-            if let Some(committed) = workspace.committed_file(revision, name)? {
+            let listed = workspace
+                .committed_file(revision, name)
+                .map_err(|_| UnreadRules {
+                    name,
+                    revision: revision.to_string(),
+                })?;
+            if let Some(committed) = listed {
                 files.push(read(workspace, revision, name, committed)?);
             }
         }

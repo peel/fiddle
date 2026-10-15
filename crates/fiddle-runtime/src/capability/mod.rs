@@ -252,6 +252,9 @@ pub enum CapabilityError {
 
     #[error("the project's rules for agents cannot be quoted whole: {0}")]
     UnquotableRules(#[from] crate::agent::UnquotableRules),
+
+    #[error("the project's rules for agents were not read: {0}")]
+    RulesUnread(#[from] crate::agent::UnreadRules),
 }
 
 impl From<crate::agent::RulesError> for CapabilityError {
@@ -260,7 +263,7 @@ impl From<crate::agent::RulesError> for CapabilityError {
             crate::agent::RulesError::Unquotable(refused) => {
                 CapabilityError::UnquotableRules(refused)
             }
-            crate::agent::RulesError::Unread(unread) => CapabilityError::Workspace(unread),
+            crate::agent::RulesError::Unread(unread) => CapabilityError::RulesUnread(unread),
         }
     }
 }
@@ -273,7 +276,8 @@ impl CapabilityError {
             | CapabilityError::CheckFailed { .. }
             | CapabilityError::Workspace(_)
             | CapabilityError::NothingProposed
-            | CapabilityError::Agent(_) => Recurrence::Correctable,
+            | CapabilityError::Agent(_)
+            | CapabilityError::RulesUnread(_) => Recurrence::Correctable,
 
             CapabilityError::NotAuthorised { .. }
             | CapabilityError::Unsteerable { .. }

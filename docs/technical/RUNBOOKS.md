@@ -1015,7 +1015,7 @@ the repository. ADR 094 records the decision.
 
 - **Where they come from.** From a commit, never from the working tree. A `pr:`
   run fetches the base branch the pull request names and reads `origin/<base>`.
-  A base that cannot be fetched fails the run. A `jira:` run reads the commit
+  A base that cannot be fetched stops the run as retryable, exit 11. A `jira:` run reads the commit
   the workspace was cut from, which is the HEAD of `[workspace] fixture`. fiddle
   builds the run's branch on that commit, so keep that clone on `[github] base`.
   A change on the run's branch, or a change the agent makes in the workspace,
@@ -1037,13 +1037,17 @@ the repository. ADR 094 records the decision.
   target holds a line break, a backtick or another control character counts as
   a link to no file, and fiddle reads every target as a plain path, never as git
   pathspec magic. Change the file
-  on the base, then run again. A `jira:` run asks the ambiguity review before
+  on the base, then run again. A rules file git cannot read is different: the
+  run ends retryable, exit 11, and the message names the file and the commit. A `jira:` run asks the ambiguity review before
   the workflow starts, so that one model call can come first.
-- **The evaluator.** It rejects a change that breaks a quoted rule, and the
-  finding names the rule. It also reads the agent's own report, and rejects a
-  report that misstates the change.
-- **To see what a run quoted**, read the files at the commit the brief names:
-  `git show <commit>:CLAUDE.md`. That commit holds the whole text the run
+- **The evaluator.** Its prompt tells it to reject a change that breaks a quoted
+  rule, with a finding that names the rule, and to reject a report that
+  misstates the change. The evaluate step quotes the agent's own report.
+- **To see what a run quoted**, read the files at the commit the brief names.
+  Each label names the file it quoted: `git show <commit>:CLAUDE.md` for a
+  plain file. For a link the label reads `` `AGENTS.md`, A LINK TO `<path>` ``,
+  and `git show <commit>:<path>` shows the quoted text; `git show` of the link
+  itself prints only where it points. That commit holds the whole text the run
   quoted. The transcript in the next section records the brief too, but it cuts
   each field over 16384 characters in the middle, and a brief with both rules
   files can be longer than that.
