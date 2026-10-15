@@ -1,7 +1,8 @@
 # 022 — An absent `--capability` resolves through the scheme
 
-Status: accepted
-Cites: Selection::resolve, Selection::default_for, Selection::Toil, ToilOverAPullRequest, crates/fiddle-acceptance/tests/pull_request.rs::toil_over_a_pull_request_is_refused_and_checks_over_one_runs, selected_workflow, SelectedWorkflow, build_capability, InvocationScheme, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_reference_that_is_not_cve_still_selects_the_deterministic_capability, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_run_over_a_trackerless_reference_is_not_a_failed_run
+Status: accepted; amended 2026-10-08 so `pr` selects `pull_request`; amended 2026-10-15 so only `pull_request` runs over `pr`
+Cites: Selection::resolve, Selection::default_for, Selection::Toil, Selection::Checks, CapabilityOverAPullRequest, only_pull_request_works_a_pull_request, crates/fiddle-acceptance/tests/pull_request.rs::every_capability_but_pull_request_is_refused_over_a_pull_request_before_any_request, crates/fiddle-acceptance/tests/pull_request.rs::checks_over_a_pull_request_a_member_asked_to_change_is_refused_and_pushes_nothing, workflows/checks.toml, selected_workflow, SelectedWorkflow, build_capability, InvocationScheme, crates/fiddle-acceptance/tests/capability_selection.rs, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_reference_that_is_not_cve_still_selects_the_deterministic_capability, crates/fiddle-acceptance/tests/cve_mitigation.rs::a_run_over_a_trackerless_reference_is_not_a_failed_run
+Retired: ToilOverAPullRequest, toil_over_a_pull_request_is_refused_and_checks_over_one_runs
 
 It replaces an invariant nobody had written down: absent means `stub_mark`. Two call sites in `fiddle-cli` implemented it, and every capability ADR since M0 assumed it.
 
@@ -142,3 +143,32 @@ the link. The refusal says so and names `--capability pull_request` and
 `crates/fiddle-acceptance/tests/pull_request.rs::toil_over_a_pull_request_is_refused_and_checks_over_one_runs`
 holds the row. Every other value of `--capability` stays an override for every
 scheme.
+
+## Amended 2026-10-15: only `pull_request` runs over `pr`
+
+The amendment of 2026-10-08 kept `--capability checks` over a `pr` reference
+allowed and named it in the refusal's remedy. That path pushes and then fails.
+`workflows/checks.toml` ends with `ensure_branch_published` and then
+`ensure_pull_request`. Over a `pr` reference the run sets no pull request body,
+so `ensure_pull_request` cannot apply. The run pushes its commit onto the pull
+request's branch, stops, and does not answer the mention.
+`checks_over_a_pull_request_a_member_asked_to_change_is_refused_and_pushes_nothing`
+measured this on the build before this amendment: exit 20, the branch head
+moved, and no answer was posted. The lane it replaced,
+`toil_over_a_pull_request_is_refused_and_checks_over_one_runs`, asked nothing,
+so its `checks` run never reached that step.
+
+Over a `pr` reference only `pull_request` runs. `workflows/pull_request.toml`
+already reads the pull request's failing checks and answers the mention.
+`only_pull_request_works_a_pull_request` refuses every other capability over a
+`pr` reference with `CapabilityOverAPullRequest`, exit 2, in `run` and in
+`inspect`, before the configuration, any port or the forge is reached. It
+replaces `ToilOverAPullRequest`. The refusal names the capability, says why it
+does not work a pull request, and names `--capability pull_request` as the
+remedy. It no longer names `--capability checks`.
+
+`checks` over a `jira` reference is unchanged (ADR 090).
+`crates/fiddle-acceptance/tests/pull_request.rs::every_capability_but_pull_request_is_refused_over_a_pull_request_before_any_request`
+reads the ids off the binary, requires each one but `pull_request` to be
+refused with no forge or tracker request, and requires `pull_request` over the
+same reference to run and read the pull request.

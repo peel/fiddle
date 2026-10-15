@@ -1002,23 +1002,28 @@ fn a_reference_and_a_head_repository_spelled_in_another_case_are_the_served_repo
 }
 
 #[test]
-fn toil_over_a_pull_request_is_refused_and_checks_over_one_runs() {
-    let world = PullRequestWorld::serving(vec![]);
+fn checks_over_a_pull_request_a_member_asked_to_change_is_refused_and_pushes_nothing() {
+    let world = PullRequestWorld::serving(a_change_named("Rename the helper the mention names"));
+    world.github().a_member_commented(8_001, THE_MENTION);
 
-    let run = world.run_capability(REFERENCE, "toil");
+    let run = world.run_capability(REFERENCE, "checks");
     let stderr = stderr_of(&run);
 
     assert_eq!(
-        run.status.code(),
-        Some(AN_INVALID_INPUT_EXIT),
-        "toil has no ticket to work on a pr: reference: {stderr}"
-    );
-    assert!(
-        stderr.contains("tracker ticket")
-            && stderr.contains("names a pull request")
-            && stderr.contains("--capability pull_request")
-            && stderr.contains("--capability checks"),
-        "the refusal says why and names the capabilities that work a pull request: {stderr}"
+        (
+            run.status.code(),
+            world.github().head_of(HEAD_REF),
+            world.github().branches(),
+            world.github().replies().len(),
+        ),
+        (
+            Some(AN_INVALID_INPUT_EXIT),
+            world.opened_at.clone(),
+            vec![HEAD_REF.to_string(), BASE.to_string()],
+            0,
+        ),
+        "checks over a pr: reference is refused as invalid input, so the head stays where the \
+         pull request opened, no fiddle branch is pushed and nothing is answered: {stderr}"
     );
     assert_eq!(
         world.github().requests_naming("/repos/"),
@@ -1026,16 +1031,93 @@ fn toil_over_a_pull_request_is_refused_and_checks_over_one_runs() {
         "the refusal comes before any forge request"
     );
     assert!(
+        world.model_prompts().is_empty(),
+        "and before any model is asked: {:?}",
+        world.model_prompts()
+    );
+    assert!(
+        stderr.contains("`checks`")
+            && stderr.contains("--capability pull_request")
+            && !stderr.contains("--capability checks"),
+        "the refusal names the capability it refused and points at `pull_request`, and at \
+         no other: {stderr}"
+    );
+}
+
+fn capabilities_the_binary_names(world: &PullRequestWorld) -> Vec<String> {
+    let run = world.run_capability(REFERENCE, "not-a-capability");
+    let stderr = String::from_utf8_lossy(&run.stderr).to_string();
+    let (_, listed) = stderr
+        .split_once("can execute:")
+        .unwrap_or_else(|| panic!("an unknown id is refused with the list it knows: {stderr}"));
+    let ids: Vec<String> = listed
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|token| {
+            !token.is_empty()
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
+        .map(str::to_string)
+        .collect();
+    assert!(
+        ids.contains(&"pull_request".to_string()) && ids.contains(&"toil".to_string()),
+        "the list was read off the binary's own refusal: {ids:?} from {stderr}"
+    );
+    ids
+}
+
+#[test]
+fn every_capability_but_pull_request_is_refused_over_a_pull_request_before_any_request() {
+    let world = PullRequestWorld::serving(vec![]);
+    let capabilities = capabilities_the_binary_names(&world);
+    let refused: Vec<&String> = capabilities
+        .iter()
+        .filter(|id| id.as_str() != "pull_request")
+        .collect();
+    assert_eq!(
+        refused.len() + 1,
+        capabilities.len(),
+        "`pull_request` is one of the ids the binary names: {capabilities:?}"
+    );
+
+    for capability in &refused {
+        let run = world.run_capability(REFERENCE, capability);
+        let stderr = stderr_of(&run);
+        assert_eq!(
+            run.status.code(),
+            Some(AN_INVALID_INPUT_EXIT),
+            "`{capability}` over a pr: reference is refused as invalid input: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("`{capability}`"))
+                && stderr.contains("names a pull request")
+                && stderr.contains("--capability pull_request"),
+            "the refusal names `{capability}` and points at `pull_request`: {stderr}"
+        );
+    }
+    assert_eq!(
+        world.github().requests_naming("/repos/"),
+        0,
+        "no refusal reached the forge"
+    );
+    assert!(
         world.jira_requests().is_empty(),
-        "and before any tracker request: {:?}",
+        "or the tracker: {:?}",
         world.jira_requests()
     );
 
-    let run = world.run_capability(REFERENCE, "checks");
+    let toil = stderr_of(&world.run_capability(REFERENCE, "toil"));
+    assert!(
+        toil.contains("works a tracker ticket"),
+        "toil's refusal still says why it has nothing to work: {toil}"
+    );
+
+    let run = world.run_capability(REFERENCE, "pull_request");
     assert_eq!(
         run.status.code(),
         Some(0),
-        "checks over the same reference runs, and with nothing asked it completes: {}",
+        "`pull_request` over the same reference runs, and with nothing asked it completes: {}",
         stderr_of(&run)
     );
     assert!(
@@ -1043,7 +1125,7 @@ fn toil_over_a_pull_request_is_refused_and_checks_over_one_runs() {
             .github()
             .requests_naming("/repos/acme/icecube/pulls/7")
             > 0,
-        "checks over a pr: reference reads the pull request"
+        "and reads the pull request, so the refusals above are not a world that reads nothing"
     );
 }
 
@@ -1452,36 +1534,39 @@ fn a_bot_review_a_mention_names_is_quoted_and_never_read_as_work_to_do() {
 }
 
 #[test]
-fn inspect_refuses_toil_over_a_pull_request_as_run_does() {
+fn inspect_refuses_toil_and_checks_over_a_pull_request_as_run_does() {
     let world = PullRequestWorld::serving(vec![]);
 
-    let inspected = world.inspect_with(REFERENCE, &["--capability", "toil"]);
-    let run = world.run_capability(REFERENCE, "toil");
+    for (capability, why) in [
+        ("toil", "works a tracker ticket"),
+        ("checks", "opens a pull request of its own"),
+    ] {
+        let inspected = world.inspect_with(REFERENCE, &["--capability", capability]);
+        let run = world.run_capability(REFERENCE, capability);
 
-    assert_eq!(
-        inspected.status.code(),
-        Some(AN_INVALID_INPUT_EXIT),
-        "inspect selects as run does, so it refuses toil over a pull request: {}",
-        stderr_of(&inspected)
-    );
-    assert_eq!(
-        stderr_of(&inspected),
-        stderr_of(&run),
-        "and it refuses in the same words as run"
-    );
-    assert!(
-        stderr_of(&inspected).contains("works a tracker ticket"),
-        "which name the refusal: {}",
-        stderr_of(&inspected)
-    );
-
-    for allowed in ["pull_request", "checks"] {
-        let inspected = world.inspect_with(REFERENCE, &["--capability", allowed]);
         assert_eq!(
             inspected.status.code(),
-            Some(0),
-            "inspect previews `{allowed}` over a pull request: {}",
+            Some(AN_INVALID_INPUT_EXIT),
+            "inspect selects as run does, so it refuses `{capability}` over a pull request: {}",
+            stderr_of(&inspected)
+        );
+        assert_eq!(
+            stderr_of(&inspected),
+            stderr_of(&run),
+            "and it refuses `{capability}` in the same words as run"
+        );
+        assert!(
+            stderr_of(&inspected).contains(why),
+            "which name the refusal: {}",
             stderr_of(&inspected)
         );
     }
+
+    let inspected = world.inspect_with(REFERENCE, &["--capability", "pull_request"]);
+    assert_eq!(
+        inspected.status.code(),
+        Some(0),
+        "inspect previews `pull_request` over a pull request: {}",
+        stderr_of(&inspected)
+    );
 }

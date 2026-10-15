@@ -137,7 +137,7 @@ enum CliError {
 
     #[error(transparent)]
     #[diagnostic(transparent)]
-    ToilOverAPullRequest(#[from] ToilOverAPullRequest),
+    CapabilityOverAPullRequest(#[from] CapabilityOverAPullRequest),
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
@@ -604,7 +604,7 @@ fn exit_code_for(termination: &Termination) -> u8 {
             | CliError::Ineligible(_)
             | CliError::ForeignPullRequest(_)
             | CliError::PullRequestRefused(_)
-            | CliError::ToilOverAPullRequest(_),
+            | CliError::CapabilityOverAPullRequest(_),
         ) => EXIT_INVALID_INPUT,
     }
 }
@@ -825,31 +825,46 @@ struct PullRequestUnread {
 }
 
 #[derive(Debug, thiserror::Error, miette::Diagnostic)]
-#[error(
-    "`toil` works a tracker ticket, and `{reference}` names a pull request, so there is no \
-     ticket for it to work"
-)]
+#[error("`{reference}` names a pull request, and `{capability}` {reason}; nothing was run")]
 #[diagnostic(
-    code(fiddle::capability::toil_over_a_pull_request),
+    code(fiddle::capability::over_a_pull_request),
     help(
         "run `{reference}` with `--capability pull_request`, which is what it selects with \
-         no flag, or with `--capability checks`"
+         no flag; `pull_request` reads the pull request's failing checks, pushes onto its own \
+         branch and answers the mention"
     )
 )]
-struct ToilOverAPullRequest {
+struct CapabilityOverAPullRequest {
+    capability: CapabilityId,
+    reason: &'static str,
     reference: String,
 }
 
-fn toil_works_no_pull_request(
+fn only_pull_request_works_a_pull_request(
     selection: Selection,
     reference: &InvocationRef,
-) -> Result<(), ToilOverAPullRequest> {
-    match (selection, reference.scheme()) {
-        (Selection::Toil, InvocationScheme::Pr) => Err(ToilOverAPullRequest {
-            reference: reference.as_str().to_string(),
-        }),
-        _ => Ok(()),
+) -> Result<(), CapabilityOverAPullRequest> {
+    if reference.scheme() != InvocationScheme::Pr {
+        return Ok(());
     }
+    let reason = match selection {
+        Selection::PullRequest => return Ok(()),
+        Selection::Toil => "works a tracker ticket, and there is no ticket for it to work",
+        Selection::Checks => {
+            "opens a pull request of its own after it pushes, so it would push and then stop \
+             without an answer to the mention"
+        }
+        Selection::Mark
+        | Selection::Repair
+        | Selection::Publish
+        | Selection::Propose
+        | Selection::Mitigate => "does not read a pull request",
+    };
+    Err(CapabilityOverAPullRequest {
+        capability: selection.id(),
+        reason,
+        reference: reference.as_str().to_string(),
+    })
 }
 
 fn served_pull_request(
@@ -1884,7 +1899,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
-            toil_works_no_pull_request(selection, &reference)?;
+            only_pull_request_works_a_pull_request(selection, &reference)?;
             let config = config::load(&cli.config)?;
             let cancel = CancellationToken::new();
             cancel_on_interrupt(&cancel);
@@ -1929,7 +1944,7 @@ async fn dispatch(cli: &cli::Cli) -> Result<RunOutcome, CliError> {
         } => {
             let reference = reference_from(invocation_ref)?;
             let selection = Selection::resolve(capability.as_deref(), &reference)?;
-            toil_works_no_pull_request(selection, &reference)?;
+            only_pull_request_works_a_pull_request(selection, &reference)?;
             let config = config::load(&cli.config)?;
             let named = served_pull_request(&config, &cli.config, selection, &reference)?;
             let document = selected_workflow(selection, &cli.config)?;
@@ -2284,24 +2299,36 @@ mod tests {
     }
 
     #[test]
-    fn toil_is_refused_over_a_pull_request_and_checks_and_pull_request_are_not() {
+    fn every_capability_but_pull_request_is_refused_over_a_pull_request() {
         let pr: InvocationRef = "pr:acme/icecube#7".parse().unwrap();
         let jira: InvocationRef = "jira:IDENT-1".parse().unwrap();
-        let refused = toil_works_no_pull_request(Selection::Toil, &pr)
-            .expect_err("toil over a pull request has no ticket to work");
-        assert_eq!(
-            exit_code_for(&Termination::Rejected(refused.into())),
-            EXIT_INVALID_INPUT
-        );
-        for selection in [Selection::Checks, Selection::PullRequest] {
+        let mut refused = Vec::new();
+        for registered in CAPABILITIES {
+            let selection = Selection::parse(registered.0).unwrap();
+            match only_pull_request_works_a_pull_request(selection, &pr) {
+                Ok(()) => assert_eq!(
+                    selection,
+                    Selection::PullRequest,
+                    "only `pull_request` works a pull request, and `{registered}` was let through"
+                ),
+                Err(refusal) => {
+                    assert_eq!(refusal.capability, registered);
+                    assert_eq!(
+                        exit_code_for(&Termination::Rejected(refusal.into())),
+                        EXIT_INVALID_INPUT
+                    );
+                    refused.push(registered);
+                }
+            }
             assert!(
-                toil_works_no_pull_request(selection, &pr).is_ok(),
-                "{selection:?} works a pull request"
+                only_pull_request_works_a_pull_request(selection, &jira).is_ok(),
+                "`{registered}` over a reference that names no pull request is not this refusal"
             );
         }
-        assert!(
-            toil_works_no_pull_request(Selection::Toil, &jira).is_ok(),
-            "and toil still works a ticket"
+        assert_eq!(
+            refused.len(),
+            CAPABILITIES.len() - 1,
+            "every registered capability but `pull_request` is refused: {refused:?}"
         );
     }
 

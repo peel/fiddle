@@ -934,8 +934,11 @@ only the mentions fiddle's own rule admits. It cannot widen who steers.
 | no unanswered mention | completed with nothing to do, and no agent paid for | 0 |
 | its branch moved during the run | the push is refused and not forced; the next mention starts again | non-zero |
 
-`--capability toil` over a `pr:` reference is refused, because toil works a
-ticket and a pull request names none. `--capability checks` runs.
+Over a `pr:` reference only `pull_request` runs, and it is what the reference
+selects with no flag. Every other `--capability` exits 2 before any request and
+names `--capability pull_request` as the remedy. Do not run `--capability checks`
+over a `pr:` reference: `pull_request` already reads the failing checks and
+answers the mention (ADR 093).
 
 ### Run a mention again
 

@@ -60,8 +60,9 @@ pub enum Command {
             long,
             value_name = "CAPABILITY_ID",
             help = "Report the plan for one capability id rather than for the one the reference's \
-                    scheme implies. The same ids and the same default as `run --capability`; an \
-                    unknown id is a usage error."
+                    scheme implies. The same ids, the same default and the same refusals as \
+                    `run --capability`, so over a `pr` reference only `pull_request` is \
+                    reported; an unknown id is a usage error."
         )]
         capability: Option<String>,
 
@@ -111,8 +112,9 @@ pub enum Command {
                     `cve` -> `cve_mitigate`, `pr` -> `pull_request`. So a `jira` reference with no flag does not mark: \
                     it qualifies the ticket against the toil gate and, if the gate admits it, \
                     runs a model-driven agent that commits, pushes, opens a pull request, links \
-                    it onto the ticket and sets the ticket to In Review. An unknown id is a \
-                    usage error, never a silent no-op."
+                    it onto the ticket and sets the ticket to In Review. A `pr` reference runs \
+                    only `pull_request`, and any other id over it exits 2 before any request. An \
+                    unknown id is a usage error, never a silent no-op."
         )]
         capability: Option<String>,
 

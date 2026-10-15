@@ -49,10 +49,10 @@ Paths are relative to the repository root. A skill path omits `/SKILL.md`.
 Eight capabilities are registered: `stub_mark`, `fixture_repair`, `publish_change`, `propose_change`, `cve_mitigate`, `toil`, `checks` and `pull_request`. Each names its own progress stage, so a bundle is labelled in the vocabulary of whatever ran. `crates/fiddle-acceptance/tests/capability_selection.rs` reads the list `--capability` validates against out of the binary's own diagnostic, and requires this line to name every id and to state their number.
 
 `inspect` and `run` share one selection flag and one default, so the read-only
-command cannot name a capability the executing one would refuse. Both refuse
-`--capability toil` over a `pr` reference with `ToilOverAPullRequest`, exit 2, before
-any port or the forge, because toil works a tracker ticket and a `pr` reference names
-none (ADR 022). `inspect` takes the
+command cannot name a capability the executing one would refuse. Over a `pr`
+reference both run only `pull_request`. Both refuse every other `--capability` there
+with `CapabilityOverAPullRequest`, exit 2, before any port or the forge (ADR 022,
+ADR 093). `inspect` takes the
 id as far as the derivation and builds nothing from it. It also reports what a run
 would refuse before it started, in `would_refuse`, for the refusals a read can derive
 without resolving anything: a `jira` reference whose ticket fails one of the toil
