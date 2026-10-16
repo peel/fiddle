@@ -215,6 +215,8 @@ pub struct RepairReport {
     /// Then change nothing, and write here the one question a person has to
     /// answer. Making the other change instead is not an answer to a ticket
     /// you cannot read, and this field does not excuse one you made.
+    /// Use it too when an acceptance criterion names a test you cannot write in this project.
+    /// Then change nothing, and name that criterion here.
     #[serde(default)]
     pub stopped_by_this_question: Option<String>,
 

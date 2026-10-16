@@ -5333,26 +5333,41 @@ fn the_projects_rules_for_agents_reach_the_toil_agent_and_its_evaluation_from_th
 
 const THE_AGENT_READS_THE_RULES_FIRST: [&str; 2] = [
     "Read the project's rules for agents, when this run quotes them, before you change anything.",
-    "They bind every line you write.",
+    "Every line you write must obey them.",
 ];
 
 const THE_AGENT_MEETS_EACH_CRITERION: [&str; 3] = [
     "When the ticket states acceptance criteria, meet each one.",
     "Where a criterion names a test that is not in the project, write the test.",
-    "A test an acceptance criterion asks for is asked for.",
+    "That test is part of what the ticket asked for.",
 ];
 
-const THE_JUDGE_COUNTS_AN_UNASKED_COMMENT: [&str; 1] = [
+const THE_AGENT_STOPS_WHERE_IT_CANNOT_WRITE_THE_TEST: [&str; 5] = [
+    "The test checks the behaviour the criterion describes.",
+    "When you cannot write that test in this project, stop.",
+    "That is the case when the test needs infrastructure the project does not have, or when the \
+     ticket does not give enough to build it.",
+    "Leave the project as you found it, and name the criterion in `stopped_by_this_question`.",
+    "Do not write a test that checks nothing, and do not build infrastructure the ticket did not \
+     ask for.",
+];
+
+const THE_AGENT_KEEPS_A_RULE_ON_COMMENTS: [&str; 1] =
+    ["When the project's rules for agents forbid comments, add none."];
+
+const AN_UNASKED_COMMENT_IS_MORE_THAN_ASKED: [&str; 1] = [
     "A code comment the ticket did not ask for is more than the ticket asked for, and so is a \
      line added to a comment that was already there.",
 ];
 
-const THE_JUDGE_HOLDS_EACH_CRITERION: [&str; 4] = [
+const THE_JUDGE_HOLDS_EACH_CRITERION: [&str; 6] = [
     "When the ticket states acceptance criteria, every criterion holds in the project.",
     "A criterion that names a test, or says a test passes, holds only when the project holds \
-     that test.",
+     that test and the test checks the behaviour the criterion describes.",
+    "A test with the right name that checks nothing the criterion describes does not hold.",
     "A test that exists only on another branch does not count.",
     "A change that leaves a criterion unmet is a rejection, and the finding names the criterion.",
+    "When the criterion names a test, the finding names the test too.",
 ];
 
 fn one_line(text: &str) -> String {
@@ -5372,19 +5387,21 @@ fn the_agents_own() -> Vec<&'static str> {
     [
         &THE_AGENT_READS_THE_RULES_FIRST[..],
         &THE_AGENT_MEETS_EACH_CRITERION[..],
+        &THE_AGENT_STOPS_WHERE_IT_CANNOT_WRITE_THE_TEST[..],
+        &THE_AGENT_KEEPS_A_RULE_ON_COMMENTS[..],
     ]
     .concat()
 }
 
 fn the_judges_own() -> Vec<&'static str> {
-    [
-        &THE_JUDGE_COUNTS_AN_UNASKED_COMMENT[..],
-        &THE_JUDGE_HOLDS_EACH_CRITERION[..],
-    ]
-    .concat()
+    THE_JUDGE_HOLDS_EACH_CRITERION.to_vec()
 }
 
 fn the_briefs_of_a_toil_run_under_rules() -> support::rules::Briefs {
+    support::rules::by_role(&the_bodies_of_a_toil_run_under_rules())
+}
+
+fn the_bodies_of_a_toil_run_under_rules() -> Vec<String> {
     let world = ToilWorld::serving(a_change_that_also_rewrites_the_rules());
     world.keeps_rules_for_agents(&[
         ("CLAUDE.md", support::rules::CLAUDE_MD),
@@ -5393,7 +5410,8 @@ fn the_briefs_of_a_toil_run_under_rules() -> support::rules::Briefs {
     world.jira().holds_eligible_ticket(TICKET);
 
     let payload = payload_of(&world.run_toil(REFERENCE));
-    let briefs = support::rules::by_role(&world.model_prompts());
+    let bodies = world.model_prompts();
+    let briefs = support::rules::by_role(&bodies);
 
     assert_eq!(
         payload["capability_executions"][0]["status"], "completed",
@@ -5404,7 +5422,32 @@ fn the_briefs_of_a_toil_run_under_rules() -> support::rules::Briefs {
         (3, 1),
         "the agent three times and the evaluation once"
     );
-    briefs
+    bodies
+}
+
+const THE_SCHEMA_ADMITS_A_TEST_THE_AGENT_CANNOT_WRITE: &str =
+    "Use it too when an acceptance criterion names a test you cannot write in this project.";
+
+#[test]
+fn the_report_schema_lets_the_toil_agent_stop_on_a_named_test_it_cannot_write() {
+    let bodies = the_bodies_of_a_toil_run_under_rules();
+    let schemas: Vec<&String> = bodies
+        .iter()
+        .filter(|body| body.contains(THE_SCHEMA_ADMITS_A_NAMED_OPTION_IT_DOES_NOT_SPECIFY))
+        .collect();
+    assert!(
+        !schemas.is_empty(),
+        "some request of the run carries the report schema, which names the field's earlier \
+         cases"
+    );
+    for body in schemas {
+        assert!(
+            body.contains(THE_SCHEMA_ADMITS_A_TEST_THE_AGENT_CANNOT_WRITE),
+            "the report schema the agent is sent names a test it cannot write as a reason for \
+             `stopped_by_this_question`, so the field agrees with the stop path in toil.md: \
+             {body}"
+        );
+    }
 }
 
 #[test]
@@ -5415,7 +5458,8 @@ fn the_toil_agent_is_told_to_read_the_rules_first_and_to_meet_each_acceptance_cr
             missing_from(brief, &the_agents_own()),
             Vec::<&str>::new(),
             "the agent's brief tells it to read the quoted rules before it changes anything, \
-             to meet each acceptance criterion and to write a test a criterion names: {brief}"
+             to keep a rule on comments, to meet each acceptance criterion, to write a test a \
+             criterion names, and to stop where it cannot write that test: {brief}"
         );
         assert_eq!(
             missing_from(brief, &the_judges_own()),
@@ -5427,13 +5471,13 @@ fn the_toil_agent_is_told_to_read_the_rules_first_and_to_meet_each_acceptance_cr
 }
 
 #[test]
-fn the_toil_evaluation_counts_an_unasked_comment_and_rejects_an_unmet_acceptance_criterion() {
+fn the_toil_evaluation_rejects_an_unmet_acceptance_criterion_and_a_test_that_checks_nothing() {
     let briefs = the_briefs_of_a_toil_run_under_rules();
     assert_eq!(
         missing_from(&briefs.judge[0], &the_judges_own()),
         Vec::<&str>::new(),
-        "the evaluation's brief counts an unasked comment, a line added to an old one too, as \
-         more than the ticket asked, and rejects a change that leaves a criterion unmet: {}",
+        "the evaluation's brief rejects a change that leaves a criterion unmet, and a test \
+         that checks nothing the criterion describes meets no criterion: {}",
         briefs.judge[0]
     );
     assert_eq!(
@@ -5442,6 +5486,19 @@ fn the_toil_evaluation_counts_an_unasked_comment_and_rejects_an_unmet_acceptance
         "the agent's clauses are the agent's, and the evaluation's brief holds none: {}",
         briefs.judge[0]
     );
+}
+
+#[test]
+fn the_toil_agent_and_its_evaluation_count_an_unasked_comment_as_more_than_the_ticket_asked() {
+    let briefs = the_briefs_of_a_toil_run_under_rules();
+    for brief in briefs.agent.iter().chain(&briefs.judge) {
+        assert_eq!(
+            missing_from(brief, &AN_UNASKED_COMMENT_IS_MORE_THAN_ASKED),
+            Vec::<&str>::new(),
+            "the agent and the evaluation read one sentence on an unasked comment, a line added \
+             to an old one too: {brief}"
+        );
+    }
 }
 
 #[test]

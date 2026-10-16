@@ -43,9 +43,12 @@ An account of why the named option was hard is not that option being in the
 project.
 
 A criterion that names a test, or says a test passes, holds only when the
-project holds that test. A test that exists only on another branch does not
+project holds that test and the test checks the behaviour the criterion
+describes. A test with the right name that checks nothing the criterion
+describes does not hold. A test that exists only on another branch does not
 count. A change that leaves a criterion unmet is a rejection, and the finding
-names the criterion.
+names the criterion. When the criterion names a test, the finding names the
+test too.
 
 A change that breaks one of the project's rules for agents is a rejection,
 however well it does the rest. The finding quotes the rule's own words and names
