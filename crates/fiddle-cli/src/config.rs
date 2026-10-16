@@ -1009,7 +1009,7 @@ fn default_toil_trigger() -> String {
     "fiddle/toil".to_string()
 }
 
-const TOIL_WORKED_ISSUE_TYPES: [&str; 1] = ["Task"];
+const TOIL_WORKED_ISSUE_TYPES: [&str; 2] = ["Task", "Bug"];
 
 const TOIL_SHORTEST_DESCRIPTION: usize = 20;
 
@@ -3369,6 +3369,42 @@ token = { env = "JIRA_API_TOKEN" }
             "the remedy names the label the document now says, and not the one it \
              said before: {refusal:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn the_gate_works_a_task_and_a_bug_and_refuses_every_other_issue_type() {
+        let bounds = resolved(TOILING).eligibility;
+        for worked in ["Task", "Bug"] {
+            let ticket = fiddle_runtime::toil::TicketFacts {
+                issue_type: worked.to_string(),
+                ..labelled_ticket()
+            };
+            let outcome = fiddle_runtime::toil::qualify(&ticket, &bounds, &AsksForAChange).await;
+            assert!(
+                outcome.eligible().is_some(),
+                "a {worked} with the trigger label and a long enough description is a \
+                 ticket the toil agent works: {outcome:?}"
+            );
+        }
+        for unworked in ["Epic", "Story", "Sub-task", "bug"] {
+            let ticket = fiddle_runtime::toil::TicketFacts {
+                issue_type: unworked.to_string(),
+                ..labelled_ticket()
+            };
+            let outcome = fiddle_runtime::toil::qualify(&ticket, &bounds, &AsksForAChange).await;
+            let refusal = outcome.refused().unwrap_or_else(|| {
+                panic!("a {unworked} is not a type the toil agent works: {outcome:?}")
+            });
+            assert_eq!(
+                refusal.failed_rule, "the issue type is one the toil agent works",
+                "the {unworked} ticket differs from an admitted one only in its issue \
+                 type, so the gate fails on that rule and on nothing else: {refusal:?}"
+            );
+            assert_eq!(
+                refusal.remedy, "change the issue type of IDENT-7 to one of: Task, Bug",
+                "the remedy names exactly the two types the toil agent works: {refusal:?}"
+            );
+        }
     }
 
     #[test]

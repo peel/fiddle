@@ -73,7 +73,11 @@ const COMMENT_EFFECT: &str = "jira.comment_added";
 
 const ISSUE_TYPE_RULE: &str = "the issue type is one the toil agent works";
 
-const UNWORKED_ISSUE_TYPE: &str = "Bug";
+const UNWORKED_ISSUE_TYPE: &str = "Epic";
+
+const A_SECOND_WORKED_ISSUE_TYPE: &str = "Bug";
+
+const THE_WORKED_ISSUE_TYPES: &str = "one of: Task, Bug";
 
 const QUOTES_THE_TICKET_RULE: &str = "a judgement quotes the ticket text it rests on";
 
@@ -345,6 +349,15 @@ impl ToilJira {
             .as_mut()
             .expect("the ticket was just written")
             .issue_type = UNWORKED_ISSUE_TYPE.to_string();
+    }
+
+    pub fn holds_a_bug(&self, key: &str) {
+        self.holds_eligible_ticket(key);
+        self.held()
+            .ticket
+            .as_mut()
+            .expect("the ticket was just written")
+            .issue_type = A_SECOND_WORKED_ISSUE_TYPE.to_string();
     }
 
     pub fn refuses_every_comment(&self) {
@@ -3573,6 +3586,34 @@ fn inspect_reports_the_refusal_for_a_ticket_the_gate_refuses_and_previews_the_ru
 }
 
 #[test]
+fn a_bug_the_deterministic_rules_admit_previews_the_run_like_a_task() {
+    let world = ToilWorld::start();
+    world.jira().holds_a_bug(TICKET);
+
+    let out = world.inspect_toil(REFERENCE);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "inspect reads and reports the Bug: {stderr}"
+    );
+    let payload = payload_of(&out);
+    assert_eq!(
+        payload["would_refuse"],
+        serde_json::Value::Null,
+        "a Bug with the trigger label and a long enough description passes the issue \
+         type rule, so nothing says the run would refuse it: {}",
+        payload["would_refuse"]
+    );
+    assert_eq!(
+        payload["next_action"]["execute"]["capability_id"], "toil",
+        "and it previews the toil run as it does for a Task: {}",
+        payload["next_action"]
+    );
+    assert_eq!(world.model_calls(), 0, "and it reached no model: {stderr}");
+}
+
+#[test]
 fn the_command_line_and_the_ticket_comment_state_one_refusal_the_same_way() {
     let world = ToilWorld::start();
     world
@@ -3697,6 +3738,10 @@ fn a_refusal_for_a_different_rule_names_that_rule_and_not_the_first() {
         comment.contains(UNWORKED_ISSUE_TYPE),
         "and quotes the issue type it read, which is the finding the rule rests \
          on: {comment}"
+    );
+    assert!(
+        comment.contains(THE_WORKED_ISSUE_TYPES),
+        "and its remedy names exactly the two types the toil agent works: {comment}"
     );
     assert!(
         !comment.contains(TRIGGER_LABEL_RULE),

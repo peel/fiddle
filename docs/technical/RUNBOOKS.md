@@ -601,7 +601,7 @@ deterministically.
 | what | where it comes from | this deployment |
 | --- | --- | --- |
 | the trigger label | `[jira.labels] toil_trigger`, and an absent key resolves to the default | `fiddle/toil` |
-| the issue type | frozen in Rust, `TOIL_WORKED_ISSUE_TYPES` in `crates/fiddle-cli/src/config.rs` | `Task`, and nothing else |
+| the issue type | frozen in Rust, `TOIL_WORKED_ISSUE_TYPES` in `crates/fiddle-cli/src/config.rs` | `Task` and `Bug`, and nothing else |
 | the shortest description | frozen in Rust, `TOIL_SHORTEST_DESCRIPTION` in the same file | 20 characters after trimming |
 | the repository | `[github] repo`, which is both the repository the ticket is taken to name and the only one in bounds | one repository |
 
