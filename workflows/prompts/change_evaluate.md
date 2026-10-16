@@ -23,10 +23,13 @@ the project now is the change the ticket asked for.
 
 Accept the change when all of these hold:
 
-- Every part of what the ticket asked for is in the project.
+- Every part of what the ticket asked for is in the project. When the ticket
+  states acceptance criteria, every criterion holds in the project.
 - Nothing else is. A change that also renames a symbol, alters a public
   signature, reformats a file, or fixes a second fault the ticket never named is
-  more than the ticket asked for.
+  more than the ticket asked for. A code comment the ticket did not ask for is
+  more than the ticket asked for, and so is a line added to a comment that was
+  already there.
 - It breaks none of the project's rules for agents.
 
 Reject it otherwise. Reject it too when what you read does not tell you whether
@@ -38,6 +41,11 @@ holding the other option is a rejection, and it is a rejection however the
 change was explained. Judge the project against the option the ticket named.
 An account of why the named option was hard is not that option being in the
 project.
+
+A criterion that names a test, or says a test passes, holds only when the
+project holds that test. A test that exists only on another branch does not
+count. A change that leaves a criterion unmet is a rejection, and the finding
+names the criterion.
 
 A change that breaks one of the project's rules for agents is a rejection,
 however well it does the rest. The finding quotes the rule's own words and names

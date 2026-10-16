@@ -5331,6 +5331,119 @@ fn the_projects_rules_for_agents_reach_the_toil_agent_and_its_evaluation_from_th
     );
 }
 
+const THE_AGENT_READS_THE_RULES_FIRST: [&str; 2] = [
+    "Read the project's rules for agents, when this run quotes them, before you change anything.",
+    "They bind every line you write.",
+];
+
+const THE_AGENT_MEETS_EACH_CRITERION: [&str; 3] = [
+    "When the ticket states acceptance criteria, meet each one.",
+    "Where a criterion names a test that is not in the project, write the test.",
+    "A test an acceptance criterion asks for is asked for.",
+];
+
+const THE_JUDGE_COUNTS_AN_UNASKED_COMMENT: [&str; 1] = [
+    "A code comment the ticket did not ask for is more than the ticket asked for, and so is a \
+     line added to a comment that was already there.",
+];
+
+const THE_JUDGE_HOLDS_EACH_CRITERION: [&str; 4] = [
+    "When the ticket states acceptance criteria, every criterion holds in the project.",
+    "A criterion that names a test, or says a test passes, holds only when the project holds \
+     that test.",
+    "A test that exists only on another branch does not count.",
+    "A change that leaves a criterion unmet is a rejection, and the finding names the criterion.",
+];
+
+fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn missing_from(brief: &str, clauses: &[&'static str]) -> Vec<&'static str> {
+    let flattened = one_line(brief);
+    clauses
+        .iter()
+        .copied()
+        .filter(|clause| !flattened.contains(clause))
+        .collect()
+}
+
+fn the_agents_own() -> Vec<&'static str> {
+    [
+        &THE_AGENT_READS_THE_RULES_FIRST[..],
+        &THE_AGENT_MEETS_EACH_CRITERION[..],
+    ]
+    .concat()
+}
+
+fn the_judges_own() -> Vec<&'static str> {
+    [
+        &THE_JUDGE_COUNTS_AN_UNASKED_COMMENT[..],
+        &THE_JUDGE_HOLDS_EACH_CRITERION[..],
+    ]
+    .concat()
+}
+
+fn the_briefs_of_a_toil_run_under_rules() -> support::rules::Briefs {
+    let world = ToilWorld::serving(a_change_that_also_rewrites_the_rules());
+    world.keeps_rules_for_agents(&[
+        ("CLAUDE.md", support::rules::CLAUDE_MD),
+        ("AGENTS.md", support::rules::AGENTS_MD),
+    ]);
+    world.jira().holds_eligible_ticket(TICKET);
+
+    let payload = payload_of(&world.run_toil(REFERENCE));
+    let briefs = support::rules::by_role(&world.model_prompts());
+
+    assert_eq!(
+        payload["capability_executions"][0]["status"], "completed",
+        "{payload}"
+    );
+    assert_eq!(
+        (briefs.agent.len(), briefs.judge.len()),
+        (3, 1),
+        "the agent three times and the evaluation once"
+    );
+    briefs
+}
+
+#[test]
+fn the_toil_agent_is_told_to_read_the_rules_first_and_to_meet_each_acceptance_criterion() {
+    let briefs = the_briefs_of_a_toil_run_under_rules();
+    for brief in &briefs.agent {
+        assert_eq!(
+            missing_from(brief, &the_agents_own()),
+            Vec::<&str>::new(),
+            "the agent's brief tells it to read the quoted rules before it changes anything, \
+             to meet each acceptance criterion and to write a test a criterion names: {brief}"
+        );
+        assert_eq!(
+            missing_from(brief, &the_judges_own()),
+            the_judges_own(),
+            "the evaluation's clauses are the evaluation's, and the agent's brief holds none: \
+             {brief}"
+        );
+    }
+}
+
+#[test]
+fn the_toil_evaluation_counts_an_unasked_comment_and_rejects_an_unmet_acceptance_criterion() {
+    let briefs = the_briefs_of_a_toil_run_under_rules();
+    assert_eq!(
+        missing_from(&briefs.judge[0], &the_judges_own()),
+        Vec::<&str>::new(),
+        "the evaluation's brief counts an unasked comment, a line added to an old one too, as \
+         more than the ticket asked, and rejects a change that leaves a criterion unmet: {}",
+        briefs.judge[0]
+    );
+    assert_eq!(
+        missing_from(&briefs.judge[0], &the_agents_own()),
+        the_agents_own(),
+        "the agent's clauses are the agent's, and the evaluation's brief holds none: {}",
+        briefs.judge[0]
+    );
+}
+
 #[test]
 fn a_project_with_no_rules_for_agents_gets_no_rules_section() {
     let world = ToilWorld::start();
@@ -5455,6 +5568,12 @@ fn the_projects_rules_reach_a_checks_run_from_the_base_and_not_from_the_head_it_
         "the checks prompt ran"
     );
     support::rules::assert_quotes_both(&briefs.agent[0], &base, "checks agent");
+    assert_eq!(
+        missing_from(&briefs.agent[0], &THE_AGENT_READS_THE_RULES_FIRST),
+        Vec::<&str>::new(),
+        "the checks agent is told to read the quoted rules before it changes anything: {}",
+        briefs.agent[0]
+    );
     support::rules::assert_quotes_both(&briefs.judge[0], &base, "checks evaluation");
     for brief in briefs.agent.iter().chain(&briefs.judge) {
         assert!(

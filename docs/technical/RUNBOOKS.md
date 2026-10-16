@@ -1043,9 +1043,17 @@ the repository. ADR 094 records the decision.
   the run ends retryable, exit 11, and the message names the file and the
   commit. A `jira:` run asks the ambiguity review before the workflow starts,
   so that one model call can come first.
+- **The agent.** The `toil` and `checks` prompts tell the agent to read the
+  quoted rules before it changes anything. The `toil` prompt also tells it to
+  meet each acceptance criterion the ticket states, and to write a test that a
+  criterion names and the project lacks.
 - **The evaluator.** Its prompt tells it to reject a change that breaks a quoted
   rule, with a finding that names the rule, and to reject a report that
-  misstates the change. The evaluate step quotes the agent's own report.
+  misstates the change. The evaluate step quotes the agent's own report. The
+  `toil` and `pull_request` evaluators count a code comment nobody asked for as
+  more than was asked. The `toil` evaluator also rejects a change that leaves a
+  stated acceptance criterion unmet, and a criterion that names a test holds
+  only when the project holds that test.
 - **To see what a run quoted**, read the files at the commit the brief names.
   Each label names the file it quoted: `git show <commit>:CLAUDE.md` for a
   plain file. For a link the label reads `` `AGENTS.md`, A LINK TO `<path>` ``,

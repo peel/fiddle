@@ -14,6 +14,8 @@ make it small, and make nothing else.
 3. Search for every other place that calls what you are about to alter. A
    change that is correct where you read it can still break a caller you did
    not read.
+4. Read the project's rules for agents, when this run quotes them, before you
+   change anything. They bind every line you write.
 
 ## Then change
 
@@ -21,6 +23,10 @@ Make the change the ticket asked for and nothing the ticket did not ask for. A
 rename it never named, a reformatted file, a second fault it never mentioned:
 each of those is more than the ticket asked for, and each one is paid for by
 the person who reviews this.
+
+When the ticket states acceptance criteria, meet each one. Where a criterion
+names a test that is not in the project, write the test. A test an acceptance
+criterion asks for is asked for.
 
 Change as few files as you can. To alter a file that already exists, use
 `edit_file`, so that the lines you did not name stay as they are.
